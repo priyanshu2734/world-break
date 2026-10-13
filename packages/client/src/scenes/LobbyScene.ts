@@ -76,6 +76,11 @@ export class LobbyScene extends Phaser.Scene {
       this.status.setText(this.session.error);
       return;
     }
+    if (snap.phase !== 'lobby') {
+      // The server started the run: hand the live session to gameplay.
+      this.scene.start('Game', { session: this.session });
+      return;
+    }
     window.location.hash = snap.code;
     this.code.setText(`ROOM  ${snap.code}   (share the URL to invite up to ${MAX_PLAYERS - 1} more)`);
     this.slots.forEach((t, i) => {
@@ -85,8 +90,6 @@ export class LobbyScene extends Phaser.Scene {
     });
     const locked = DIFFICULTIES.filter((d) => !isDifficultyUnlocked(d, snap.highestStage));
     this.diff.setText(`DIFFICULTY: ${snap.difficulty.toUpperCase()}   (locked: ${locked.join(', ') || 'none'})`);
-    this.status.setText(this.session.error || (snap.phase === 'lobby'
-      ? 'Waiting in lobby'
-      : `Phase "${snap.phase}" reached — playable stages begin in Phase 1`));
+    this.status.setText(this.session.error || 'Waiting in lobby');
   }
 }

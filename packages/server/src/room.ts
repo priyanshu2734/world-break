@@ -1,14 +1,18 @@
 import { randomInt } from 'node:crypto';
 import {
-  MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH,
+  MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   isDifficultyUnlocked, nextRoomPhase,
-  type Difficulty, type RoomPhase, type RoomSnapshot,
+  type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot,
 } from '@wb/shared';
+import { GameSim } from './game';
+
+/** Briefing countdown before play begins (3 s of server ticks). */
+export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
 
 export type Result = { ok: true } | { ok: false; error: string };
 const fail = (error: string): Result => ({ ok: false, error });
 
-interface Member { id: string; name: string; ready: boolean }
+interface Member { id: string; name: string; ready: boolean; connected: boolean }
 
 /** Pure, socket-free room state. All mutations are validated here. */
 export class Room {
@@ -19,23 +23,27 @@ export class Room {
   highestStage = 1;
   hostId = '';
   private members = new Map<string, Member>();
+  private sim: GameSim | null = null;
+  private briefingTicksLeft = 0;
 
-  constructor(readonly code: string) {}
+  constructor(readonly code: string, private readonly briefingTicks: number = BRIEFING_TICKS) {}
 
   get size(): number { return this.members.size; }
+  get connectedCount(): number { return [...this.members.values()].filter((m) => m.connected).length; }
   has(id: string): boolean { return this.members.has(id); }
 
   join(id: string, name: string): Result {
     if (this.phase !== 'lobby') return fail('Run already in progress');
     if (this.members.has(id)) return fail('Already in room');
     if (this.members.size >= MAX_PLAYERS) return fail('Room is full');
-    this.members.set(id, { id, name, ready: false });
+    this.members.set(id, { id, name, ready: false, connected: true });
     if (!this.hostId) this.hostId = id;
     return { ok: true };
   }
 
   leave(id: string): void {
     this.members.delete(id);
+    this.sim?.removePlayer(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -62,7 +70,67 @@ export class Room {
     const notReady = [...this.members.values()].filter((m) => m.id !== this.hostId && !m.ready);
     if (notReady.length > 0) return fail('Waiting for players to ready up');
     this.phase = nextRoomPhase(this.phase, 'START');
+    // Slots are fixed for the whole run (join order), so spawns and colours stay stable.
+    this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })));
+    this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
+  }
+
+  /** Advance one server tick. Briefing counts down (then BEGIN); playing steps the simulation. */
+  tick(): { phaseChanged: boolean } {
+    if (!this.sim) return { phaseChanged: false };
+    if (this.phase === 'briefing') {
+      this.briefingTicksLeft--;
+      if (this.briefingTicksLeft <= 0) {
+        this.briefingTicksLeft = 0;
+        this.phase = nextRoomPhase(this.phase, 'BEGIN');
+        return { phaseChanged: true };
+      }
+    } else if (this.phase === 'playing') {
+      this.sim.step();
+    }
+    return { phaseChanged: false };
+  }
+
+  /** Movement intent from a player. Accepted only while playing. */
+  submitInput(id: string, seq: number, input: InputIntent): boolean {
+    if (this.phase !== 'playing' || !this.sim) return false;
+    const m = this.members.get(id);
+    if (!m || !m.connected) return false;
+    return this.sim.queueInput(id, seq, input);
+  }
+
+  /**
+   * Socket dropped. In the lobby the player simply leaves (P0 behaviour). During a run the player
+   * stays in the simulation, marked disconnected, so teammates see the connection state.
+   */
+  disconnect(id: string): void {
+    const m = this.members.get(id);
+    if (!m) return;
+    if (this.phase === 'lobby' || !this.sim) { this.leave(id); return; }
+    m.connected = false;
+    this.sim.setConnected(id, false);
+    if (this.hostId === id) {
+      const next = [...this.members.values()].find((x) => x.connected);
+      if (next) this.hostId = next.id;
+    }
+  }
+
+  /** Host-only: restore the known initial arena state, dropping disconnected players. */
+  resetArena(id: string): Result {
+    if (id !== this.hostId) return fail('Only the host can reset the arena');
+    if (this.phase !== 'playing' || !this.sim) return fail('Arena can only be reset during play');
+    for (const m of [...this.members.values()]) {
+      if (!m.connected) { this.members.delete(m.id); this.sim.removePlayer(m.id); }
+    }
+    this.sim.reset();
+    return { ok: true };
+  }
+
+  /** Public simulation view, or null when no run is active. */
+  gameSnapshot(): GameSnapshot | null {
+    if (!this.sim || this.phase === 'lobby') return null;
+    return this.sim.snapshot(this.phase, this.briefingTicksLeft * Math.round(1000 / SERVER_TICK_HZ), this.stage);
   }
 
   snapshot(): RoomSnapshot {
@@ -84,16 +152,19 @@ export class Room {
 export class RoomManager {
   private rooms = new Map<string, Room>();
 
+  constructor(private readonly opts: { briefingTicks?: number } = {}) {}
+
   create(): Room {
     let code: string;
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');
     } while (this.rooms.has(code));
-    const room = new Room(code);
+    const room = new Room(code, this.opts.briefingTicks);
     this.rooms.set(code, room);
     return room;
   }
   get(code: string): Room | undefined { return this.rooms.get(code); }
   remove(code: string): void { this.rooms.delete(code); }
   get count(): number { return this.rooms.size; }
+  forEach(cb: (room: Room) => void): void { for (const r of [...this.rooms.values()]) cb(r); }
 }

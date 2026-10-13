@@ -16,7 +16,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 
 ## Milestones
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
-- [ ] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored stage, 1-4 players
+- [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
 - [ ] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side)
 - [ ] P3 Abilities + disasters: gravity inversion, reactor overload, fractures, temporal storms, power cascade, combos
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario

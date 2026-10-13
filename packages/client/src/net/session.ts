@@ -1,8 +1,10 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  RoomSnapshotSchema,
-  type Ack, type ClientToServerEvents, type Difficulty, type RoomSnapshot, type ServerToClientEvents,
+  GameSnapshotSchema, RoomSnapshotSchema,
+  type Ack, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent,
+  type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
+import { SnapshotBuffer } from './interpolation';
 
 type S = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -10,17 +12,28 @@ type S = Socket<ServerToClientEvents, ClientToServerEvents>;
 export class Session {
   private socket: S = io({ transports: ['websocket'] });
   snapshot: RoomSnapshot | null = null;
+  /** P1: latest authoritative simulation snapshot, its history, and a counter bumped per snapshot. */
+  game: GameSnapshot | null = null;
+  readonly buffer = new SnapshotBuffer();
+  gameSerial = 0;
   playerId = '';
   connected = false;
   error = '';
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
       if (parsed.success) this.snapshot = parsed.data;
+    });
+    this.socket.on('game:snapshot', (raw) => {
+      const parsed = GameSnapshotSchema.safeParse(raw);
+      if (!parsed.success) return;
+      this.game = parsed.data;
+      this.buffer.push(performance.now(), parsed.data);
+      this.gameSerial++;
     });
   }
 
@@ -38,5 +51,15 @@ export class Session {
   async setReady(ready: boolean) { this.report(await this.call('room:ready', { ready })); }
   async setDifficulty(difficulty: Difficulty) { this.report(await this.call('room:setDifficulty', { difficulty })); }
   async start() { this.report(await this.call('room:start', {})); }
+  /**
+   * Send a movement intent (never a position). Deliberately NOT volatile: after a frame hitch the
+   * predictor emits a burst of ticks in one frame and Socket.IO drops all but the first volatile
+   * packet while the transport is mid-write. Inputs are tiny and ordered by seq, so reliable is right.
+   */
+  sendInput(seq: number, input: InputIntent) {
+    if (!this.socket.connected) return; // never queue stale input for a later reconnect
+    this.socket.emit('game:input', { seq, moveX: input.moveX, jump: input.jump });
+  }
+  async resetArena() { this.report(await this.call('game:reset', {})); }
   private report(r: Ack<any>) { this.error = r.ok ? '' : r.error; }
 }

@@ -30,6 +30,47 @@ export const RoomSnapshotSchema = z.object({
 });
 export type RoomSnapshot = z.infer<typeof RoomSnapshotSchema>;
 
+// ---- P1: gameplay protocol (additive; P0 events and fields are unchanged) ----
+
+/** Player intent for one client tick. seq must strictly increase per connection. */
+export const GameInputSchema = z.object({
+  seq: z.number().int().min(0).max(2_000_000_000),
+  moveX: z.number().min(-1).max(1),
+  jump: z.boolean(),
+});
+export type GameInput = z.infer<typeof GameInputSchema>;
+
+export const GamePlayerSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slot: z.number().int().min(0).max(MAX_PLAYERS - 1),
+  x: z.number(),
+  y: z.number(),
+  vx: z.number(),
+  vy: z.number(),
+  facing: z.union([z.literal(1), z.literal(-1)]),
+  grounded: z.boolean(),
+  connected: z.boolean(),
+  /** Last input seq the server applied for this player (used for client reconciliation). */
+  ack: z.number().int().min(-1),
+});
+export type GamePlayer = z.infer<typeof GamePlayerSchema>;
+
+/** Explicit public projection of the simulation. Never a dump of server internals. */
+export const GameSnapshotSchema = z.object({
+  tick: z.number().int().min(0),
+  simTimeMs: z.number().int().min(0),
+  /** Increments on every arena reset so clients drop prediction state. */
+  epoch: z.number().int().min(0),
+  phase: RoomPhaseSchema,
+  /** Remaining briefing countdown in ms (0 once playing). */
+  briefingMs: z.number().int().min(0),
+  stage: z.number().int().min(1),
+  arenaId: z.string(),
+  players: z.array(GamePlayerSchema).max(MAX_PLAYERS),
+});
+export type GameSnapshot = z.infer<typeof GameSnapshotSchema>;
+
 export type Ack<T = Record<never, never>> = ({ ok: true } & T) | { ok: false; error: string };
 
 export interface ClientToServerEvents {
@@ -37,7 +78,13 @@ export interface ClientToServerEvents {
   'room:ready': (payload: unknown, ack: (r: Ack) => void) => void;
   'room:setDifficulty': (payload: unknown, ack: (r: Ack) => void) => void;
   'room:start': (payload: unknown, ack: (r: Ack) => void) => void;
+  /** P1. Fire-and-forget input intent (invalid payloads are dropped server-side). */
+  'game:input': (payload: unknown) => void;
+  /** P1. Host-only: restore the known initial arena state. */
+  'game:reset': (payload: unknown, ack: (r: Ack) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;
+  /** P1. Sent every server tick while a run is in briefing/playing. */
+  'game:snapshot': (snapshot: GameSnapshot) => void;
 }

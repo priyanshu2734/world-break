@@ -2,10 +2,11 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  DifficultyPayloadSchema, JoinPayloadSchema, ReadyPayloadSchema,
+  DifficultyPayloadSchema, GameInputSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result } from './room';
+import { startFixedLoop } from './loop';
 
 export interface GameServer {
   io: Server<ClientToServerEvents, ServerToClientEvents>;
@@ -15,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -23,7 +24,7 @@ export function createGameServer(opts: { corsOrigin?: string } = {}): GameServer
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(http, {
     cors: { origin: opts.corsOrigin ?? 'http://localhost:5173' },
   });
-  const rooms = new RoomManager();
+  const rooms = new RoomManager({ briefingTicks: opts.briefingTicks });
   // socket.id -> membership. playerId is a server-issued opaque id, never client-chosen.
   const sessions = new Map<string, { playerId: string; roomCode: string }>();
 
@@ -73,26 +74,51 @@ export function createGameServer(opts: { corsOrigin?: string } = {}): GameServer
       run(socket.id, ack, (pid, code) => rooms.get(code)!.start(pid));
     });
 
+    // P1: movement intents. Fire-and-forget; malformed payloads are dropped silently.
+    socket.on('game:input', (payload) => {
+      const s = sessions.get(socket.id);
+      if (!s) return;
+      const p = GameInputSchema.safeParse(payload);
+      if (!p.success) return;
+      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump });
+    });
+    socket.on('game:reset', (_payload, ack) => {
+      run(socket.id, ack, (pid, code) => rooms.get(code)!.resetArena(pid));
+    });
+
     socket.on('disconnect', () => {
       const s = sessions.get(socket.id);
       if (!s) return;
       sessions.delete(socket.id);
       const room = rooms.get(s.roomCode);
       if (!room) return;
-      room.leave(s.playerId);
-      if (room.size === 0) rooms.remove(room.code);
+      room.disconnect(s.playerId);
+      if (room.connectedCount === 0) rooms.remove(room.code);
       else broadcast(room.code);
     });
   });
+
+  // Fixed-rate authoritative simulation for every room with an active run.
+  let stopLoop: (() => void) | null = null;
+  const onTick = () => {
+    rooms.forEach((room) => {
+      if (room.phase !== 'briefing' && room.phase !== 'playing') return;
+      const { phaseChanged } = room.tick();
+      if (phaseChanged) broadcast(room.code);
+      const snap = room.gameSnapshot();
+      if (snap) io.to(room.code).volatile.emit('game:snapshot', snap); // volatile: drop stale snapshots under congestion
+    });
+  };
 
   return {
     io, http, rooms,
     listen: (port) => new Promise((resolve) => {
       http.listen(port, () => {
+        stopLoop = startFixedLoop(SERVER_TICK_HZ, onTick);
         const addr = http.address();
         resolve(typeof addr === 'object' && addr ? addr.port : port);
       });
     }),
-    close: () => new Promise((resolve) => { void io.close(() => resolve()); }),
+    close: () => new Promise((resolve) => { stopLoop?.(); void io.close(() => resolve()); }),
   };
 }
