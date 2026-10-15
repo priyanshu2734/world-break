@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DifficultySchema } from './difficulty';
+import type { StageState } from './systems/schemas';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -82,9 +83,13 @@ export interface ClientToServerEvents {
   'game:input': (payload: unknown) => void;
   /** P1. Host-only: restore the known initial arena state. */
   'game:reset': (payload: unknown, ack: (r: Ack) => void) => void;
+  /** P2. A player's stage action (interact / use tool / cancel). The server decides the outcome. */
+  'stage:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;
   /** P1. Sent every server tick while a run is in briefing/playing. */
   'game:snapshot': (snapshot: GameSnapshot) => void;
+  /** P2. Public stage state, sent reliably whenever it changes (full state, idempotent). */
+  'stage:state': (state: StageState) => void;
 }

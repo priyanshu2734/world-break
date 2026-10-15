@@ -45,6 +45,11 @@ export class GameSim {
 
   get simTimeMs(): number { return Math.round(this.tick * TICK_DT * 1000); }
   has(id: string): boolean { return this.players.has(id); }
+  /** Authoritative position/connection of a player (read-only view for the stage engine). */
+  positionOf(id: string): { x: number; y: number; connected: boolean } | undefined {
+    const p = this.players.get(id);
+    return p ? { x: p.body.x, y: p.body.y, connected: p.connected } : undefined;
+  }
 
   /** Queue an intent. Returns false if rejected (unknown/disconnected player, or non-increasing seq). */
   queueInput(id: string, seq: number, input: InputIntent): boolean {
