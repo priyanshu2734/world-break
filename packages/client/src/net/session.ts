@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  GameSnapshotSchema, RoomSnapshotSchema,
-  type Ack, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent,
+  GameSnapshotSchema, RoomSnapshotSchema, StageStateSchema,
+  type Ack, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
   type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { SnapshotBuffer } from './interpolation';
@@ -16,17 +16,25 @@ export class Session {
   game: GameSnapshot | null = null;
   readonly buffer = new SnapshotBuffer();
   gameSerial = 0;
+  /** P2: latest public stage state (server-authoritative; the client never computes repair outcomes). */
+  stage: StageState | null = null;
+  /** Result of the most recent action, for HUD feedback. */
+  notice: { text: string; ok: boolean; at: number } | null = null;
   playerId = '';
   connected = false;
   error = '';
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.buffer.clear(); });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
       if (parsed.success) this.snapshot = parsed.data;
+    });
+    this.socket.on('stage:state', (raw) => {
+      const parsed = StageStateSchema.safeParse(raw);
+      if (parsed.success && (!this.stage || parsed.data.rev >= this.stage.rev)) this.stage = parsed.data;
     });
     this.socket.on('game:snapshot', (raw) => {
       const parsed = GameSnapshotSchema.safeParse(raw);
@@ -59,6 +67,11 @@ export class Session {
   sendInput(seq: number, input: InputIntent) {
     if (!this.socket.connected) return; // never queue stale input for a later reconnect
     this.socket.emit('game:input', { seq, moveX: input.moveX, jump: input.jump });
+  }
+  /** Ask the server to perform a stage action; shows the server's verdict in the HUD. */
+  async stageAction(action: StageAction): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('stage:action', action);
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }
   private report(r: Ack<any>) { this.error = r.ok ? '' : r.error; }

@@ -2,9 +2,11 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   isDifficultyUnlocked, nextRoomPhase,
-  type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot,
+  type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
+import { StageEngine, type ActionResult } from './systems/engine';
+import { getStageDef } from './systems/registry';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -24,6 +26,7 @@ export class Room {
   hostId = '';
   private members = new Map<string, Member>();
   private sim: GameSim | null = null;
+  private engine: StageEngine | null = null;
   private briefingTicksLeft = 0;
 
   constructor(readonly code: string, private readonly briefingTicks: number = BRIEFING_TICKS) {}
@@ -44,6 +47,7 @@ export class Room {
   leave(id: string): void {
     this.members.delete(id);
     this.sim?.removePlayer(id);
+    this.engine?.removePlayer(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -72,9 +76,12 @@ export class Room {
     this.phase = nextRoomPhase(this.phase, 'START');
     // Slots are fixed for the whole run (join order), so spawns and colours stay stable.
     this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })));
+    this.engine = new StageEngine(getStageDef(this.stage), [...this.members.keys()]);
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
   }
+
+  private pos = (id: string) => this.sim?.positionOf(id);
 
   /** Advance one server tick. Briefing counts down (then BEGIN); playing steps the simulation. */
   tick(): { phaseChanged: boolean } {
@@ -88,6 +95,11 @@ export class Room {
       }
     } else if (this.phase === 'playing') {
       this.sim.step();
+      this.engine?.step(this.pos);
+      if (this.engine?.status === 'stabilized') {
+        this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
+        return { phaseChanged: true };
+      }
     }
     return { phaseChanged: false };
   }
@@ -110,6 +122,7 @@ export class Room {
     if (this.phase === 'lobby' || !this.sim) { this.leave(id); return; }
     m.connected = false;
     this.sim.setConnected(id, false);
+    this.engine?.onDisconnect(id);
     if (this.hostId === id) {
       const next = [...this.members.values()].find((x) => x.connected);
       if (next) this.hostId = next.id;
@@ -124,7 +137,27 @@ export class Room {
       if (!m.connected) { this.members.delete(m.id); this.sim.removePlayer(m.id); }
     }
     this.sim.reset();
+    // A fresh stage attempt; revisions keep increasing so clients never mistake it for an old state.
+    const nextRev = (this.engine?.state().rev ?? 0) + 1;
+    this.engine = new StageEngine(getStageDef(this.stage), [...this.members.keys()], { revBase: nextRev });
     return { ok: true };
+  }
+
+  /** A player's stage action. The engine validates range, tools, cooldowns and prerequisites. */
+  stageAction(id: string, action: StageAction): ActionResult {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    return this.engine.action(id, action, this.pos);
+  }
+
+  /** Read-only view of the current public stage state (does not mark it as sent). */
+  peekStageState(): StageState | null {
+    return this.engine?.state() ?? null;
+  }
+
+  /** Public stage state if it changed since the last call (reliable delivery, full state). */
+  consumeStageState(): StageState | null {
+    return this.engine?.consumeState() ?? null;
   }
 
   /** Public simulation view, or null when no run is active. */

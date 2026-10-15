@@ -17,7 +17,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 ## Milestones
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
 - [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
-- [ ] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side)
+- [x] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side). Verified as per docs/handoffs/P2.md (200 unit/integration tests, build, and an automated real-browser run of the full repair chain; NOT yet verified by a human playtest or on a real GPU)
 - [ ] P3 Abilities + disasters: gravity inversion, reactor overload, fractures, temporal storms, power cascade, combos
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario
 - [ ] P5 Scenario generator + validator + fallback; then OpenAI integration (structured outputs, timeouts, retries)
@@ -30,3 +30,26 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 3. Scope: strict phase gating; each phase must ship playable.
 4. Bundle size (Phaser ~1.5 MB): acceptable now; revisit code-splitting in P7.
 5. No OpenAI key in dev/CI: fallback path is the default-tested path; live API calls need a key and are not yet verified.
+
+## P2 systems architecture (current)
+    shared/src/systems/tools.ts     tool + hazard vocabulary, TOOL_SPECS, range/gap constants (public, rules enforced by server)
+    shared/src/systems/schemas.ts   StageActionSchema (intents) and StageStateSchema (public projection)
+    server/src/systems/stageDef.ts  PRIVATE authoring schema (hidden failure chain). Never import from the client
+    server/src/systems/failures.ts  failure dependency graph + mitigation (active / mitigated / resolved)
+    server/src/systems/power.ts     power routing + generator capacity
+    server/src/systems/validate.ts  deterministic stage validation (must pass before a stage can launch)
+    server/src/systems/engine.ts    StageEngine: tools, channels, objectives, hazards, timers, scoring, public state
+    server/src/systems/tutorial.ts  the hand-authored tutorial stage ("Cold Start"); registry.ts maps stage number -> def
+    client/src/ui/                  StageView (world overlay), StageHud, targeting.ts (convenience picking only)
+
+Flow: client sends `stage:action` intent -> gateway Zod-validates -> `Room.stageAction` -> `StageEngine.action` validates
+membership, rate limit, range, ownership, charges, cooldown, compatibility, prerequisites. The engine steps once per
+simulation tick after `GameSim.step()`. Public state is published as `stage:state` (reliable, full, only when changed).
+Completion triggers the existing `STAGE_CLEAR` room transition.
+
+## Ownership boundaries for P3 (disaster library)
+P3 may add `shared/src/disasters/**`, `server/src/disasters/**` and new stages in `server/src/systems/registry.ts`.
+Additive-only edits: `stageDef.ts`, `engine.ts` (hooks), `tools.ts`, `schemas.ts`, `protocol.ts`, `room.ts`, `gateway.ts`, client `ui/**`, `GameScene.ts`.
+Frozen unless a documented migration updates server AND client prediction together: `shared/src/sim.ts`, `shared/src/arena.ts`.
+Frozen: `phases.ts`, `difficulty.ts`, `loop.ts`, `prediction.ts`, `interpolation.ts`, `tutorial.ts` (add new stages instead), all existing tests.
+Do not start OpenAI integration (P5), persistence (P6) or death review (P4).

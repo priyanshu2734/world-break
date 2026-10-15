@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  DifficultyPayloadSchema, GameInputSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ,
+  DifficultyPayloadSchema, GameInputSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result } from './room';
@@ -82,6 +82,16 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!p.success) return;
       rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump });
     });
+    // P2: stage actions (interact / tool use / cancel). Validated by Zod here, by the engine for rules.
+    socket.on('stage:action', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = StageActionSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid action' });
+      const r = rooms.get(s.roomCode)?.stageAction(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
     socket.on('game:reset', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.resetArena(pid));
     });
@@ -106,7 +116,11 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const { phaseChanged } = room.tick();
       if (phaseChanged) broadcast(room.code);
       const snap = room.gameSnapshot();
-      if (snap) io.to(room.code).volatile.emit('game:snapshot', snap); // volatile: drop stale snapshots under congestion
+      // Steady-state snapshots are volatile (a stale one is worthless). A snapshot that carries a phase change is
+      // sent reliably: after stage completion the sim stops, so a dropped one would leave clients on a stale phase.
+      if (snap) (phaseChanged ? io.to(room.code) : io.to(room.code).volatile).emit('game:snapshot', snap);
+      const stage = room.consumeStageState();
+      if (stage) io.to(room.code).emit('stage:state', stage); // reliable: full, idempotent state
     });
   };
 
