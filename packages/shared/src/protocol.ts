@@ -85,6 +85,8 @@ export interface ClientToServerEvents {
   'game:reset': (payload: unknown, ack: (r: Ack) => void) => void;
   /** P2. A player's stage action (interact / use tool / cancel). The server decides the outcome. */
   'stage:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P3A. Host-only: advance from `stage_complete` to stage N+1 (existing NEXT_STAGE transition). Stages are endless. */
+  'room:nextStage': (payload: unknown, ack: (r: Ack) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;

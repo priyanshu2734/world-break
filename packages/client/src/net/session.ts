@@ -74,5 +74,7 @@ export class Session {
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }
+  /** P3A: host-only. Asks the server to advance from a completed stage to the next one (stages are endless). */
+  async nextStage() { this.report(await this.call('room:nextStage', {})); }
   private report(r: Ack<any>) { this.error = r.ok ? '' : r.error; }
 }

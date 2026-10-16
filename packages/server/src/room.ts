@@ -1,12 +1,13 @@
 import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
-  isDifficultyUnlocked, nextRoomPhase,
+  deriveSeed, isDifficultyUnlocked, nextRoomPhase,
   type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
 import { getStageDef } from './systems/registry';
+import { fallbackStageDef } from './disasters/fallback';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -15,6 +16,9 @@ export type Result = { ok: true } | { ok: false; error: string };
 const fail = (error: string): Result => ({ ok: false, error });
 
 interface Member { id: string; name: string; ready: boolean; connected: boolean }
+
+/** Server-side record of the stage being played. Never sent to clients (the seed derives hidden layouts). */
+export interface StageRecord { stage: number; seed: number; defId: string; fallback: boolean }
 
 /** Pure, socket-free room state. All mutations are validated here. */
 export class Room {
@@ -28,8 +32,40 @@ export class Room {
   private sim: GameSim | null = null;
   private engine: StageEngine | null = null;
   private briefingTicksLeft = 0;
+  private stageRec: StageRecord | null = null;
 
-  constructor(readonly code: string, private readonly briefingTicks: number = BRIEFING_TICKS) {}
+  /**
+   * `runSeed` is the root of every stage seed of this run (server-side only). It defaults to a pure function of the
+   * room code so unit tests are deterministic; `RoomManager.create` passes a fresh crypto-random seed.
+   */
+  constructor(
+    readonly code: string,
+    private readonly briefingTicks: number = BRIEFING_TICKS,
+    private readonly runSeed: number = deriveSeed('run', code),
+  ) {}
+
+  /** Server-only view of the current stage seed and definition id (not part of any snapshot). */
+  get stageRecord(): Readonly<StageRecord> | null { return this.stageRec; }
+
+  /**
+   * Builds the engine for `stage`. Stage 1 is hand-authored; later stages are generated from the stage seed.
+   * If a generated stage ever fails validation, fall back to the deterministic fallback stage (never "no stage").
+   */
+  private buildEngine(stage: number, opts: { revBase?: number } = {}): StageEngine {
+    const seed = deriveSeed(this.runSeed, 'stage', stage);
+    const ids = [...this.members.keys()];
+    let fallback = false;
+    let engine: StageEngine;
+    try {
+      engine = new StageEngine(getStageDef(stage, seed), ids, opts);
+    } catch (err) {
+      if (stage === 1) throw err;
+      fallback = true;
+      engine = new StageEngine(fallbackStageDef(stage), ids, opts);
+    }
+    this.stageRec = { stage, seed, defId: engine.def.id, fallback };
+    return engine;
+  }
 
   get size(): number { return this.members.size; }
   get connectedCount(): number { return [...this.members.values()].filter((m) => m.connected).length; }
@@ -76,7 +112,29 @@ export class Room {
     this.phase = nextRoomPhase(this.phase, 'START');
     // Slots are fixed for the whole run (join order), so spawns and colours stay stable.
     this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })));
-    this.engine = new StageEngine(getStageDef(this.stage), [...this.members.keys()]);
+    this.engine = this.buildEngine(this.stage);
+    this.briefingTicksLeft = this.briefingTicks;
+    return { ok: true };
+  }
+
+  /**
+   * Host-only. Uses the existing NEXT_STAGE transition (stage_complete -> briefing) and loads stage N+1.
+   * Endless: there is no stage after which this is refused. Disconnected players are dropped, like on reset.
+   */
+  nextStage(id: string): Result {
+    if (id !== this.hostId) return fail('Only the host can start the next stage');
+    if (this.phase !== 'stage_complete' || !this.sim) return fail('There is no completed stage to advance from');
+    for (const m of [...this.members.values()]) {
+      if (!m.connected) { this.members.delete(m.id); this.sim.removePlayer(m.id); }
+    }
+    const next = this.stage + 1;
+    const revBase = (this.engine?.state().rev ?? 0) + 1; // revisions keep increasing across stages
+    const engine = this.buildEngine(next, { revBase }); // built before any mutation; N >= 2 falls back instead of throwing
+    this.phase = nextRoomPhase(this.phase, 'NEXT_STAGE');
+    this.stage = next;
+    this.highestStage = Math.max(this.highestStage, next);
+    this.sim.reset(); // spawn positions, tick 0, new epoch: clients drop prediction state
+    this.engine = engine;
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
   }
@@ -139,7 +197,7 @@ export class Room {
     this.sim.reset();
     // A fresh stage attempt; revisions keep increasing so clients never mistake it for an old state.
     const nextRev = (this.engine?.state().rev ?? 0) + 1;
-    this.engine = new StageEngine(getStageDef(this.stage), [...this.members.keys()], { revBase: nextRev });
+    this.engine = this.buildEngine(this.stage, { revBase: nextRev });
     return { ok: true };
   }
 
@@ -192,7 +250,7 @@ export class RoomManager {
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');
     } while (this.rooms.has(code));
-    const room = new Room(code, this.opts.briefingTicks);
+    const room = new Room(code, this.opts.briefingTicks, randomInt(0x7fffffff));
     this.rooms.set(code, room);
     return room;
   }

@@ -38,7 +38,7 @@ export class GameScene extends Phaser.Scene {
   private resetHeld = 0;
   private stageView!: StageView;
   private stageHud!: StageHud;
-  private stageKeys!: Record<'E' | 'Q' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
+  private stageKeys!: Record<'E' | 'Q' | 'N' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
   /** Dev-only scripted movement override (set through __WB_DEBUG__ by the browser verification script). */
   private debugInput: InputIntent | null = null;
   /** Real wall-clock time of the previous frame. Phaser's `delta` is smoothed/clamped, so it is NOT used for simulation. */
@@ -70,7 +70,7 @@ export class GameScene extends Phaser.Scene {
     const kb = this.input.keyboard!;
     this.cursors = kb.createCursorKeys();
     this.keys = kb.addKeys('W,A,D,SPACE,R') as typeof this.keys;
-    this.stageKeys = kb.addKeys('E,Q,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
+    this.stageKeys = kb.addKeys('E,Q,N,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
     this.stageView = new StageView(this);
     this.stageHud = new StageHud(this);
     const onBlur = () => kb.resetKeys(); // never leave a key "stuck down" after alt-tab
@@ -203,11 +203,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     // --- reset toast ---
-    if (g.epoch !== this.lastEpoch) { this.lastEpoch = g.epoch; this.flash('Arena reset to its initial state'); }
+    if (g.epoch !== this.lastEpoch) { this.lastEpoch = g.epoch; this.flash(g.phase === 'briefing' ? `Stage ${g.stage}` : 'Arena reset to its initial state'); }
 
     // --- hold R to reset (host only; server re-validates) ---
     const isHost = room.hostId === s.playerId;
     if (this.keys.R.isDown && isHost && g.phase === 'playing') this.resetHeld += delta; else this.resetHeld = 0;
+    // --- P3A: host presses N on the result panel to start the next stage (the game is endless) ---
+    if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'stage_complete') void s.nextStage();
     this.holdBar.width = Math.min(1, this.resetHeld / RESET_HOLD_MS) * 200;
     if (this.resetHeld >= RESET_HOLD_MS) { this.resetHeld = 0; void s.resetArena(); }
 

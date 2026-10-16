@@ -118,7 +118,9 @@ export class StageHud {
     this.resultBg.setVisible(done); this.result.setVisible(done);
     if (done) {
       const rows = Object.entries(st.score.breakdown).filter(([, v]) => v !== 0).map(([k, v]) => `${k.replace('_', ' ')}: ${v > 0 ? '+' : ''}${v}`);
-      this.result.setText(['RELAY CORE STABILISED', '', `Final score ${st.score.total}`, `Cleared in ${mmss(st.tick)}`, '', ...rows, '', 'Reload the page to run it again'].join('\n'));
+      const isHost = session.snapshot?.hostId === localId;
+      const next = isHost ? 'Press N for the next stage' : 'Waiting for the host to start the next stage';
+      this.result.setText(['RELAY CORE STABILISED', '', `Final score ${st.score.total}`, `Cleared in ${mmss(st.tick)}`, '', ...rows, '', next].join('\n'));
       this.resultBg.setSize(620, this.result.height + 64); // the panel always fits its text
     }
   }
