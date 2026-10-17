@@ -3,6 +3,7 @@ import { TICK_DT, TOOL_SPECS, type StageState } from '@wb/shared';
 import type { Session } from '../net/session';
 import { COLOR, FONT } from '../palette';
 import { TOOL_KEYS } from './targeting';
+import { disasterLines } from './disasterText';
 
 const W = 1280, H = 720, D = 100;
 const TPS = Math.round(1 / TICK_DT);
@@ -78,7 +79,7 @@ export class StageHud {
     this.panel.setVisible(show);
     if (!st) { this.objectives.set([]); this.feed.set([]); this.resultBg.setVisible(false); this.result.setVisible(false); return; }
 
-    const obj: { text: string; color?: string }[] = [{ text: 'OBJECTIVES', color: '#ffb02e' }];
+    const obj: { text: string; color?: string }[] = [...disasterLines(st, tick), { text: 'OBJECTIVES', color: '#ffb02e' }];
     for (const o of st.objectives) {
       const pct = o.status === 'active' && o.progress > 0 ? ` ${Math.round(o.progress * 100)}%` : '';
       obj.push({ text: `${SYMBOL[o.status]} ${o.label}${pct}`, color: o.status === 'complete' ? '#3de8ff' : o.status === 'locked' ? '#6f8794' : '#ffffff' });
