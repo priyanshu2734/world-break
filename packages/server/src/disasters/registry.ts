@@ -3,20 +3,47 @@ import type { StageDef } from '../systems/stageDef';
 import { validateStageDef } from '../systems/validate';
 import type { RegisteredDisaster } from './framework';
 import { REACTOR_OVERLOAD } from './reactorOverload';
+import { GRAVITY_INVERSION } from './gravityInversion';
+import { REALITY_FRACTURE } from './realityFracture';
+import { TEMPORAL_STORM } from './temporalStorm';
+import { CASCADING_POWER_FAILURE } from './cascadingPowerFailure';
 
 /**
- * The disaster registry. Add a disaster here only together with its generator, lifecycle tests and a real-physics
- * solvability test (a disaster counts as *supported* only when both pass). Order does not matter: selection is by seed.
+ * The disaster registry. A disaster is *selectable* (in `SUPPORTED`) only once its lifecycle and real-physics
+ * solvability tests have been run and CONFIRMED on the maintainer's machine. Implemented-but-unconfirmed disasters
+ * live in `CANDIDATES`: they have generators and tests, but the game never picks them. Promoting one is a one-line
+ * move from CANDIDATES to SUPPORTED. Order does not matter: selection is by seed.
  */
-const ALL: readonly RegisteredDisaster[] = [REACTOR_OVERLOAD];
-const BY_ID = new Map<DisasterId, RegisteredDisaster>(ALL.map((d) => [d.id, d]));
+const SUPPORTED: readonly RegisteredDisaster[] = [REACTOR_OVERLOAD];
+const CANDIDATES: readonly RegisteredDisaster[] = [GRAVITY_INVERSION, REALITY_FRACTURE, TEMPORAL_STORM, CASCADING_POWER_FAILURE];
+const IMPLEMENTED: readonly RegisteredDisaster[] = [...SUPPORTED, ...CANDIDATES];
+let pool: readonly RegisteredDisaster[] = SUPPORTED;
 
-export function listDisasters(): readonly RegisteredDisaster[] { return ALL; }
-export function getDisaster(id: DisasterId): RegisteredDisaster | undefined { return BY_ID.get(id); }
+/** Selectable disasters (what the game may pick). */
+export function listDisasters(): readonly RegisteredDisaster[] { return pool; }
+export function getDisaster(id: DisasterId): RegisteredDisaster | undefined { return pool.find((d) => d.id === id); }
+/** Implemented but not yet selectable (waiting for confirmed tests). Used by tests and tooling only. */
+export function listCandidateDisasters(): readonly RegisteredDisaster[] { return CANDIDATES; }
+export function getCandidateDisaster(id: DisasterId): RegisteredDisaster | undefined { return CANDIDATES.find((d) => d.id === id); }
+
+/**
+ * TEST SEAM: runs `fn` with exactly these implemented disasters selectable (so the real Room -> engine path can
+ * play a candidate). The previous pool is always restored. Never call this from production code.
+ */
+export function withDisasterPool<T>(ids: readonly DisasterId[], fn: () => T): T {
+  const next = ids.map((id) => {
+    const d = IMPLEMENTED.find((x) => x.id === id);
+    if (!d) throw new Error(`Unknown or unimplemented disaster ${id}`);
+    return d;
+  });
+  const prev = pool;
+  pool = next;
+  try { return fn(); } finally { pool = prev; }
+}
 
 /** Disasters that may appear at `stage` (no upper bound: stages are endless). */
 export function disastersForStage(stage: number): RegisteredDisaster[] {
-  return ALL.filter((d) => stage >= d.compat.minStage);
+  return pool.filter((d) => stage >= d.compat.minStage);
 }
 
 /**

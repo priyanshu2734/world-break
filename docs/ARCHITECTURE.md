@@ -47,6 +47,29 @@ membership, rate limit, range, ownership, charges, cooldown, compatibility, prer
 simulation tick after `GameSim.step()`. Public state is published as `stage:state` (reliable, full, only when changed).
 Completion triggers the existing `STAGE_CLEAR` room transition.
 
+## P3A architecture: endless loop, disasters, seeding (current)
+    shared/src/disasters/rng.ts        mulberry32 PRNG, deriveSeed (FNV-1a), forkable Rng. No Math.random / Date.now in authoritative code
+    shared/src/disasters/lifecycle.ts  disaster phase machine: WARNING > ACTIVE > ESCALATED > RESOLVED | FAILED > CLEANUP
+    shared/src/disasters/public.ts     DisasterId, DisasterThreat, DisasterPublic (optional StageState.disaster)
+    server/src/disasters/meta.ts       PRIVATE DisasterMeta carried in StageDef.disaster (schedule, messages, threats, hazard phases, heat)
+    server/src/disasters/runtime.ts    DisasterRuntime: pure, tick-driven; hazardMod(); bounded heat drain; finish() forces CLEANUP
+    server/src/disasters/validate.ts   DISASTER_LIMITS + validateDisasterMeta (called from validateStageDef)
+    server/src/disasters/framework.ts  defineDisaster<P>: params schema + deriveParams + generate
+    server/src/disasters/kit.ts        shared generator parts (mirror, spots, timing, grids, controls)
+    server/src/disasters/<id>.ts       one generator per disaster (reactorOverload, gravityInversion, realityFracture, temporalStorm, cascadingPowerFailure)
+    server/src/disasters/registry.ts   SUPPORTED (selectable) vs CANDIDATES (implemented, unconfirmed); generateDisasterStage(stage, seed)
+    server/src/disasters/{generate,fallback}.ts  stage N >= 2 entry point; tested tutorial clone if generation or validation fails
+    client/src/ui/disasterText.ts      HUD lines + incoming-hazard marker from the public disaster state
+
+Endless loop: `room:nextStage` (host only, after `stage_complete`) reuses the existing `NEXT_STAGE` transition. The Room derives
+`stage seed = deriveSeed(runSeed, 'stage', stage)` (run seed is server-only), builds the engine from `getStageDef(stage, seed)` and records
+`StageRecord { stage, seed, defId, fallback }` server-side. Stage 1 is the hand-authored tutorial; every later stage is generated. There is no final stage.
+
+Engine step order is now: expiries > hazards > channels > objectives > **disaster** > deadline. `hazardArmed` consults `DisasterRuntime.hazardMod`;
+effects are a pure function of the phase, so CLEANUP removes them; a stabilised stage is cleaned up in the same tick. FAILED is a soft failure
+(bounded penalty, stage still completable; hard failure is P4). See `docs/DISASTERS.md` for the lifecycle table, fairness limits and each disaster,
+and `docs/handoffs/P3A.md` for the contract list, what was verified and what was NOT RUN.
+
 ## Ownership boundaries for P3 (disaster library)
 P3 may add `shared/src/disasters/**`, `server/src/disasters/**` and new stages in `server/src/systems/registry.ts`.
 Additive-only edits: `stageDef.ts`, `engine.ts` (hooks), `tools.ts`, `schemas.ts`, `protocol.ts`, `room.ts`, `gateway.ts`, client `ui/**`, `GameScene.ts`.

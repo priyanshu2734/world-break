@@ -73,6 +73,28 @@ export function validateDisasterMeta(def: StageDef): string[] {
   }
   for (const h of def.hazards) if (h.kind === 'arc_discharge' && !d.hazardPhases.some((x) => x.hazardId === h.id)) err(`arc hazard ${h.id} is not controlled by the lifecycle`);
 
+  // --- tool charges: more welds than the welder holds is only fair if a supply cache can refill it ---
+  const welds = def.objectives.filter((o) => o.params.kind === 'repair_breakpoint').length;
+  if (welds > TOOL_SPECS.flux_welder.maxCharges && !def.entities.some((e) => e.kind === 'supply_cache')) err(`${welds} repairs exceed the welder's ${TOOL_SPECS.flux_welder.maxCharges} charges and the stage has no supply cache`);
+  // --- scan gating must not deadlock: a breakpoint cannot require (even indirectly) its own repair before it can be scanned ---
+  const prereqs = new Map(def.objectives.map((o) => [o.id, o.prerequisites]));
+  const closure = (ids: readonly string[]): Set<string> => {
+    const seen = new Set<string>();
+    const stack = [...ids];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...(prereqs.get(id) ?? []));
+    }
+    return seen;
+  };
+  for (const b of def.breakpoints) {
+    const needed = closure(b.scanRequires);
+    for (const o of def.objectives) {
+      if (o.params.kind === 'repair_breakpoint' && o.params.breakpointId === b.id && needed.has(o.id)) err(`breakpoint ${b.id} cannot be scanned until its own repair objective ${o.id} is complete (deadlock)`);
+    }
+  }
   // --- public text must never name hidden breakpoints ---
   const hidden = [
     ...def.breakpoints.flatMap((b) => [b.id, b.label]),
