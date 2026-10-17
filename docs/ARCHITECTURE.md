@@ -57,7 +57,7 @@ Completion triggers the existing `STAGE_CLEAR` room transition.
     server/src/disasters/framework.ts  defineDisaster<P>: params schema + deriveParams + generate
     server/src/disasters/kit.ts        shared generator parts (mirror, spots, timing, grids, controls)
     server/src/disasters/<id>.ts       one generator per disaster (reactorOverload, gravityInversion, realityFracture, temporalStorm, cascadingPowerFailure)
-    server/src/disasters/registry.ts   SUPPORTED (selectable) vs CANDIDATES (implemented, unconfirmed); generateDisasterStage(stage, seed)
+    server/src/disasters/registry.ts   SUPPORTED (all five, selectable) vs CANDIDATES (empty gate for future disasters); generateDisasterStage(stage, seed)
     server/src/disasters/{generate,fallback}.ts  stage N >= 2 entry point; tested tutorial clone if generation or validation fails
     client/src/ui/disasterText.ts      HUD lines + incoming-hazard marker from the public disaster state
 
@@ -68,7 +68,8 @@ Endless loop: `room:nextStage` (host only, after `stage_complete`) reuses the ex
 Engine step order is now: expiries > hazards > channels > objectives > **disaster** > deadline. `hazardArmed` consults `DisasterRuntime.hazardMod`;
 effects are a pure function of the phase, so CLEANUP removes them; a stabilised stage is cleaned up in the same tick. FAILED is a soft failure
 (bounded penalty, stage still completable; hard failure is P4). See `docs/DISASTERS.md` for the lifecycle table, fairness limits and each disaster,
-and `docs/handoffs/P3A.md` for the contract list, what was verified and what was NOT RUN.
+and `docs/handoffs/P3A.md` for the contract list, what was verified and what was NOT RUN. All five disasters are supported (maintainer-confirmed tests);
+the game picks one by seed for every stage N >= 2.
 
 ## Ownership boundaries for P3 (disaster library)
 P3 may add `shared/src/disasters/**`, `server/src/disasters/**` and new stages in `server/src/systems/registry.ts`.

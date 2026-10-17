@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { StageStateSchema, type StageState } from '@wb/shared';
 import type { ActionResult } from '../../src/systems/engine';
 import type { StageDef } from '../../src/systems/stageDef';
-import { generateDisasterStage } from '../../src/disasters/registry';
+import { generateDisasterStage as generateAnyDisasterStage, withDisasterPool } from '../../src/disasters/registry';
 import { harness } from '../helpers/stage';
 import { switchPlan } from '../helpers/planner';
+
+/** These tests are about reactor overload specifically, so the generator is pinned to it (the pool now holds all five disasters). */
+const generateDisasterStage = (stage: number, seed: number): StageDef => withDisasterPool(['reactor_overload'], () => generateAnyDisasterStage(stage, seed));
 
 const SEED = 3889565240; // 10 digits: cannot collide with other numbers in public state
 const makeDef = (seed = SEED): StageDef => structuredClone(generateDisasterStage(2, seed));

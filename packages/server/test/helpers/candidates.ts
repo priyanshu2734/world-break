@@ -3,17 +3,17 @@ import { deriveSeed, type DisasterId } from '@wb/shared';
 import { Room } from '../../src/room';
 import { getStageDef } from '../../src/systems/registry';
 import type { StageDef } from '../../src/systems/stageDef';
-import { generateDisasterStage, getCandidateDisaster, withDisasterPool } from '../../src/disasters/registry';
+import { generateDisasterStage, getDisaster, withDisasterPool } from '../../src/disasters/registry';
 import type { RegisteredDisaster } from '../../src/disasters/framework';
 import { Lockstep } from './bot';
 
-/** The four P3A step-3 disasters. They are registered as CANDIDATES (never picked by the game) until confirmed. */
+/** The four disasters added in P3A step 3 (confirmed and promoted to SUPPORTED in step 4); reactor overload has its own test files. */
 export const CANDIDATE_IDS = ['gravity_inversion', 'reality_fracture', 'temporal_storm', 'cascading_power_failure'] as const;
 export type CandidateId = (typeof CANDIDATE_IDS)[number];
 
 export function candidate(id: DisasterId): RegisteredDisaster {
-  const d = getCandidateDisaster(id);
-  if (!d) throw new Error(`${id} is not a registered candidate`);
+  const d = getDisaster(id);
+  if (!d) throw new Error(`${id} is not a registered disaster`);
   return d;
 }
 

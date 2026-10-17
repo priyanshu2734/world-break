@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { ARENA } from '@wb/shared';
 import { validateStageDef } from '../../src/systems/validate';
 import { DISASTER_LIMITS } from '../../src/disasters/validate';
-import { generateDisasterStage } from '../../src/disasters/registry';
+import type { StageDef } from '../../src/systems/stageDef';
+import { generateDisasterStage as generateAnyDisasterStage, withDisasterPool } from '../../src/disasters/registry';
 import { BREAKPOINT_SPOTS, REACTOR_OVERLOAD, ReactorOverloadParamsSchema } from '../../src/disasters/reactorOverload';
+
+/** These tests are about reactor overload specifically, so the generator is pinned to it (the pool now holds all five disasters). */
+const generateDisasterStage = (stage: number, seed: number): StageDef => withDisasterPool(['reactor_overload'], () => generateAnyDisasterStage(stage, seed));
 
 const json = (stage: number, seed: number) => JSON.stringify(generateDisasterStage(stage, seed));
 

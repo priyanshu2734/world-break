@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ARENA, deriveSeed } from '@wb/shared';
 import { Room } from '../../src/room';
 import { getStageDef } from '../../src/systems/registry';
-import { generateDisasterStage } from '../../src/disasters/registry';
+import { generateDisasterStage, withDisasterPool } from '../../src/disasters/registry';
 import { Lockstep, goTo, wait, type Script } from '../helpers/bot';
 import { solveStage } from '../helpers/planner';
 
@@ -15,14 +15,20 @@ const STAGE = 2;
 const VARIANTS = (() => {
   const found = new Map<string, number>();
   for (let runSeed = 1; runSeed <= 400 && found.size < 8; runSeed++) {
-    const p = generateDisasterStage(STAGE, deriveSeed(runSeed, 'stage', STAGE)).disaster!.params;
+    const p = withDisasterPool(['reactor_overload'], () => generateDisasterStage(STAGE, deriveSeed(runSeed, 'stage', STAGE))).disaster!.params;
     const key = `${p.mirror ? 'mirrored' : 'normal'}/spot${p.breakpointSpot}`;
     if (!found.has(key)) found.set(key, runSeed);
   }
   return [...found].sort(([a], [b]) => a.localeCompare(b));
 })();
 
+/** The pool holds all five disasters now: pin it to reactor overload while the Room builds (and rebuilds) the stage. */
+const reactorOnly = <T>(fn: () => T): T => withDisasterPool(['reactor_overload'], fn);
+
 function start(runSeed: number, n: number) {
+  return reactorOnly(() => startPinned(runSeed, n));
+}
+function startPinned(runSeed: number, n: number) {
   const room = new Room('ABCD', 2, runSeed);
   room.stage = STAGE; // begin directly on a generated stage
   const ids = Array.from({ length: n }, (_, i) => `p${i}`);
@@ -119,7 +125,7 @@ describe('reactor overload: lifecycle through the real Room', () => {
     expect(room.phase).toBe('stage_complete');
     const oldRev = sim.state().rev;
 
-    expect(room.nextStage('p0')).toEqual({ ok: true });
+    expect(reactorOnly(() => room.nextStage('p0'))).toEqual({ ok: true });
     expect(room.stage).toBe(STAGE + 1);
     expect(room.stageRecord!.stage).toBe(STAGE + 1);
     expect(room.stageRecord!.fallback).toBe(false);
@@ -134,7 +140,7 @@ describe('reactor overload: lifecycle through the real Room', () => {
     expect(s.effects).toEqual([]);
     expect(s.breakpoints).toEqual([]); // the new stage's hidden fault is hidden again
     while (room.phase !== 'playing') sim.tick();
-    const next = getStageDef(STAGE + 1, room.stageRecord!.seed);
+    const next = reactorOnly(() => getStageDef(STAGE + 1, room.stageRecord!.seed));
     solveStage(sim, 'p0', next); // the next stage is solvable too, from the spawn the sim reset to
     expect(room.phase).toBe('stage_complete');
     expect(ARENA.spawns.length).toBe(4);

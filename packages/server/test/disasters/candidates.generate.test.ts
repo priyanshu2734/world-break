@@ -4,26 +4,26 @@ import { StageDefSchema } from '../../src/systems/stageDef';
 import { validateStageDef } from '../../src/systems/validate';
 import { DISASTER_LIMITS } from '../../src/disasters/validate';
 import { generateStageDef } from '../../src/disasters/generate';
-import { getCandidateDisaster, getDisaster, listCandidateDisasters, listDisasters, withDisasterPool } from '../../src/disasters/registry';
+import { getDisaster, listCandidateDisasters, listDisasters, withDisasterPool } from '../../src/disasters/registry';
 import { CANDIDATE_IDS, candidate } from '../helpers/candidates';
 
 const STAGES = [2, 3, 4, 7, 16, 33, 1_000, 1_000_000];
-const SELECTABLE = ['reactor_overload'];
 
-describe('candidate disasters: registered, tested, but not selectable until confirmed', () => {
-  it('every disaster id is either selectable or a registered candidate', () => {
-    const all = [...listDisasters().map((d) => d.id), ...listCandidateDisasters().map((d) => d.id)].sort();
-    expect(all).toEqual([...DISASTER_IDS].sort());
-    expect(listCandidateDisasters().map((d) => d.id)).toEqual([...CANDIDATE_IDS]);
+describe('the five disasters are all supported (selectable)', () => {
+  it('every disaster id is selectable and none is left as a candidate', () => {
+    expect(listDisasters().map((d) => d.id).sort()).toEqual([...DISASTER_IDS].sort());
+    expect(listCandidateDisasters()).toEqual([]);
+    for (const id of DISASTER_IDS) expect(getDisaster(id)?.id).toBe(id);
   });
 
-  it('the game never picks a candidate', () => {
-    expect(listDisasters().map((d) => d.id)).toEqual(SELECTABLE);
-    for (const id of CANDIDATE_IDS) {
-      expect(getDisaster(id)).toBeUndefined();
-      expect(getCandidateDisaster(id)).toBeDefined();
+  it('the game picks every one of them, deterministically per (stage, seed)', () => {
+    const seen = new Set<string>();
+    for (let seed = 1; seed <= 120; seed++) {
+      const a = generateStageDef(2 + (seed % 9), seed), b = generateStageDef(2 + (seed % 9), seed);
+      expect(a).toEqual(b);
+      seen.add(a.disaster!.id);
     }
-    for (let seed = 1; seed <= 60; seed++) expect(generateStageDef(2 + (seed % 9), seed).disaster?.id).toBe('reactor_overload');
+    expect([...seen].sort()).toEqual([...DISASTER_IDS].sort());
   });
 
   it('the test seam narrows the pool and always restores it, even when the callback throws', () => {
@@ -32,7 +32,7 @@ describe('candidate disasters: registered, tested, but not selectable until conf
       for (let seed = 1; seed <= 10; seed++) expect(generateStageDef(3, seed).disaster?.id).toBe('temporal_storm');
     });
     expect(() => withDisasterPool(['reality_fracture'], () => { throw new Error('boom'); })).toThrow('boom');
-    expect(listDisasters().map((d) => d.id)).toEqual(SELECTABLE);
+    expect(listDisasters().map((d) => d.id).sort()).toEqual([...DISASTER_IDS].sort());
   });
 });
 

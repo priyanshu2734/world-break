@@ -3,14 +3,15 @@ import { ARENA, ARENA_ID, DISASTER_IDS, TOOL_IDS } from '@wb/shared';
 import { StageDefSchema } from '../../src/systems/stageDef';
 import { validateStageDef } from '../../src/systems/validate';
 import { generateStageDef } from '../../src/disasters/generate';
-import { disastersForStage, generateDisasterStage, getDisaster, listDisasters } from '../../src/disasters/registry';
+import { disastersForStage, generateDisasterStage, getDisaster, listCandidateDisasters, listDisasters } from '../../src/disasters/registry';
 import { REACTOR_OVERLOAD } from '../../src/disasters/reactorOverload';
 
 describe('disaster registry', () => {
-  it('registers only disasters that are implemented (reactor overload in this step)', () => {
-    expect(listDisasters().map((d) => d.id)).toEqual(['reactor_overload']);
+  it('registers all five disasters as supported (tests confirmed on the maintainer machine), none left as a candidate', () => {
+    expect(listDisasters().map((d) => d.id).sort()).toEqual([...DISASTER_IDS].sort());
     expect(getDisaster('reactor_overload')).toBe(REACTOR_OVERLOAD);
-    for (const id of DISASTER_IDS.filter((x) => x !== 'reactor_overload')) expect(getDisaster(id)).toBeUndefined();
+    for (const id of DISASTER_IDS) expect(getDisaster(id)?.id).toBe(id);
+    expect(listCandidateDisasters()).toEqual([]);
   });
 
   it('carries stable id/version and compatibility metadata, with no maximum stage', () => {
@@ -25,7 +26,7 @@ describe('disaster registry', () => {
 
   it('offers disasters from stage 2 on, for every stage number', () => {
     expect(disastersForStage(1)).toEqual([]);
-    for (const n of [2, 3, 10, 1_000_000, Number.MAX_SAFE_INTEGER]) expect(disastersForStage(n).map((d) => d.id)).toEqual(['reactor_overload']);
+    for (const n of [2, 3, 10, 1_000_000, Number.MAX_SAFE_INTEGER]) expect(disastersForStage(n).map((d) => d.id).sort()).toEqual([...DISASTER_IDS].sort());
   });
 
   it('refuses to generate stage 1 (hand-authored) and invalid stage numbers', () => {
@@ -35,9 +36,19 @@ describe('disaster registry', () => {
   it('generateStageDef returns the disaster stage for N >= 2 and never throws for a valid stage', () => {
     for (const n of [2, 3, 50, 999_999, 1_000_000]) {
       const def = generateStageDef(n, 77);
-      expect(def.disaster?.id).toBe('reactor_overload');
-      expect(def.id).toBe(`reactor_overload_${n}`);
+      expect(DISASTER_IDS).toContain(def.disaster?.id);
+      expect(def.id).toBe(`${def.disaster?.id}_${n}`);
     }
+  });
+
+  it('the pick is deterministic per (stage, seed) and every disaster is picked by some seed', () => {
+    const seen = new Set<string>();
+    for (let seed = 1; seed <= 200; seed++) {
+      const a = generateDisasterStage(2, seed), b = generateDisasterStage(2, seed);
+      expect(a).toEqual(b);
+      seen.add(a.disaster!.id);
+    }
+    expect([...seen].sort()).toEqual([...DISASTER_IDS].sort());
   });
 
   it('the generated StageDef is a fully parsed StageDef that passes validateStageDef', () => {

@@ -49,20 +49,24 @@ describe('disaster warnings over real sockets', () => {
 
     expect(last(a)).toEqual(last(b));
     expect(last(b)).toEqual(last(c));
+    // the run seed is random, so any of the five disasters may have been picked: assert against the stage that was generated
+    const rec = room.stageRecord!;
+    const def = getStageDef(2, rec.seed);
     const d = DisasterPublicSchema.parse(last(a).disaster);
-    expect(d).toMatchObject({ id: 'reactor_overload', phase: 'warning' });
+    expect(d).toMatchObject({ id: def.disaster!.id, phase: 'warning' });
     expect(d.message.length).toBeGreaterThan(20);
-    expect(d.threats).toHaveLength(1);
-    expect(d.threats[0]).toMatchObject({ hazardId: 'hz_arc', countermeasure: 'shield_projector' });
-    expect(last(a).hazards.map((h) => h.id)).toContain('hz_arc');
+    expect(d.threats).toHaveLength(def.hazards.length);
+    for (const t of d.threats) expect(def.disaster!.threats.find((x) => x.hazardId === t.hazardId)?.countermeasure).toBe(t.countermeasure);
+    expect(last(a).hazards.map((h) => h.id).sort()).toEqual(def.hazards.map((h) => h.id).sort());
 
     // every hazard on the wire has a threat entry (a readable warning + countermeasure + repair path)
     for (const h of last(a).hazards) expect(d.threats.some((t) => t.hazardId === h.id)).toBe(true);
 
     // hidden data and seeds never appear on the wire
-    const rec = room.stageRecord!;
-    const def = getStageDef(2, rec.seed);
-    const secrets = ['bp_valve', 'f_valve', 'Seized coolant valve', def.breakpoints[0]!.id];
+    const secrets = [
+      ...def.breakpoints.flatMap((b) => [b.id, b.label, b.failureId]),
+      ...def.failures.filter((f) => f.kind === 'breakpoint').flatMap((f) => [f.id, f.label]),
+    ];
     const seed = String(rec.seed);
     for (const x of all) for (const raw of x.raw.slice(-3)) {
       for (const secret of secrets) expect(raw).not.toContain(secret);
