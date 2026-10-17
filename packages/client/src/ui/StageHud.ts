@@ -3,6 +3,7 @@ import { TICK_DT, TOOL_SPECS, type StageState } from '@wb/shared';
 import type { Session } from '../net/session';
 import { COLOR, FONT } from '../palette';
 import { TOOL_KEYS } from './targeting';
+import { disasterLines } from './disasterText';
 
 const W = 1280, H = 720, D = 100;
 const TPS = Math.round(1 / TICK_DT);
@@ -78,7 +79,7 @@ export class StageHud {
     this.panel.setVisible(show);
     if (!st) { this.objectives.set([]); this.feed.set([]); this.resultBg.setVisible(false); this.result.setVisible(false); return; }
 
-    const obj: { text: string; color?: string }[] = [{ text: 'OBJECTIVES', color: '#ffb02e' }];
+    const obj: { text: string; color?: string }[] = [...disasterLines(st, tick), { text: 'OBJECTIVES', color: '#ffb02e' }];
     for (const o of st.objectives) {
       const pct = o.status === 'active' && o.progress > 0 ? ` ${Math.round(o.progress * 100)}%` : '';
       obj.push({ text: `${SYMBOL[o.status]} ${o.label}${pct}`, color: o.status === 'complete' ? '#3de8ff' : o.status === 'locked' ? '#6f8794' : '#ffffff' });
@@ -118,7 +119,9 @@ export class StageHud {
     this.resultBg.setVisible(done); this.result.setVisible(done);
     if (done) {
       const rows = Object.entries(st.score.breakdown).filter(([, v]) => v !== 0).map(([k, v]) => `${k.replace('_', ' ')}: ${v > 0 ? '+' : ''}${v}`);
-      this.result.setText(['RELAY CORE STABILISED', '', `Final score ${st.score.total}`, `Cleared in ${mmss(st.tick)}`, '', ...rows, '', 'Reload the page to run it again'].join('\n'));
+      const isHost = session.snapshot?.hostId === localId;
+      const next = isHost ? 'Press N for the next stage' : 'Waiting for the host to start the next stage';
+      this.result.setText(['RELAY CORE STABILISED', '', `Final score ${st.score.total}`, `Cleared in ${mmss(st.tick)}`, '', ...rows, '', next].join('\n'));
       this.resultBg.setSize(620, this.result.height + 64); // the panel always fits its text
     }
   }

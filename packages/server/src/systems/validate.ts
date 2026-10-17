@@ -2,6 +2,7 @@ import { MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena } from '@wb/shared';
 import type { StageDef } from './stageDef';
 import { topoOrder } from './failures';
 import { evaluatePower } from './power';
+import { validateDisasterMeta } from '../disasters/validate';
 
 /**
  * Deterministic structural validation. A stage that returns any error must not launch.
@@ -141,5 +142,6 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
 
   for (const h of def.hazards) if (h.kind === 'arc_discharge' && (!h.periodTicks || h.firstPulseTick === undefined)) err(`arc hazard ${h.id} needs periodTicks and firstPulseTick`);
   for (const h of def.hazards) if (h.armedWhenObjective && !obj.has(h.armedWhenObjective)) err(`hazard ${h.id} references unknown objective`);
+  errs.push(...validateDisasterMeta(def)); // P3A: lifecycle, bounds, threats (no-op without def.disaster)
   return errs;
 }

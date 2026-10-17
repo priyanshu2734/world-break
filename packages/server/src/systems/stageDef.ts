@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { HazardKindSchema, StageIdSchema, ToolIdSchema } from '@wb/shared';
+import { DisasterMetaSchema } from '../disasters/meta';
 
 /**
  * Server-private, hand-authored stage definition. Contains the hidden failure chain and breakpoint
@@ -93,6 +94,8 @@ export const StageDefSchema = z.object({
   objectives: z.array(ObjectiveSchema).min(1),
   hazards: z.array(HazardSchema),
   clues: z.array(ClueSchema),
+  /** P3A (additive, optional): lifecycle + record of a generated disaster stage. Hand-authored stages omit it. */
+  disaster: DisasterMetaSchema.optional(),
   scoring: z.object({
     timeBonusPerSecond: z.number().int(),
     expiredPenalty: z.number().int(),

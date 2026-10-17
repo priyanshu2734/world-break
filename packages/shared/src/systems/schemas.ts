@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { HazardKindSchema, ToolIdSchema } from './tools';
+import { DisasterPublicSchema } from '../disasters/public';
 
 /** Ids are server-authored slugs. */
 export const StageIdSchema = z.string().regex(/^[a-z][a-z0-9_]*$/).max(40);
@@ -76,5 +77,7 @@ export const StageStateSchema = z.object({
   })),
   clues: z.array(z.object({ id: z.string(), text: z.string(), tick: z.number().int() })),
   feed: z.array(z.object({ tick: z.number().int(), text: z.string(), tone: z.enum(['info', 'good', 'warn', 'bad', 'clue']) })),
+  /** P3A (additive, optional): the running disaster's public warning/phase/schedule. Absent for hand-authored stages. */
+  disaster: DisasterPublicSchema.optional(),
 });
 export type StageState = z.infer<typeof StageStateSchema>;

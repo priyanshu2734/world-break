@@ -92,6 +92,10 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
+    // P3A: host advances to the next stage (endless loop). Uses the existing NEXT_STAGE room transition.
+    socket.on('room:nextStage', (_payload, ack) => {
+      run(socket.id, ack, (pid, code) => rooms.get(code)!.nextStage(pid));
+    });
     socket.on('game:reset', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.resetArena(pid));
     });

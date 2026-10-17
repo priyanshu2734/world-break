@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { TICK_DT, type StageState } from '@wb/shared';
 import { COLOR, FONT } from '../palette';
 import { conduitMid, interactPrompt } from './targeting';
+import { threatFor } from './disasterText';
 
 const TPS = Math.round(1 / TICK_DT);
 const GREY = 0x5a6b75;
@@ -43,6 +44,8 @@ export class StageView {
           g.lineStyle(4, 0xff4d4d, 0.9).strokeCircle(h.x, h.y, h.r * (left / TPS));
         }
       }
+      // P3A: a hazard that belongs to a disaster always carries a visible marker with its warning, even before it is armed
+      if (threatFor(st, h.id)) this.label(`thr_${h.id}`, `! ${h.label}${h.armed ? '' : ' (incoming)'}`, h.x, h.y - h.r - 6, h.armed ? '#ff6b6b' : '#ffe27a');
       if (close(h.x, h.y, h.r)) this.label(`h_${h.id}`, `${h.label}${flux ? (h.stabilized ? ' (anchored)' : ' (unstable)') : h.armed ? ' (armed)' : ''}`, h.x, h.y - h.r + 18, flux ? '#b8a6ff' : '#ffb02e');
     }
 

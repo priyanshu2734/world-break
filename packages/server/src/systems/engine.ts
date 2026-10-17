@@ -6,6 +6,7 @@ import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
 import { evaluatePower, type PowerEval } from './power';
 import { validateStageDef } from './validate';
+import { DisasterRuntime } from '../disasters/runtime';
 
 export interface PlayerPos { x: number; y: number; connected: boolean }
 export type PosFn = (playerId: string) => PlayerPos | undefined;
@@ -46,6 +47,8 @@ export class StageEngine {
   private readonly nodes: Map<string, StageDef['power']['nodes'][number]>;
   private readonly conduits: Map<string, StageDef['power']['conduits'][number]>;
   private readonly objectives: Map<string, Objective>;
+  /** P3A: lifecycle of the disaster this stage was generated from (null for hand-authored stages). */
+  private readonly disaster: DisasterRuntime | null;
 
   private players = new Map<string, PlayerRt>();
   private bpRt = new Map<string, { revealed: boolean; repaired: boolean }>();
@@ -81,12 +84,14 @@ export class StageEngine {
     this.nodes = new Map(def.power.nodes.map((n) => [n.id, n]));
     this.conduits = new Map(def.power.conduits.map((c) => [c.id, c]));
     this.objectives = new Map(def.objectives.map((o) => [o.id, o]));
+    this.disaster = def.disaster ? new DisasterRuntime(def.disaster) : null;
 
     for (const b of def.breakpoints) this.bpRt.set(b.id, { revealed: false, repaired: false });
     for (const e of def.entities) if (e.kind === 'power_switch') this.switchClosed.set(e.id, e.initiallyClosed);
     for (const o of def.objectives) this.objRt.set(o.id, { status: 'locked', hold: 0 });
     for (const id of playerIds) this.addPlayer(id);
     this.say('The relay has gone cold. Find out why.', 'info');
+    if (this.disaster) this.say(this.disaster.message(), 'warn');
     this.refreshObjectiveLocks();
   }
   private readonly revBase: number;
@@ -126,7 +131,10 @@ export class StageEngine {
 
   private objStatus(id: string) { return this.objRt.get(id)!.status; }
   private hazardArmed(h: StageDef['hazards'][number]) {
-    return !h.armedWhenObjective || this.objStatus(h.armedWhenObjective) === 'active';
+    const base = !h.armedWhenObjective || this.objStatus(h.armedWhenObjective) === 'active';
+    if (!base) return false;
+    const mod = this.disaster?.hazardMod(h.id); // P3A: the disaster lifecycle may hold a hazard disarmed
+    return mod ? mod.armed : true;
   }
   private hazardStabilized(hazardId: string) {
     const h = this.def.hazards.find((x) => x.id === hazardId)!;
@@ -196,6 +204,7 @@ export class StageEngine {
     this.stepHazards(pos);
     this.stepChannels(pos);
     this.stepObjectives();
+    this.stepDisaster();
 
     if (this.status === 'running' && !this.expired && t >= this.def.deadlineTicks) {
       this.expired = true;
@@ -208,7 +217,9 @@ export class StageEngine {
   private stepHazards(pos: PosFn) {
     for (const h of this.def.hazards) {
       if (h.kind !== 'arc_discharge') continue;
-      const period = h.periodTicks!;
+      const mod = this.disaster?.hazardMod(h.id);
+      const period = mod?.periodTicks ?? h.periodTicks!;
+      const radius = mod?.r ?? h.r;
       if (!this.hazardArmed(h)) { if (this.nextPulse.delete(h.id)) this.dirty = true; continue; }
       if (!this.nextPulse.has(h.id)) { this.nextPulse.set(h.id, this.tick + (h.firstPulseTick ?? period)); this.dirty = true; }
       if (this.tick < this.nextPulse.get(h.id)!) continue;
@@ -216,12 +227,28 @@ export class StageEngine {
       this.dirty = true;
       for (const pid of this.players.keys()) {
         const p = pos(pid);
-        if (!p?.connected || dist(h.x, h.y, p.x, p.y - 20) > h.r) continue;
+        if (!p?.connected || dist(h.x, h.y, p.x, p.y - 20) > radius) continue;
         if (this.shielded(p, 'arc_discharge')) { this.say('The shield absorbs an arc discharge.', 'good'); continue; }
         this.award('hazard', -this.def.scoring.hazardHitPenalty);
         this.say('An arc discharge hits the core deck.', 'bad');
         if (this.channels.has(pid)) this.interrupt(pid, 'The discharge breaks your concentration.', true);
       }
+    }
+  }
+
+  /** P3A: advance the disaster lifecycle (ticks only). Runs after objectives; a finished stage forces CLEANUP. */
+  private stepDisaster() {
+    if (!this.disaster || !this.def.disaster) return;
+    const resolved = this.def.disaster.resolveObjectives.every((o) => this.objStatus(o) === 'complete');
+    const apply = (r: ReturnType<DisasterRuntime['step']>) => {
+      for (const line of r.feed) this.say(line.text, line.tone);
+      if (r.scoreDelta !== 0) this.award('disaster', r.scoreDelta);
+      if (r.changed) this.dirty = true;
+    };
+    apply(this.disaster.step(this.tick, resolved));
+    if (this.status === 'stabilized') {
+      apply(this.disaster.finish(this.tick)); // engine stops stepping: clean up now
+      if (this.nextPulse.size > 0) { this.nextPulse.clear(); this.dirty = true; } // no telegraph may outlive the disaster
     }
   }
 
@@ -594,7 +621,7 @@ export class StageEngine {
         })),
       },
       hazards: this.def.hazards.map((h) => ({
-        id: h.id, kind: h.kind, label: h.label, x: h.x, y: h.y, r: h.r,
+        id: h.id, kind: h.kind, label: h.label, x: h.x, y: h.y, r: this.disaster?.hazardMod(h.id)?.r ?? h.r,
         armed: this.hazardArmed(h), stabilized: this.hazardStabilized(h.id), nextPulseTick: this.nextPulse.get(h.id) ?? null,
       })),
       effects: this.effects.map((e) => ({ id: e.id, tool: e.tool, ownerId: e.ownerId, x: e.x, y: e.y, r: e.r, expiresTick: e.expiresTick })),
@@ -608,6 +635,7 @@ export class StageEngine {
       })),
       clues: [...this.clues].map(([id, tick]) => ({ id, text: this.def.clues.find((c) => c.id === id)!.text, tick })),
       feed: this.feed.map((f) => ({ ...f })),
+      ...(this.disaster ? { disaster: this.disaster.publicState() } : {}),
     };
   }
 
