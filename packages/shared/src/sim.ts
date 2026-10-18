@@ -101,3 +101,12 @@ export function stepBody(b: PlayerBody, rawInput: InputIntent, arena: Arena = AR
 function overlaps(b: PlayerBody, r: { x: number; y: number; w: number; h: number }): boolean {
   return b.x + HALF_W > r.x && b.x - HALF_W < r.x + r.w && b.y > r.y && b.y - PLAYER_HEIGHT < r.y + r.h;
 }
+
+// ---- P3B: optional world data for stepBody (types only in this step; see docs/ARCHITECTURE.md "P3B physics migration") ----
+/** A gravity zone that is ACTIVE for the tick being simulated (the caller filters by tick). */
+export interface StepZone { x: number; y: number; w: number; h: number; gx: number; gy: number }
+/** Optional extra data for one `stepBody` call. Omitted (undefined) = exactly the pre-P3B behaviour. */
+export interface StepWorld {
+  zones?: readonly StepZone[];
+  impulse?: { dvy: number; cancelVy: boolean; driftVx: number };
+}

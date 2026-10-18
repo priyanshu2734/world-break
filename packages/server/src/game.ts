@@ -2,6 +2,7 @@ import {
   ARENA, NEUTRAL_INPUT, TICK_DT, sanitizeInput, spawnBody, stepBody,
   type Arena, type GamePlayer, type GameSnapshot, type InputIntent, type PlayerBody, type RoomPhase,
 } from '@wb/shared';
+import { PhysicsWorld, type PropSpawn } from './abilities/world';
 
 /**
  * Inputs queued beyond this are trimmed (client is ahead of the server; reconciliation covers the gap).
@@ -31,8 +32,14 @@ export class GameSim {
   tick = 0;
   epoch = 0;
   private players = new Map<string, SimPlayer>();
+  private _arena: Arena;
+  /** P3B: props, gravity zones and impulses. Stepped once per tick after the bodies. */
+  world: PhysicsWorld;
+  private propSpawns: PropSpawn[] = [];
 
-  constructor(inits: SimPlayerInit[], readonly arena: Arena = ARENA) {
+  constructor(inits: SimPlayerInit[], arena: Arena = ARENA) {
+    this._arena = arena;
+    this.world = new PhysicsWorld(arena);
     for (const p of inits) {
       const sp = arena.spawns[p.slot];
       if (!sp) throw new Error(`No spawn for slot ${p.slot}`);
@@ -41,6 +48,23 @@ export class GameSim {
         lastQueuedSeq: -1, lastAppliedSeq: -1, lastInput: NEUTRAL_INPUT, staleTicks: 0,
       });
     }
+  }
+
+  get arena(): Arena { return this._arena; }
+  /**
+   * P3B: swap the arena (a stage may play on its own arena). Creates a fresh world; the caller must `reset()` afterwards
+   * (spawn positions come from the new arena) and re-attach `world` to the stage engine.
+   */
+  loadArena(arena: Arena): void {
+    if (arena === this._arena) return;
+    this._arena = arena;
+    this.world = new PhysicsWorld(arena);
+    this.world.reset(this.propSpawns);
+  }
+  /** P3B: set the stage's authored props (resets the physical world to them). */
+  configure(spawns: readonly PropSpawn[]): void {
+    this.propSpawns = [...spawns];
+    this.world.reset(this.propSpawns);
   }
 
   get simTimeMs(): number { return Math.round(this.tick * TICK_DT * 1000); }
@@ -83,8 +107,9 @@ export class GameSim {
           if (p.staleTicks <= MAX_REPEAT_TICKS) input = { moveX: p.lastInput.moveX, jump: false };
         }
       }
-      stepBody(p.body, input, this.arena);
+      stepBody(p.body, input, this._arena);
     }
+    this.world.step();
     this.tick++;
   }
 
@@ -92,8 +117,9 @@ export class GameSim {
   reset(): void {
     this.epoch++;
     this.tick = 0;
+    this.world.reset(this.propSpawns);
     for (const p of this.players.values()) {
-      const sp = this.arena.spawns[p.slot]!;
+      const sp = this._arena.spawns[p.slot]!;
       p.body = spawnBody(sp.x, sp.y);
       p.queue.length = 0;
       p.lastInput = NEUTRAL_INPUT;
@@ -110,9 +136,11 @@ export class GameSim {
         x: r2(p.body.x), y: r2(p.body.y), vx: r2(p.body.vx), vy: r2(p.body.vy),
         facing: p.body.facing, grounded: p.body.grounded, connected: p.connected, ack: p.lastAppliedSeq,
       }));
+    const world = this.world.publicState();
     return {
       tick: this.tick, simTimeMs: this.simTimeMs, epoch: this.epoch, phase,
-      briefingMs, stage, arenaId: this.arena.id, players,
+      briefingMs, stage, arenaId: this._arena.id, players,
+      ...(world ? { world } : {}),
     };
   }
 }

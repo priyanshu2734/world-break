@@ -2,12 +2,14 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, type AbilityAction, type Arena, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
 import { getStageDef } from './systems/registry';
 import { fallbackStageDef } from './disasters/fallback';
+import { withDefaultAbilities } from './abilities/defaults';
+import type { AbilityResult } from './abilities/system';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -56,15 +58,26 @@ export class Room {
     const ids = [...this.members.keys()];
     let fallback = false;
     let engine: StageEngine;
+    const arena = this.arenaFor();
     try {
-      engine = new StageEngine(getStageDef(stage, seed), ids, opts);
+      engine = new StageEngine(withDefaultAbilities(getStageDef(stage, seed), stage), ids, { ...opts, arena });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
-      engine = new StageEngine(fallbackStageDef(stage), ids, opts);
+      engine = new StageEngine(withDefaultAbilities(fallbackStageDef(stage), stage), ids, { ...opts, arena });
     }
     this.stageRec = { stage, seed, defId: engine.def.id, fallback };
     return engine;
+  }
+
+  /** The arena the current stage is played on. Every stage uses Relay Platform 01 until a stage declares its own. */
+  private arenaFor(): Arena { return ARENA; }
+
+  /** Gives the stage engine the sim's physical world and loads the stage's authored props into it. */
+  private bindWorld(engine: StageEngine): void {
+    if (!this.sim) return;
+    this.sim.configure((engine.def.props ?? []).map((p) => ({ id: p.id, kind: p.kind, x: p.x, y: p.y, light: p.light })));
+    engine.attachWorld(this.sim.world);
   }
 
   get size(): number { return this.members.size; }
@@ -113,6 +126,7 @@ export class Room {
     // Slots are fixed for the whole run (join order), so spawns and colours stay stable.
     this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })));
     this.engine = this.buildEngine(this.stage);
+    this.bindWorld(this.engine);
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
   }
@@ -135,6 +149,7 @@ export class Room {
     this.highestStage = Math.max(this.highestStage, next);
     this.sim.reset(); // spawn positions, tick 0, new epoch: clients drop prediction state
     this.engine = engine;
+    this.bindWorld(engine);
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
   }
@@ -198,6 +213,7 @@ export class Room {
     // A fresh stage attempt; revisions keep increasing so clients never mistake it for an old state.
     const nextRev = (this.engine?.state().rev ?? 0) + 1;
     this.engine = this.buildEngine(this.stage, { revBase: nextRev });
+    this.bindWorld(this.engine);
     return { ok: true };
   }
 
@@ -206,6 +222,13 @@ export class Room {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     return this.engine.action(id, action, this.pos);
+  }
+
+  /** P3B: a player's reality-ability intent. The engine validates ownership, range, cooldown, energy, caps and rate. */
+  abilityAction(id: string, action: AbilityAction): AbilityResult {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    return this.engine.abilityAction(id, action, this.pos);
   }
 
   /** Read-only view of the current public stage state (does not mark it as sent). */

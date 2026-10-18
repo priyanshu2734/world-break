@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { DifficultySchema } from './difficulty';
 import type { StageState } from './systems/schemas';
+import { WorldPublicSchema } from './abilities/world';
+import type { AbilityAction } from './abilities/public';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -69,6 +71,8 @@ export const GameSnapshotSchema = z.object({
   stage: z.number().int().min(1),
   arenaId: z.string(),
   players: z.array(GamePlayerSchema).max(MAX_PLAYERS),
+  /** P3B (additive, optional): gravity zones, impulse events and physical props. Absent = none (and always absent before P3B). */
+  world: WorldPublicSchema.optional(),
 });
 export type GameSnapshot = z.infer<typeof GameSnapshotSchema>;
 
@@ -87,6 +91,8 @@ export interface ClientToServerEvents {
   'stage:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3A. Host-only: advance from `stage_complete` to stage N+1 (existing NEXT_STAGE transition). Stages are endless. */
   'room:nextStage': (payload: unknown, ack: (r: Ack) => void) => void;
+  /** P3B. A player's reality ability intent (gravity well, freeze, duplicate, momentum). The server decides the outcome. */
+  'ability:use': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;
