@@ -1,5 +1,5 @@
 import {
-  ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, RANGE_DY, TICK_DT, TOOL_SPECS,
+  ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
   type AbilityAction, type Arena, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
@@ -58,6 +58,8 @@ export class StageEngine {
   private switchClosed = new Map<string, boolean>();
   private sealed = new Set<string>();
   private armedUntil = new Map<string, number>();
+  /** P3B: pressure plates pressed during the last step (recomputed every tick; only transitions mark the state dirty). */
+  private platesPressed = new Set<string>();
   private progress = new Map<string, number>();
   private objRt = new Map<string, ObjRt>();
   private cellUntil = new Map<string, number>();
@@ -248,9 +250,11 @@ export class StageEngine {
     }
     for (const [id, until] of [...this.armedUntil]) if (until <= t) {
       this.armedUntil.delete(id);
+      if (this.entities.get(id)?.kind === 'pressure_plate') continue; // plates re-arm every tick they stay pressed
       if (this.objStatus(this.consoleObjective(id)) !== 'complete') this.say(`${this.entities.get(id)!.label} slipped out of phase.`, 'warn');
       this.dirty = true;
     }
+    this.stepPlates(pos);
 
     for (const [id, until] of [...this.frozenHazards]) if (until <= t) { this.frozenHazards.delete(id); this.say('The hazard thaws and resumes its cycle.', 'warn'); this.dirty = true; }
     this.abilities?.step();
@@ -393,6 +397,30 @@ export class StageEngine {
     }
   }
 
+  /** Is something standing on this plate right now? Players count unless the plate is heavy; props count only when resting. */
+  private platePressed(e: Extract<Entity, { kind: 'pressure_plate' }>, pos: PosFn): boolean {
+    if (e.activatedBy !== 'object') {
+      for (const id of this.players.keys()) {
+        const p = pos(id);
+        if (p?.connected && Math.abs(p.x - e.x) <= PLATE_HALF_W && Math.abs(p.y - e.y) <= PLATE_DY) return true;
+      }
+    }
+    for (const pr of this.world?.listProps() ?? []) {
+      if (pr.grounded && Math.abs(pr.x - e.x) <= PLATE_HALF_W && Math.abs(pr.y - e.y) <= PLATE_DY) return true;
+    }
+    return false;
+  }
+
+  private stepPlates(pos: PosFn) {
+    const now = new Set<string>();
+    for (const e of this.def.entities) {
+      if (e.kind !== 'pressure_plate') continue;
+      if (this.platePressed(e, pos)) { now.add(e.id); this.armedUntil.set(e.id, this.tick + 1); }
+    }
+    if (now.size !== this.platesPressed.size || [...now].some((id) => !this.platesPressed.has(id))) this.dirty = true;
+    this.platesPressed = now;
+  }
+
   private stepObjectives() {
     this.refreshObjectiveLocks();
     for (const o of this.def.objectives) {
@@ -500,6 +528,8 @@ export class StageEngine {
         this.say(`${e.label} armed.`, 'info');
         return ok(`${e.label} armed.`);
       }
+      case 'pressure_plate':
+        return fail(e.activatedBy === 'object' ? 'Too light to trigger it. It needs something heavy resting on it.' : 'Step on it and stay on it.');
       case 'decoy_panel':
         return ok('The panel reads nominal. Whatever is wrong is not here.');
       case 'core_console': {
@@ -665,6 +695,10 @@ export class StageEngine {
           locked = st !== 'active';
           state = st === 'complete' ? 'complete' : [...this.channels.values()].some((c) => c.targetId === e.id) ? 'channeling'
             : this.consumerPowered(e.consumerId) ? 'powered' : 'dead';
+        } else if (e.kind === 'pressure_plate') {
+          const st = this.objStatus(e.objectiveId);
+          locked = st === 'locked';
+          state = st === 'complete' ? 'complete' : this.platesPressed.has(e.id) ? 'pressed' : 'idle';
         } else if (e.kind === 'decoy_panel') {
           state = (this.suppressUntil.get(e.mitigates) ?? 0) > this.tick ? 'calm' : 'flickering';
         }

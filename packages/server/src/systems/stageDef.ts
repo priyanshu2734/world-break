@@ -45,6 +45,10 @@ export const EntitySchema = z.discriminatedUnion('kind', [
     conduitId: Id, initiallyClosed: z.boolean() }),
   z.object({ kind: z.literal('sync_console'), id: Id, label: z.string(), ...Pt, objectiveId: Id }),
   z.object({ kind: z.literal('core_console'), id: Id, label: z.string(), ...Pt, objectiveId: Id, consumerId: Id }),
+  /** P3B: pressed while something stands on it. Used as a `timed_controls` control (armTicks 1 = "all pressed at the same moment"). */
+  z.object({ kind: z.literal('pressure_plate'), id: Id, label: z.string(), ...Pt, objectiveId: Id,
+    /** 'object' = a heavy plate: players are too light to press it, only crates and copies are. */
+    activatedBy: z.enum(['any', 'object']).default('any') }),
   z.object({ kind: z.literal('decoy_panel'), id: Id, label: z.string(), ...Pt,
     mitigates: Id, mitigateTicks: z.number().int(), repairTicks: z.number().int().positive() }),
 ]);

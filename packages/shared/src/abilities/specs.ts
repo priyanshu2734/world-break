@@ -77,3 +77,9 @@ export const MAX_PROPS_PER_STAGE = 6;
 export const MAX_PROPS_TOTAL = 12;
 export const MAX_ZONES_LISTED = 8;
 export const MAX_IMPULSES_LISTED = 16;
+
+// ---------------------------------------------------------------- Pressure plates (P3B)
+/** A plate is pressed by something standing on it: its centre within this horizontal distance of the plate's centre. */
+export const PLATE_HALF_W = 24;
+/** ...and whose feet are within this many px of the plate's surface (standing on it, not passing over it). */
+export const PLATE_DY = 3;

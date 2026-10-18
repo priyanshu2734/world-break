@@ -52,8 +52,8 @@ export class Session {
     });
   }
 
-  async join(name: string, roomCode?: string): Promise<void> {
-    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode });
+  async join(name: string, roomCode?: string, lab = false): Promise<void> {
+    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}) });
     if (r.ok) { this.playerId = r.playerId; this.error = ''; } else this.error = r.error;
   }
   async setReady(ready: boolean) { this.report(await this.call('room:ready', { ready })); }

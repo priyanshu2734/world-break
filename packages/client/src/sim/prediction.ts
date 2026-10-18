@@ -48,8 +48,11 @@ export class LocalPredictor {
 
   constructor(
     private readonly send: (seq: number, input: InputIntent) => void,
-    private readonly arena: Arena = ARENA,
+    private arena: Arena = ARENA,
   ) {}
+
+  /** P3B: the stage may play on its own arena (the Ability Lab). Set before the first `start`/`reconcile` of that stage. */
+  setArena(arena: Arena): void { this.arena = arena; }
 
   get active(): boolean { return this.head !== null; }
   get pendingCount(): number { return this.pending.length; }

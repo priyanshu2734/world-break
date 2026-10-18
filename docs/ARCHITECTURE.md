@@ -107,3 +107,21 @@ Do not start OpenAI integration (P5), persistence (P6) or death review (P4).
 * **Tests:** `shared/test/{sim.baseline,sim.world}.test.ts` (differential oracle, zone/impulse behaviour, fuzz: finite, in bounds, never
   inside a solid), `server/test/abilities/parity.test.ts` (server `GameSim` vs client `LocalPredictor`: bit-for-bit lockstep over 2500
   ticks of random input and random zones/impulses, and a latency + reconcile scenario), `server/test/abilities/physics.room.test.ts`.
+
+## P3B pressure plates, props and the Ability Lab (steps 1-3)
+* **Props** (`PhysicsWorld`, `server/src/abilities/world.ts`): crates are server-simulated (gravity, zones, friction, solids, arena
+  bounds), never collide with players or each other, and are published in `GameSnapshot.world.props` (clients ease toward them; no
+  prediction). Hard cap: `MAX_PROPS_TOTAL` (12) alive per room, clones included. Clones expire (`ABILITY_SPECS.duplicate.durationTicks`).
+* **Pressure plates** are an entity kind (`pressure_plate`) used as the controls of the EXISTING `timed_controls` objective. Each tick a
+  plate is pressed it re-arms itself for one tick, so a plate objective needs `armTicks: 1` ("all plates pressed at the same moment").
+  `activatedBy: 'any'` is pressed by a player standing on it (feet within 3 px of its surface, centre within 24 px) or a resting prop;
+  `'object'` (a heavy plate) only by a RESTING prop. A prop in flight never presses a plate. The objective latches once complete.
+  No new objective kind was added, so exhaustive switches in older code and test helpers are untouched.
+* **Per-stage arena.** `StageDef.arenaId` now selects the arena through `getArena(id)` (`shared/src/abilities/labArena.ts`; unknown id =
+  Relay Platform 01). `Room` builds the `GameSim` and the `StageEngine` for the stage's arena, `GameSim.loadArena` swaps it between
+  stages and resets the world. `GameSnapshot.arenaId` already told clients which arena; `GameScene` redraws the platforms and
+  `LocalPredictor.setArena` predicts against it when it changes.
+* **Ability Lab** (`server/src/systems/stages/abilityLab.ts`, arena `ability-lab-01`): stage 1 of a room created with the dev flag, never
+  returned by the stage registry (tested for stages 1..80 over several seeds). See `docs/handoffs/P3B.md` for how to open it.
+* **Freeze substitutes the shield** in the validator only when the loadout has no Shield Projector, Freeze is enabled, and the channel
+  fits inside one freeze with 10 ticks of slack (`FREEZE_CHANNEL_SLACK_TICKS`). Every other stage validates exactly as before.

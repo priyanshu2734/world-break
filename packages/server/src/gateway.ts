@@ -16,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -48,8 +48,10 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
       if (sessions.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
-      const { roomCode, name } = parsed.data;
-      const room = roomCode ? rooms.get(roomCode) : rooms.create();
+      const { roomCode, name, lab } = parsed.data;
+      // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
+      if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);

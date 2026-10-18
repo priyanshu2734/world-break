@@ -10,6 +10,8 @@ const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
 export const JoinPayloadSchema = z.object({
   roomCode: z.string().regex(roomCodeRe).optional(),
   name: z.string().trim().min(1).max(16),
+  /** P3B dev flag: create the room as an Ability Lab room. Honoured only when the server runs with ABILITY_LAB=1, and only on creation. */
+  lab: z.boolean().optional(),
 });
 export const ReadyPayloadSchema = z.object({ ready: z.boolean() });
 export const DifficultyPayloadSchema = z.object({ difficulty: DifficultySchema });
@@ -30,6 +32,8 @@ export const RoomSnapshotSchema = z.object({
   players: z
     .array(z.object({ id: z.string(), name: z.string(), ready: z.boolean(), isHost: z.boolean() }))
     .max(MAX_PLAYERS),
+  /** P3B (additive, optional): present and true only for an Ability Lab room. */
+  lab: z.boolean().optional(),
 });
 export type RoomSnapshot = z.infer<typeof RoomSnapshotSchema>;
 

@@ -18,7 +18,7 @@ export type StageAction = z.infer<typeof StageActionSchema>;
 // ---------------------------------------------------------------- server -> client public state
 export const ObjectiveStatusSchema = z.enum(['locked', 'active', 'complete']);
 export const SymptomStateSchema = z.enum(['active', 'mitigated', 'resolved']);
-export const EntityKindSchema = z.enum(['supply_cache', 'power_switch', 'sync_console', 'core_console', 'decoy_panel']);
+export const EntityKindSchema = z.enum(['supply_cache', 'power_switch', 'sync_console', 'core_console', 'decoy_panel', 'pressure_plate']);
 
 const Pt = { x: z.number(), y: z.number() };
 

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { labRequested } from '../net/labParam';
 import { MAX_PLAYERS, DIFFICULTIES, isDifficultyUnlocked } from '@wb/shared';
 import { Session } from '../net/session';
 import { COLOR, FONT } from '../palette';
@@ -63,7 +64,7 @@ export class LobbyScene extends Phaser.Scene {
 
     const hash = window.location.hash.replace('#', '').toUpperCase();
     this.joining = true;
-    void this.session.join(`Operator-${Math.floor(Math.random() * 900 + 100)}`, hash || undefined)
+    void this.session.join(`Operator-${Math.floor(Math.random() * 900 + 100)}`, hash || undefined, labRequested(window.location.search))
       .finally(() => { this.joining = false; });
   }
 
@@ -89,7 +90,7 @@ export class LobbyScene extends Phaser.Scene {
       t.setColor(p ? (p.ready ? '#3de8ff' : '#ffb02e') : '#35505c');
     });
     const locked = DIFFICULTIES.filter((d) => !isDifficultyUnlocked(d, snap.highestStage));
-    this.diff.setText(`DIFFICULTY: ${snap.difficulty.toUpperCase()}   (locked: ${locked.join(', ') || 'none'})`);
+    this.diff.setText(`${snap.lab ? 'ABILITY LAB (dev)   ' : ''}DIFFICULTY: ${snap.difficulty.toUpperCase()}   (locked: ${locked.join(', ') || 'none'})`);
     this.status.setText(this.session.error || 'Waiting in lobby');
   }
 }

@@ -2,13 +2,14 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, type AbilityAction, type Arena, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, getArena, type AbilityAction, type Arena, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
 import { getStageDef } from './systems/registry';
 import { fallbackStageDef } from './disasters/fallback';
 import { withDefaultAbilities } from './abilities/defaults';
+import { ABILITY_LAB_STAGE } from './systems/stages/abilityLab';
 import type { AbilityResult } from './abilities/system';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
@@ -44,7 +45,12 @@ export class Room {
     readonly code: string,
     private readonly briefingTicks: number = BRIEFING_TICKS,
     private readonly runSeed: number = deriveSeed('run', code),
+    /** P3B dev option: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation). */
+    private readonly opts: { lab?: boolean } = {},
   ) {}
+
+  /** True for a room created as an Ability Lab room. Only stage 1 is the Lab; stage 2+ are the normal endless stages. */
+  get isLab(): boolean { return this.opts.lab === true; }
 
   /** Server-only view of the current stage seed and definition id (not part of any snapshot). */
   get stageRecord(): Readonly<StageRecord> | null { return this.stageRec; }
@@ -58,20 +64,21 @@ export class Room {
     const ids = [...this.members.keys()];
     let fallback = false;
     let engine: StageEngine;
-    const arena = this.arenaFor();
+    const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE : getStageDef(stage, seed);
     try {
-      engine = new StageEngine(withDefaultAbilities(getStageDef(stage, seed), stage), ids, { ...opts, arena });
+      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: getArena(base.arenaId) ?? ARENA });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
-      engine = new StageEngine(withDefaultAbilities(fallbackStageDef(stage), stage), ids, { ...opts, arena });
+      const fb = fallbackStageDef(stage);
+      engine = new StageEngine(withDefaultAbilities(fb, stage), ids, { ...opts, arena: getArena(fb.arenaId) ?? ARENA });
     }
     this.stageRec = { stage, seed, defId: engine.def.id, fallback };
     return engine;
   }
 
-  /** The arena the current stage is played on. Every stage uses Relay Platform 01 until a stage declares its own. */
-  private arenaFor(): Arena { return ARENA; }
+  /** The arena a built stage is played on (its `arenaId`; Relay Platform 01 for every rotation stage). */
+  private arenaOf(engine: StageEngine): Arena { return getArena(engine.def.arenaId) ?? ARENA; }
 
   /** Gives the stage engine the sim's physical world and loads the stage's authored props into it. */
   private bindWorld(engine: StageEngine): void {
@@ -124,8 +131,9 @@ export class Room {
     if (notReady.length > 0) return fail('Waiting for players to ready up');
     this.phase = nextRoomPhase(this.phase, 'START');
     // Slots are fixed for the whole run (join order), so spawns and colours stay stable.
-    this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })));
-    this.engine = this.buildEngine(this.stage);
+    const engine = this.buildEngine(this.stage);
+    this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })), this.arenaOf(engine));
+    this.engine = engine;
     this.bindWorld(this.engine);
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
@@ -147,6 +155,7 @@ export class Room {
     this.phase = nextRoomPhase(this.phase, 'NEXT_STAGE');
     this.stage = next;
     this.highestStage = Math.max(this.highestStage, next);
+    this.sim.loadArena(this.arenaOf(engine)); // a stage may play on its own arena (the Lab); back to Relay Platform 01 afterwards
     this.sim.reset(); // spawn positions, tick 0, new epoch: clients drop prediction state
     this.engine = engine;
     this.bindWorld(engine);
@@ -209,10 +218,12 @@ export class Room {
     for (const m of [...this.members.values()]) {
       if (!m.connected) { this.members.delete(m.id); this.sim.removePlayer(m.id); }
     }
-    this.sim.reset();
     // A fresh stage attempt; revisions keep increasing so clients never mistake it for an old state.
     const nextRev = (this.engine?.state().rev ?? 0) + 1;
-    this.engine = this.buildEngine(this.stage, { revBase: nextRev });
+    const engine = this.buildEngine(this.stage, { revBase: nextRev });
+    this.sim.loadArena(this.arenaOf(engine));
+    this.sim.reset();
+    this.engine = engine;
     this.bindWorld(this.engine);
     return { ok: true };
   }
@@ -259,6 +270,7 @@ export class Room {
       players: [...this.members.values()].map((m) => ({
         id: m.id, name: m.name, ready: m.ready || m.id === this.hostId, isHost: m.id === this.hostId,
       })),
+      ...(this.isLab ? { lab: true } : {}),
     };
   }
 }
@@ -268,12 +280,12 @@ export class RoomManager {
 
   constructor(private readonly opts: { briefingTicks?: number } = {}) {}
 
-  create(): Room {
+  create(opts: { lab?: boolean } = {}): Room {
     let code: string;
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');
     } while (this.rooms.has(code));
-    const room = new Room(code, this.opts.briefingTicks, randomInt(0x7fffffff));
+    const room = new Room(code, this.opts.briefingTicks, randomInt(0x7fffffff), opts);
     this.rooms.set(code, room);
     return room;
   }

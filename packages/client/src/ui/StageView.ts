@@ -89,6 +89,16 @@ export class StageView {
     // ---- entities ----
     const prompt = me ? interactPrompt(st, me) : null;
     for (const e of st.entities) {
+      if (e.kind === 'pressure_plate') { // P3B: a flat slab on the platform, sinks when pressed
+        const pressed = e.state === 'pressed' || e.state === 'complete';
+        const pc = e.state === 'complete' ? 0x6dffb0 : pressed ? COLOR.amber : e.locked ? GREY : 0x7fa6ff;
+        const dy = pressed ? 3 : 0;
+        g.fillStyle(0x04101a, 1).fillRect(e.x - 24, e.y - 8 + dy, 48, 8 - dy);
+        g.fillStyle(pc, pressed ? 0.7 : 0.3).fillRect(e.x - 24, e.y - 8 + dy, 48, 8 - dy);
+        g.lineStyle(2, pc, 1).strokeRect(e.x - 24, e.y - 8 + dy, 48, 8 - dy);
+        if (close(e.x, e.y, 170)) this.label(`e_${e.id}`, `${e.label} (${e.state})`, e.x, e.y - 14, pressed ? '#ffb02e' : '#9fbcff');
+        continue;
+      }
       const x = e.x, top = e.y - 30;
       let col: number = COLOR.cyan, fill = 0.25;
       if (e.kind === 'supply_cache') col = 0x6dffb0;

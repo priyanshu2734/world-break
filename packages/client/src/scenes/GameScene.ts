@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ARENA, PLAYER_HEIGHT, PLAYER_WIDTH, type ActiveAbilityId, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
+import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, type ActiveAbilityId, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
 import type { Session } from '../net/session';
 import { INTERP_DELAY_MS } from '../net/interpolation';
 import { LocalPredictor } from '../sim/prediction';
@@ -45,6 +45,10 @@ export class GameScene extends Phaser.Scene {
   private worldView!: WorldView;
   private abilityKeys!: Record<'SIX' | 'SEVEN' | 'EIGHT' | 'NINE' | 'SHIFT', Phaser.Input.Keyboard.Key>;
   private pointerSeen = false;
+  /** P3B: the arena currently drawn and predicted against (a stage may play on its own, e.g. the Ability Lab). */
+  private arena: import('@wb/shared').Arena = ARENA;
+  private arenaId = ARENA.id;
+  private solidsArt: Phaser.GameObjects.GameObject[] = [];
   private stageKeys!: Record<'E' | 'Q' | 'N' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
   /** Dev-only scripted movement override (set through __WB_DEBUG__ by the browser verification script). */
   private debugInput: InputIntent | null = null;
@@ -118,16 +122,25 @@ export class GameScene extends Phaser.Scene {
     path(glow, 22, COLOR.amber, 0.12); path(glow, 8, COLOR.amber, 0.25); path(core, 2, 0xfff1c9, 0.9);
     this.tweens.add({ targets: glow, alpha: 0.45, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
-    // solids
+    this.drawSolids();
+  }
+
+  /** Platforms of the current arena. Redrawn when the server switches arena. */
+  private drawSolids(): void {
+    for (const o of this.solidsArt) o.destroy();
+    this.solidsArt = [];
+    const arena = this.arena;
     const g = this.add.graphics().setDepth(-5);
-    for (const r of ARENA.solids) {
+    this.solidsArt.push(g);
+    for (const r of arena.solids) {
       g.fillStyle(0x0a1822, 1).fillRect(r.x, r.y, r.w, r.h);
       g.lineStyle(1, COLOR.cyanDim, 0.55);
       for (let x = r.x + 40; x < r.x + r.w; x += 40) g.lineBetween(x, r.y + 4, x, r.y + r.h);
       g.fillStyle(COLOR.amberDim, 0.9).fillRect(r.x, r.y + r.h - 2, r.w, 2); // underside warning strip
     }
     const edge = this.add.graphics().setDepth(-4).setBlendMode(Phaser.BlendModes.ADD);
-    for (const r of ARENA.solids) {
+    this.solidsArt.push(edge);
+    for (const r of arena.solids) {
       edge.lineStyle(8, COLOR.cyan, 0.12).lineBetween(r.x, r.y, r.x + r.w, r.y);
       edge.lineStyle(2, COLOR.cyan, 0.95).lineBetween(r.x, r.y, r.x + r.w, r.y);
     }
@@ -203,6 +216,14 @@ export class GameScene extends Phaser.Scene {
 
     const me = g.players.find((p) => p.id === s.playerId);
 
+    // --- P3B: the server may switch arena between stages (the Ability Lab). Redraw platforms and predict against the new one. ---
+    if (g.arenaId !== this.arenaId) {
+      this.arenaId = g.arenaId;
+      this.arena = getArena(g.arenaId) ?? ARENA;
+      this.predictor.setArena(this.arena);
+      this.drawSolids();
+    }
+
     // --- local prediction ---
     if (g.phase === 'playing' && me && me.connected) {
       const ctx = { tick: g.tick, playerId: s.playerId, world: g.world }; // P3B: the same zones/impulses the server steps with
@@ -269,7 +290,7 @@ export class GameScene extends Phaser.Scene {
     this.bannerBg.setVisible(briefing); this.banner.setVisible(briefing); this.bannerSub.setVisible(briefing);
     if (briefing) {
       this.banner.setText(`Stage ${g.stage}`);
-      this.bannerSub.setText(`${ARENA.name}  deploying in ${Math.max(1, Math.ceil(g.briefingMs / 1000))}`);
+      this.bannerSub.setText(`${this.arena.name}  deploying in ${Math.max(1, Math.ceil(g.briefingMs / 1000))}`);
     }
   }
 
