@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { DifficultySchema } from './difficulty';
 import type { StageState } from './systems/schemas';
+import { WorldPublicSchema } from './abilities/world';
+import type { AbilityAction } from './abilities/public';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -8,6 +10,8 @@ const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
 export const JoinPayloadSchema = z.object({
   roomCode: z.string().regex(roomCodeRe).optional(),
   name: z.string().trim().min(1).max(16),
+  /** P3B dev flag: create the room as an Ability Lab room. Honoured only when the server runs with ABILITY_LAB=1, and only on creation. */
+  lab: z.boolean().optional(),
 });
 export const ReadyPayloadSchema = z.object({ ready: z.boolean() });
 export const DifficultyPayloadSchema = z.object({ difficulty: DifficultySchema });
@@ -28,6 +32,8 @@ export const RoomSnapshotSchema = z.object({
   players: z
     .array(z.object({ id: z.string(), name: z.string(), ready: z.boolean(), isHost: z.boolean() }))
     .max(MAX_PLAYERS),
+  /** P3B (additive, optional): present and true only for an Ability Lab room. */
+  lab: z.boolean().optional(),
 });
 export type RoomSnapshot = z.infer<typeof RoomSnapshotSchema>;
 
@@ -69,6 +75,8 @@ export const GameSnapshotSchema = z.object({
   stage: z.number().int().min(1),
   arenaId: z.string(),
   players: z.array(GamePlayerSchema).max(MAX_PLAYERS),
+  /** P3B (additive, optional): gravity zones, impulse events and physical props. Absent = none (and always absent before P3B). */
+  world: WorldPublicSchema.optional(),
 });
 export type GameSnapshot = z.infer<typeof GameSnapshotSchema>;
 
@@ -87,6 +95,8 @@ export interface ClientToServerEvents {
   'stage:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3A. Host-only: advance from `stage_complete` to stage N+1 (existing NEXT_STAGE transition). Stages are endless. */
   'room:nextStage': (payload: unknown, ack: (r: Ack) => void) => void;
+  /** P3B. A player's reality ability intent (gravity well, freeze, duplicate, momentum). The server decides the outcome. */
+  'ability:use': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;

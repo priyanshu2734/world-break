@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import {
   GameSnapshotSchema, RoomSnapshotSchema, StageStateSchema,
-  type Ack, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
+  type AbilityAction, type Ack, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
   type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { SnapshotBuffer } from './interpolation';
@@ -52,8 +52,8 @@ export class Session {
     });
   }
 
-  async join(name: string, roomCode?: string): Promise<void> {
-    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode });
+  async join(name: string, roomCode?: string, lab = false): Promise<void> {
+    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}) });
     if (r.ok) { this.playerId = r.playerId; this.error = ''; } else this.error = r.error;
   }
   async setReady(ready: boolean) { this.report(await this.call('room:ready', { ready })); }
@@ -71,6 +71,11 @@ export class Session {
   /** Ask the server to perform a stage action; shows the server's verdict in the HUD. */
   async stageAction(action: StageAction): Promise<void> {
     const r = await this.call<Ack<{ message: string }>>('stage:action', action);
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
+  /** P3B: ask the server to use a reality ability; the server's verdict shows in the HUD. */
+  async abilityUse(action: AbilityAction): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('ability:use', action);
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }

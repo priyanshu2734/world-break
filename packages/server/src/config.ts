@@ -5,6 +5,8 @@ const EnvSchema = z.object({
   // Read server-side only. Absence means the deterministic fallback director is used.
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().optional(),
+  // P3B dev flag. '1' lets a client create an Ability Lab room (`/?lab=1`). Anything else = off.
+  ABILITY_LAB: z.enum(['0', '1']).optional(),
 });
 export type ServerConfig = z.infer<typeof EnvSchema>;
 

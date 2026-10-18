@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { HazardKindSchema, ToolIdSchema } from './tools';
 import { DisasterPublicSchema } from '../disasters/public';
+import { AbilitiesPublicSchema } from '../abilities/public';
 
 /** Ids are server-authored slugs. */
 export const StageIdSchema = z.string().regex(/^[a-z][a-z0-9_]*$/).max(40);
@@ -17,7 +18,7 @@ export type StageAction = z.infer<typeof StageActionSchema>;
 // ---------------------------------------------------------------- server -> client public state
 export const ObjectiveStatusSchema = z.enum(['locked', 'active', 'complete']);
 export const SymptomStateSchema = z.enum(['active', 'mitigated', 'resolved']);
-export const EntityKindSchema = z.enum(['supply_cache', 'power_switch', 'sync_console', 'core_console', 'decoy_panel']);
+export const EntityKindSchema = z.enum(['supply_cache', 'power_switch', 'sync_console', 'core_console', 'decoy_panel', 'pressure_plate']);
 
 const Pt = { x: z.number(), y: z.number() };
 
@@ -64,6 +65,8 @@ export const StageStateSchema = z.object({
   hazards: z.array(z.object({
     id: z.string(), kind: HazardKindSchema, label: z.string(), ...Pt, r: z.number(),
     armed: z.boolean(), stabilized: z.boolean(), nextPulseTick: z.number().int().nullable(),
+    /** P3B (additive, optional): the hazard is held by a Freeze until this tick. */
+    frozenUntilTick: z.number().int().nullable().optional(),
   })),
   effects: z.array(z.object({
     id: z.string(), tool: ToolIdSchema, ownerId: z.string(), ...Pt, r: z.number(), expiresTick: z.number().int(),
@@ -79,5 +82,7 @@ export const StageStateSchema = z.object({
   feed: z.array(z.object({ tick: z.number().int(), text: z.string(), tone: z.enum(['info', 'good', 'warn', 'bad', 'clue']) })),
   /** P3A (additive, optional): the running disaster's public warning/phase/schedule. Absent for hand-authored stages. */
   disaster: DisasterPublicSchema.optional(),
+  /** P3B (additive, optional): Reality Energy and ability cooldowns. Absent for stages without abilities. */
+  abilities: AbilitiesPublicSchema.optional(),
 });
 export type StageState = z.infer<typeof StageStateSchema>;

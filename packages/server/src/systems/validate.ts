@@ -1,4 +1,4 @@
-import { MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena } from '@wb/shared';
+import { ABILITY_SPECS, MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena } from '@wb/shared';
 import type { StageDef } from './stageDef';
 import { topoOrder } from './failures';
 import { evaluatePower } from './power';
@@ -9,6 +9,9 @@ import { validateDisasterMeta } from '../disasters/validate';
  * (This proves structural solvability; the tutorial's physical solvability is proven by driving the
  * real simulation in tests.)
  */
+/** Ticks of slack between starting a Freeze and finishing the channel it protects. */
+export const FREEZE_CHANNEL_SLACK_TICKS = 10;
+
 export function validateStageDef(def: StageDef, arena: Arena): string[] {
   const errs: string[] = [];
   const err = (m: string) => errs.push(m);
@@ -26,7 +29,7 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
   dupes('clue', def.clues.map((c) => c.id));
   // targetable ids share one namespace (clients address them by id)
   dupes('target', [...def.entities.map((e) => e.id), ...def.breakpoints.map((b) => b.id),
-    ...def.power.nodes.map((n) => n.id), ...def.power.conduits.map((c) => c.id)]);
+    ...def.power.nodes.map((n) => n.id), ...def.power.conduits.map((c) => c.id), ...(def.props ?? []).map((p) => p.id)]);
 
   const failure = new Map(def.failures.map((f) => [f.id, f]));
   const entity = new Map(def.entities.map((e) => [e.id, e]));
@@ -70,7 +73,7 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
       else if (c.switchEntityId !== e.id) err(`switch ${e.id} is not registered on conduit ${c.id}`);
     }
     if (e.kind === 'decoy_panel' && !failure.has(e.mitigates)) err(`decoy ${e.id} mitigates unknown failure`);
-    if ((e.kind === 'sync_console' || e.kind === 'core_console') && !obj.has(e.objectiveId)) err(`${e.id} references unknown objective`);
+    if ((e.kind === 'sync_console' || e.kind === 'core_console' || e.kind === 'pressure_plate') && !obj.has(e.objectiveId)) err(`${e.id} references unknown objective`);
     if (e.kind === 'core_console' && node.get(e.consumerId)?.kind !== 'consumer') err(`core console ${e.id} needs a consumer node`);
   }
 
@@ -114,6 +117,13 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
       for (const s of p.sealSwitches) if (entity.get(s)?.kind !== 'power_switch') err(`objective ${o.id} seals unknown switch ${s}`);
     } else if (p.kind === 'timed_controls') {
       const cs = p.controls.map((id) => entity.get(id));
+      const plates = cs.filter((c) => c?.kind === 'pressure_plate').length;
+      if (plates > 0) { // P3B: plates are pressed, not armed: all of them must be pressed at the same moment
+        if (plates !== cs.length) err(`objective ${o.id}: controls must be all pressure_plates or all sync_consoles`);
+        else if (p.armTicks !== 1) err(`objective ${o.id}: plate objectives need armTicks 1 (pressed at the same moment)`);
+        for (const c of cs) if (c?.kind === 'pressure_plate' && c.objectiveId !== o.id) err(`plate ${c.id} belongs to ${c.objectiveId}, not ${o.id}`);
+        continue;
+      }
       if (cs.some((c) => c?.kind !== 'sync_console')) { err(`objective ${o.id}: every control must be a sync_console`); continue; }
       let dist = 0;
       for (let i = 1; i < cs.length; i++) dist += Math.hypot(cs[i]!.x - cs[i - 1]!.x, cs[i]!.y - cs[i - 1]!.y);
@@ -130,6 +140,10 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
         if (!h) err(`objective ${o.id} references unknown hazard`); else if (h.kind === 'gravity_flux') needs.add('gravity_anchor');
       }
       for (const h of def.hazards) if (h.kind === 'arc_discharge' && (!h.armedWhenObjective || h.armedWhenObjective === o.id)) {
+        // P3B: with no shield in the loadout, the Freeze ability can hold the arc for the whole channel (with slack for walking up).
+        const freezeCovers = !def.loadout.includes('shield_projector') && !!def.abilities?.enabled.includes('freeze')
+          && ABILITY_SPECS.freeze.durationTicks >= p.requiredTicks + FREEZE_CHANNEL_SLACK_TICKS;
+        if (freezeCovers) continue;
         needs.add('shield_projector');
         if (TOOL_SPECS.shield_projector.durationTicks < p.requiredTicks)
           err(`objective ${o.id}: shield (${TOOL_SPECS.shield_projector.durationTicks} ticks) cannot cover the ${p.requiredTicks}-tick channel`);
@@ -142,6 +156,23 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
 
   for (const h of def.hazards) if (h.kind === 'arc_discharge' && (!h.periodTicks || h.firstPulseTick === undefined)) err(`arc hazard ${h.id} needs periodTicks and firstPulseTick`);
   for (const h of def.hazards) if (h.armedWhenObjective && !obj.has(h.armedWhenObjective)) err(`hazard ${h.id} references unknown objective`);
+  // --- P3B: props and abilities (both optional; absent = a P2/P3A stage) ---
+  const crateHalf = 16;
+  for (const pr of def.props ?? []) {
+    place('prop', pr.id, pr.x, pr.y);
+    const top = arena.solids.find((s) => Math.abs(s.y - pr.y) < 1e-6 && pr.x >= s.x && pr.x <= s.x + s.w);
+    if (top && (pr.x - crateHalf < top.x || pr.x + crateHalf > top.x + top.w)) err(`prop ${pr.id} overhangs its platform`);
+  }
+  for (const h of def.hazards) if ((def.props ?? []).some((pr) => pr.id === h.id)) err(`prop and hazard share id ${h.id}`);
+  if (def.abilities) {
+    const a = def.abilities;
+    if (new Set(a.enabled).size !== a.enabled.length) err('abilities.enabled has duplicates');
+    if (a.energyStart > a.energyMax) err('abilities.energyStart exceeds energyMax');
+    if (a.enabled.includes('duplicate') && !(def.props ?? []).some((pr) => pr.light)) {
+      // allowed (rotation stages have no props), but a stage that enables Duplicate and ships only heavy props is a mistake
+      if ((def.props ?? []).length > 0) err('duplicate is enabled but no prop is light');
+    }
+  }
   errs.push(...validateDisasterMeta(def)); // P3A: lifecycle, bounds, threats (no-op without def.disaster)
   return errs;
 }

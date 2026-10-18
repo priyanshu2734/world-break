@@ -1,12 +1,14 @@
 import {
-  ACTION_MIN_GAP_TICKS, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type Arena, type StageAction, type StageState, type ToolId,
+  ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
+  type AbilityAction, type Arena, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
 import { evaluatePower, type PowerEval } from './power';
 import { validateStageDef } from './validate';
 import { DisasterRuntime } from '../disasters/runtime';
+import { AbilitySystem, type AbilityHazard, type AbilityResult } from '../abilities/system';
+import type { PhysicsWorld } from '../abilities/world';
 
 export interface PlayerPos { x: number; y: number; connected: boolean }
 export type PosFn = (playerId: string) => PlayerPos | undefined;
@@ -56,6 +58,8 @@ export class StageEngine {
   private switchClosed = new Map<string, boolean>();
   private sealed = new Set<string>();
   private armedUntil = new Map<string, number>();
+  /** P3B: pressure plates pressed during the last step (recomputed every tick; only transitions mark the state dirty). */
+  private platesPressed = new Set<string>();
   private progress = new Map<string, number>();
   private objRt = new Map<string, ObjRt>();
   private cellUntil = new Map<string, number>();
@@ -67,6 +71,12 @@ export class StageEngine {
   private feed: StageState['feed'] = [];
   private score = { total: 0, breakdown: {} as Record<string, number> };
   private effectSeq = 0;
+  /** P3B: hazards held by a Freeze (hazard id -> tick they thaw). */
+  private frozenHazards = new Map<string, number>();
+  /** P3B: Reality Energy and ability rules (null when the stage has no abilities). */
+  private readonly abilities: AbilitySystem | null;
+  private world: PhysicsWorld | null = null;
+  private readonly arena: Arena;
   private dirty = true;
   private revCounter = 0;
 
@@ -78,6 +88,8 @@ export class StageEngine {
     const errors = validateStageDef(def, opts.arena ?? ARENA);
     if (errors.length) throw new Error(`Invalid stage "${def.id}":\n - ${errors.join('\n - ')}`);
     this.revBase = opts.revBase ?? 0;
+    this.arena = opts.arena ?? ARENA;
+    this.abilities = def.abilities ? new AbilitySystem(def.abilities, this.abilityHost()) : null;
     this.order = topoOrder(def.failures, def.edges)!;
     this.entities = new Map(def.entities.map((e) => [e.id, e]));
     this.bps = new Map(def.breakpoints.map((b) => [b.id, b]));
@@ -96,14 +108,55 @@ export class StageEngine {
   }
   private readonly revBase: number;
 
+  // ------------------------------------------------------------------ P3B: physical world + abilities
+  /** The Room hands the engine the sim's physical world (props, zones, impulses). Needed only for ability use. */
+  attachWorld(world: PhysicsWorld): void { this.world = world; this.dirty = true; }
+
+  private abilityHost() {
+    const self = this;
+    return {
+      get tick() { return self.tick; },
+      get arena() { return self.arena; },
+      get world() { return self.world; },
+      say: (text: string, tone: 'info' | 'good' | 'warn' | 'bad') => self.say(text, tone),
+      markDirty: () => { self.dirty = true; },
+      hazards: (): readonly AbilityHazard[] => self.def.hazards.map((h) => ({ id: h.id, kind: h.kind, x: h.x, y: h.y, r: h.r })),
+      hazardFrozen: (id: string) => (self.frozenHazards.get(id) ?? 0) > self.tick,
+      freezeHazard: (id: string, until: number) => { self.frozenHazards.set(id, until); self.dirty = true; },
+      activeAnchors: () => self.effects.filter((e) => e.tool === 'gravity_anchor').map((e) => ({ x: e.x, y: e.y - 20, r: e.r })),
+    };
+  }
+
+  /** A player's reality-ability intent (gravity well, freeze, duplicate, momentum). */
+  abilityAction(playerId: string, a: AbilityAction, pos: PosFn): AbilityResult {
+    const me = pos(playerId);
+    if (!this.players.has(playerId) || !me || !me.connected) return fail('You are not part of this run.');
+    if (this.status !== 'running') return fail('This stage is already stabilised.');
+    if (!this.abilities) return fail('Reality abilities are not available in this stage.');
+    return this.abilities.use(playerId, a, me);
+  }
+
+  /** Placement rules for the Gravity Anchor tool (P3B). Returns the reason it cannot be planted, or null. */
+  private anchorPlacementError(me: PlayerPos): string | null {
+    const a = this.arena;
+    if (ANCHOR_RULES.needsFooting && !a.solids.some((s) => Math.abs(s.y - me.y) < 1.5 && me.x >= s.x && me.x <= s.x + s.w))
+      return 'A gravity anchor needs solid footing.';
+    if (me.x < ANCHOR_RULES.edgeMargin || me.x > a.width - ANCHOR_RULES.edgeMargin) return 'Too close to the edge to plant an anchor.';
+    const anchors = this.effects.filter((e) => e.tool === 'gravity_anchor');
+    if (anchors.length >= ANCHOR_RULES.maxActive) return `Only ${ANCHOR_RULES.maxActive} anchors can hold at once. Wait for one to fade.`;
+    if (anchors.some((e) => dist(e.x, e.y, me.x, me.y) < ANCHOR_RULES.minSpacing)) return 'Too close to another anchor.';
+    return null;
+  }
+
   // ------------------------------------------------------------------ roster
   addPlayer(id: string): void {
+    this.abilities?.addPlayer(id);
     const tools = new Map<ToolId, { charges: number; cooldownUntil: number }>();
     for (const t of this.def.loadout) tools.set(t, { charges: TOOL_SPECS[t].maxCharges, cooldownUntil: 0 });
     this.players.set(id, { tools, lastActionTick: -100, cacheReadyAt: 0 });
     this.dirty = true;
   }
-  removePlayer(id: string): void { this.players.delete(id); this.channels.delete(id); this.dirty = true; }
+  removePlayer(id: string): void { this.players.delete(id); this.channels.delete(id); this.abilities?.removePlayer(id); this.dirty = true; }
   onDisconnect(id: string): void { if (this.channels.delete(id)) this.dirty = true; }
 
   // ------------------------------------------------------------------ derived world state
@@ -197,9 +250,14 @@ export class StageEngine {
     }
     for (const [id, until] of [...this.armedUntil]) if (until <= t) {
       this.armedUntil.delete(id);
+      if (this.entities.get(id)?.kind === 'pressure_plate') continue; // plates re-arm every tick they stay pressed
       if (this.objStatus(this.consoleObjective(id)) !== 'complete') this.say(`${this.entities.get(id)!.label} slipped out of phase.`, 'warn');
       this.dirty = true;
     }
+    this.stepPlates(pos);
+
+    for (const [id, until] of [...this.frozenHazards]) if (until <= t) { this.frozenHazards.delete(id); this.say('The hazard thaws and resumes its cycle.', 'warn'); this.dirty = true; }
+    this.abilities?.step();
 
     this.stepHazards(pos);
     this.stepChannels(pos);
@@ -222,6 +280,11 @@ export class StageEngine {
       const radius = mod?.r ?? h.r;
       if (!this.hazardArmed(h)) { if (this.nextPulse.delete(h.id)) this.dirty = true; continue; }
       if (!this.nextPulse.has(h.id)) { this.nextPulse.set(h.id, this.tick + (h.firstPulseTick ?? period)); this.dirty = true; }
+      if ((this.frozenHazards.get(h.id) ?? 0) > this.tick) { // P3B: a Freeze holds the cycle (the countdown pauses)
+        this.nextPulse.set(h.id, this.nextPulse.get(h.id)! + 1);
+        this.dirty = true;
+        continue;
+      }
       if (this.tick < this.nextPulse.get(h.id)!) continue;
       this.nextPulse.set(h.id, this.tick + period);
       this.dirty = true;
@@ -304,10 +367,12 @@ export class StageEngine {
     for (const [pid, ch] of [...this.channels]) if (ch.targetId === target) this.channels.delete(pid);
     if (info.type === 'breakpoint') {
       this.bpRt.get(target)!.repaired = true;
+      this.abilities?.onRepair('breakpoint');
       this.award('repair', 100);
       this.say(`${this.bps.get(target)!.label} repaired.`, 'good');
     } else if (info.type === 'conduit') {
       this.conduitFixed.add(target);
+      this.abilities?.onRepair('conduit');
       this.award('repair', 50);
       this.say('Connection repaired.', 'good');
     } else if (info.type === 'decoy') {
@@ -330,6 +395,30 @@ export class StageEngine {
       const next = locked ? 'locked' : 'active';
       if (rt.status !== next) { rt.status = next; this.dirty = true; }
     }
+  }
+
+  /** Is something standing on this plate right now? Players count unless the plate is heavy; props count only when resting. */
+  private platePressed(e: Extract<Entity, { kind: 'pressure_plate' }>, pos: PosFn): boolean {
+    if (e.activatedBy !== 'object') {
+      for (const id of this.players.keys()) {
+        const p = pos(id);
+        if (p?.connected && Math.abs(p.x - e.x) <= PLATE_HALF_W && Math.abs(p.y - e.y) <= PLATE_DY) return true;
+      }
+    }
+    for (const pr of this.world?.listProps() ?? []) {
+      if (pr.grounded && Math.abs(pr.x - e.x) <= PLATE_HALF_W && Math.abs(pr.y - e.y) <= PLATE_DY) return true;
+    }
+    return false;
+  }
+
+  private stepPlates(pos: PosFn) {
+    const now = new Set<string>();
+    for (const e of this.def.entities) {
+      if (e.kind !== 'pressure_plate') continue;
+      if (this.platePressed(e, pos)) { now.add(e.id); this.armedUntil.set(e.id, this.tick + 1); }
+    }
+    if (now.size !== this.platesPressed.size || [...now].some((id) => !this.platesPressed.has(id))) this.dirty = true;
+    this.platesPressed = now;
   }
 
   private stepObjectives() {
@@ -439,6 +528,8 @@ export class StageEngine {
         this.say(`${e.label} armed.`, 'info');
         return ok(`${e.label} armed.`);
       }
+      case 'pressure_plate':
+        return fail(e.activatedBy === 'object' ? 'Too light to trigger it. It needs something heavy resting on it.' : 'Step on it and stay on it.');
       case 'decoy_panel':
         return ok('The panel reads nominal. Whatever is wrong is not here.');
       case 'core_console': {
@@ -514,6 +605,10 @@ export class StageEngine {
       }
       case 'gravity_anchor':
       case 'shield_projector': {
+        if (tool === 'gravity_anchor') {
+          const why = this.anchorPlacementError(me); // P3B placement rules; nothing is spent when they refuse
+          if (why) return fail(why);
+        }
         this.spend(inv, tool);
         this.effects.push({ id: `fx${++this.effectSeq}`, tool, ownerId: pid, x: me.x, y: me.y, r: spec.radius, expiresTick: this.tick + spec.durationTicks });
         const msg = tool === 'gravity_anchor' ? 'Gravity anchor deployed.' : 'Shield projected.';
@@ -600,6 +695,10 @@ export class StageEngine {
           locked = st !== 'active';
           state = st === 'complete' ? 'complete' : [...this.channels.values()].some((c) => c.targetId === e.id) ? 'channeling'
             : this.consumerPowered(e.consumerId) ? 'powered' : 'dead';
+        } else if (e.kind === 'pressure_plate') {
+          const st = this.objStatus(e.objectiveId);
+          locked = st === 'locked';
+          state = st === 'complete' ? 'complete' : this.platesPressed.has(e.id) ? 'pressed' : 'idle';
         } else if (e.kind === 'decoy_panel') {
           state = (this.suppressUntil.get(e.mitigates) ?? 0) > this.tick ? 'calm' : 'flickering';
         }
@@ -623,6 +722,7 @@ export class StageEngine {
       hazards: this.def.hazards.map((h) => ({
         id: h.id, kind: h.kind, label: h.label, x: h.x, y: h.y, r: this.disaster?.hazardMod(h.id)?.r ?? h.r,
         armed: this.hazardArmed(h), stabilized: this.hazardStabilized(h.id), nextPulseTick: this.nextPulse.get(h.id) ?? null,
+        ...((this.frozenHazards.get(h.id) ?? 0) > this.tick ? { frozenUntilTick: this.frozenHazards.get(h.id)! } : {}),
       })),
       effects: this.effects.map((e) => ({ id: e.id, tool: e.tool, ownerId: e.ownerId, x: e.x, y: e.y, r: e.r, expiresTick: e.expiresTick })),
       channels: [...this.channels.values()].map((c) => {
@@ -636,6 +736,7 @@ export class StageEngine {
       clues: [...this.clues].map(([id, tick]) => ({ id, text: this.def.clues.find((c) => c.id === id)!.text, tick })),
       feed: this.feed.map((f) => ({ ...f })),
       ...(this.disaster ? { disaster: this.disaster.publicState() } : {}),
+      ...(this.abilities ? { abilities: this.abilities.publicState() } : {}),
     };
   }
 

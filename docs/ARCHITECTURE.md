@@ -18,7 +18,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
 - [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
 - [x] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side). Verified as per docs/handoffs/P2.md (200 unit/integration tests, build, and an automated real-browser run of the full repair chain; NOT yet verified by a human playtest or on a real GPU)
-- [ ] P3 Abilities + disasters: gravity inversion, reactor overload, fractures, temporal storms, power cascade, combos
+- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (disaster combinations) not started.
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario
 - [ ] P5 Scenario generator + validator + fallback; then OpenAI integration (structured outputs, timeouts, retries)
 - [ ] P6 Persistence (stage progression, unlock 10/20, rewards), difficulty select per stage
@@ -77,3 +77,85 @@ Additive-only edits: `stageDef.ts`, `engine.ts` (hooks), `tools.ts`, `schemas.ts
 Frozen unless a documented migration updates server AND client prediction together: `shared/src/sim.ts`, `shared/src/arena.ts`.
 Frozen: `phases.ts`, `difficulty.ts`, `loop.ts`, `prediction.ts`, `interpolation.ts`, `tutorial.ts` (add new stages instead), all existing tests.
 Do not start OpenAI integration (P5), persistence (P6) or death review (P4).
+
+## P3B ability framework (current)
+Full rules and the limits table: `docs/ABILITIES.md`. How the pieces fit:
+
+    key 6-9 -> ui/abilityView.buildAbilityAction (aim; convenience only) -> Session.abilityUse -> 'ability:use'
+      -> gateway (Zod: AbilityActionSchema) -> Room.abilityAction -> StageEngine.abilityAction -> AbilitySystem.use
+      -> PhysicsWorld.addZone / addImpulse / impulseProp / freezeProp / addClone      (or the engine's frozen-hazard timer)
+      -> applied by the next GameSim.step; published as GameSnapshot.world and StageState.abilities
+
+* **Tick order** (`Room.tick`, phase playing): `GameSim.step()` (each body with `worldForTick(...)`, then `PhysicsWorld.step()`: props,
+  expiry of clones, zones and impulses, then the clock) and then `StageEngine.step(pos)` (frozen-hazard thaw, `AbilitySystem.step`,
+  plates, hazards, channels, objectives).
+* **Who owns what.** `GameSim` owns the `PhysicsWorld` (zones, impulses, props; `GameSim.configure` loads the stage's props,
+  `GameSim.loadArena` swaps arena). `StageEngine` owns the `AbilitySystem` (energy, cooldowns, caps, rules), created only when
+  `StageDef.abilities` exists, and reaches the world through `engine.attachWorld(world)`, which `Room.bindWorld` calls after every build.
+  Energy therefore resets with the engine: every stage start and every arena reset.
+* **Engine hooks (all additive):** `abilityAction`, `attachWorld`, `frozenHazards` (arc pulse countdown pauses while frozen),
+  `anchorPlacementError` (Anchor rules), `platesPressed` / `stepPlates`, `AbilitySystem.onRepair` from breakpoint and conduit repairs.
+* **Server-side validation lives in one place:** `server/src/abilities/system.ts` (enabled, rate, cooldown, energy, target, range,
+  ownership, caps) plus Zod at the gateway. The client never decides an outcome.
+* **Default stage economy:** `server/src/abilities/defaults.ts` (`ABILITIES_IN_ROTATION`, `withDefaultAbilities`): stage 2 and up get
+  every ability, the tutorial none, a stage that declares its own `abilities` keeps them.
+* **Client:** `ui/AbilityHud` (energy bar, five slots), `ui/WorldView` (props, copies, frozen overlay, gravity zones), `ui/abilityView`
+  (slot status and aiming, unit-tested), `GameScene` (keys 6-9, Shift, mouse aim).
+* **Tests:** `server/test/abilities/*`, `server/test/gateway.ability.test.ts`, `server/test/gateway.lab.test.ts`,
+  `shared/test/abilities.test.ts`, `client/test/abilityView.test.ts`.
+
+## P3B physics migration (shared step, additive)
+`shared/src/sim.ts` is shared by the server (authoritative) and client prediction. P3B changed it ONLY additively:
+
+    stepBody(body, input, arena = ARENA, world?: StepWorld)      // new optional 4th parameter
+    StepWorld = { zones?: StepZone[]; impulse?: { dvy, cancelVy, driftVx } }   // data for THIS tick only
+
+* **Default is untouched.** With `world` undefined, `{}`, empty zones or a zero impulse the arithmetic is the pre-P3B step.
+  `shared/test/sim.baseline.test.ts` proves it against a frozen copy of the old function (`test/helpers/simBaseline.ts`):
+  40 bodies x 1500 ticks x 5 "empty" world shapes, every field equal (`Object.is`) on every tick. Never edit that copy.
+* **Gravity zones are data**, not state: `GravityZone { id, ownerId, x, y, w, h, gx, gy, startTick, expiresTick }`. A zone is active for
+  `startTick <= tick < expiresTick`; the body is inside it if its CENTRE (x, y - 22) is in the rectangle at the start of a sub-step.
+  `gy` replaces gravity; `gx` is a lateral wind of `gx * 0.1 s` (walking overwrites `vx` every sub-step). Flipped gravity is capped at
+  `-TERMINAL_VELOCITY`.
+* **Momentum is data**, not state: `ImpulseEvent { id, tick, playerId, dvx, dvy, cancel, driftTicks }`. `dvy` and `cancel` apply once at
+  `tick`; `dvx` is a drift velocity that fades linearly to 0 over `driftTicks` (it is a function of `tick - event.tick`, so `PlayerBody`
+  gained no field). Impulses are bounded (`MOMENTUM_IMPULSE`) per axis.
+* **One pure bridge for both sides:** `worldForTick(worldData, tick, playerId) -> StepWorld | undefined` (`shared/src/abilities/world.ts`).
+  The server calls it from `PhysicsWorld.forPlayer` (inside `GameSim.step`), the client from `LocalPredictor`.
+* **Publication:** `GameSnapshot.world?: { zones, impulses, props }` (optional; absent when empty, so pre-P3B snapshots are byte-identical).
+  Expired zones and impulses stay listed for 40 ticks so a client replaying recent inputs still sees them.
+* **Prediction:** `LocalPredictor.start/reconcile` take an optional `PredictionWorldCtx { tick, playerId, world }`. `tick` is the snapshot's
+  tick = the NEXT tick the server simulates, so the i-th unacknowledged input replays at `tick + i`, exactly when the server applies it.
+  Omit the context and the predictor is the pre-P3B predictor (all existing prediction tests pass unchanged).
+* **What can still differ:** events created after a snapshot (a zone opened by a teammate) are unknown to the client until the next
+  snapshot; the server wins and the reconcile corrects it. Snapshots round to 0.01 px, so a body hovering exactly on a zone edge can
+  differ by one sub-step (a few px, far below `SNAP_DISTANCE`).
+* **Tests:** `shared/test/{sim.baseline,sim.world}.test.ts` (differential oracle, zone/impulse behaviour, fuzz: finite, in bounds, never
+  inside a solid), `server/test/abilities/parity.test.ts` (server `GameSim` vs client `LocalPredictor`: bit-for-bit lockstep over 2500
+  ticks of random input and random zones/impulses, and a latency + reconcile scenario), `server/test/abilities/physics.room.test.ts`.
+
+## P3B pressure plates, props and the Ability Lab (current)
+* **Props** (`PhysicsWorld`, `server/src/abilities/world.ts`): crates are server-simulated (gravity, zones, friction, solids, arena
+  bounds), never collide with players or each other, and are published in `GameSnapshot.world.props` (clients ease toward them; no
+  prediction). Hard cap: `MAX_PROPS_TOTAL` (12) alive per room, clones included. Clones expire (`ABILITY_SPECS.duplicate.durationTicks`).
+* **Pressure plates** are an entity kind (`pressure_plate`) used as the controls of the EXISTING `timed_controls` objective. Each tick a
+  plate is pressed it re-arms itself for one tick, so a plate objective needs `armTicks: 1` ("all plates pressed at the same moment").
+  `activatedBy: 'any'` is pressed by a player standing on it (feet within 3 px of its surface, centre within 24 px) or a resting prop;
+  `'object'` (a heavy plate) only by a RESTING prop. A prop in flight never presses a plate. The objective latches once complete.
+  No new objective kind was added, so exhaustive switches in older code and test helpers are untouched.
+* **Per-stage arena.** `StageDef.arenaId` now selects the arena through `getArena(id)` (`shared/src/abilities/labArena.ts`; an unregistered id is a
+  validation error, `arena mismatch`). `Room` builds the `GameSim` and the `StageEngine` for the stage's arena, `GameSim.loadArena` swaps it between
+  stages and resets the world. `GameSnapshot.arenaId` already told clients which arena; `GameScene` redraws the platforms and
+  `LocalPredictor.setArena` predicts against it when it changes.
+* **Ability Lab** (`server/src/systems/stages/abilityLab.ts`, arena `ability-lab-01`): stage 1 of a room created with the dev flag, never
+  returned by the stage registry (tested for stages 1..80 over several seeds). Open it with `ABILITY_LAB=1` on the server and `/?lab=1` in the
+  browser (details in `docs/ABILITIES.md` section 8 and `docs/handoffs/P3B.md`).
+* **Freeze substitutes the shield** in the validator only when the loadout has no Shield Projector, Freeze is enabled, and the channel
+  fits inside one freeze with 10 ticks of slack (`FREEZE_CHANNEL_SLACK_TICKS`). Every other stage validates exactly as before.
+
+## Ownership boundaries after P3B
+Unchanged rules from P3 still hold. P3B's files: `shared/src/abilities/**`, `server/src/abilities/**`, `server/src/systems/stages/**`,
+`client/src/ui/{AbilityHud,WorldView,abilityView}.ts`, `client/src/net/labParam.ts`. `sim.ts` changed only by the documented additive migration
+above (optional 4th parameter, guarded by a bit-exact differential test against a frozen copy of the P2 step); `prediction.ts` only gained the
+optional `PredictionWorldCtx` and `setArena`; `arena.ts` was not touched. `phases.ts`, `difficulty.ts`, `loop.ts` and every pre-P3B test were not touched.
+

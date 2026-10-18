@@ -1,11 +1,14 @@
 import Phaser from 'phaser';
-import { ARENA, PLAYER_HEIGHT, PLAYER_WIDTH, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
+import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, type ActiveAbilityId, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
 import type { Session } from '../net/session';
 import { INTERP_DELAY_MS } from '../net/interpolation';
 import { LocalPredictor } from '../sim/prediction';
 import { COLOR, FONT, SLOT_COLORS, SLOT_HEX } from '../palette';
 import { StageView } from '../ui/StageView';
 import { StageHud } from '../ui/StageHud';
+import { AbilityHud } from '../ui/AbilityHud';
+import { WorldView } from '../ui/WorldView';
+import { buildAbilityAction } from '../ui/abilityView';
 import { TOOL_KEYS, nearestInteractable, targetForTool } from '../ui/targeting';
 
 const W = ARENA.width, H = ARENA.height;
@@ -38,6 +41,14 @@ export class GameScene extends Phaser.Scene {
   private resetHeld = 0;
   private stageView!: StageView;
   private stageHud!: StageHud;
+  private abilityHud!: AbilityHud;
+  private worldView!: WorldView;
+  private abilityKeys!: Record<'SIX' | 'SEVEN' | 'EIGHT' | 'NINE' | 'SHIFT', Phaser.Input.Keyboard.Key>;
+  private pointerSeen = false;
+  /** P3B: the arena currently drawn and predicted against (a stage may play on its own, e.g. the Ability Lab). */
+  private arena: import('@wb/shared').Arena = ARENA;
+  private arenaId = ARENA.id;
+  private solidsArt: Phaser.GameObjects.GameObject[] = [];
   private stageKeys!: Record<'E' | 'Q' | 'N' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
   /** Dev-only scripted movement override (set through __WB_DEBUG__ by the browser verification script). */
   private debugInput: InputIntent | null = null;
@@ -73,6 +84,10 @@ export class GameScene extends Phaser.Scene {
     this.stageKeys = kb.addKeys('E,Q,N,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
     this.stageView = new StageView(this);
     this.stageHud = new StageHud(this);
+    this.abilityHud = new AbilityHud(this);
+    this.worldView = new WorldView(this);
+    this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
+    this.input.on('pointermove', () => { this.pointerSeen = true; });
     const onBlur = () => kb.resetKeys(); // never leave a key "stuck down" after alt-tab
     this.game.events.on(Phaser.Core.Events.BLUR, onBlur);
     this.events.once('shutdown', () => this.game.events.off(Phaser.Core.Events.BLUR, onBlur));
@@ -107,16 +122,25 @@ export class GameScene extends Phaser.Scene {
     path(glow, 22, COLOR.amber, 0.12); path(glow, 8, COLOR.amber, 0.25); path(core, 2, 0xfff1c9, 0.9);
     this.tweens.add({ targets: glow, alpha: 0.45, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
-    // solids
+    this.drawSolids();
+  }
+
+  /** Platforms of the current arena. Redrawn when the server switches arena. */
+  private drawSolids(): void {
+    for (const o of this.solidsArt) o.destroy();
+    this.solidsArt = [];
+    const arena = this.arena;
     const g = this.add.graphics().setDepth(-5);
-    for (const r of ARENA.solids) {
+    this.solidsArt.push(g);
+    for (const r of arena.solids) {
       g.fillStyle(0x0a1822, 1).fillRect(r.x, r.y, r.w, r.h);
       g.lineStyle(1, COLOR.cyanDim, 0.55);
       for (let x = r.x + 40; x < r.x + r.w; x += 40) g.lineBetween(x, r.y + 4, x, r.y + r.h);
       g.fillStyle(COLOR.amberDim, 0.9).fillRect(r.x, r.y + r.h - 2, r.w, 2); // underside warning strip
     }
     const edge = this.add.graphics().setDepth(-4).setBlendMode(Phaser.BlendModes.ADD);
-    for (const r of ARENA.solids) {
+    this.solidsArt.push(edge);
+    for (const r of arena.solids) {
       edge.lineStyle(8, COLOR.cyan, 0.12).lineBetween(r.x, r.y, r.x + r.w, r.y);
       edge.lineStyle(2, COLOR.cyan, 0.95).lineBetween(r.x, r.y, r.x + r.w, r.y);
     }
@@ -138,7 +162,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.hudStage = this.add.text(W / 2, 22, '', { ...FONT, fontSize: '22px', color: '#ffb02e' }).setOrigin(0.5, 0).setDepth(D);
     this.hudRoom = this.add.text(W - 16, 18, '', { ...FONT, fontSize: '15px', color: COLOR.text }).setOrigin(1, 0).setDepth(D);
-    this.hint = this.add.text(W / 2, H - 14, 'A / D or arrows to move, W / Space / Up to jump, hold R to reset the arena (host)   E use   1-5 tools   Q cancel',
+    this.hint = this.add.text(W / 2, H - 14, 'A/D move  W/Space jump  E use  1-5 tools  6-9 abilities (mouse aims, Shift = alt)  Q cancel  hold R reset (host)',
       { ...FONT, fontSize: '14px', color: '#5f8da0' }).setOrigin(0.5, 1).setDepth(D);
 
     this.bannerBg = this.add.rectangle(W / 2, H / 2 - 40, W, 170, 0x020509, 0.78).setDepth(D + 1);
@@ -192,10 +216,19 @@ export class GameScene extends Phaser.Scene {
 
     const me = g.players.find((p) => p.id === s.playerId);
 
+    // --- P3B: the server may switch arena between stages (the Ability Lab). Redraw platforms and predict against the new one. ---
+    if (g.arenaId !== this.arenaId) {
+      this.arenaId = g.arenaId;
+      this.arena = getArena(g.arenaId) ?? ARENA;
+      this.predictor.setArena(this.arena);
+      this.drawSolids();
+    }
+
     // --- local prediction ---
     if (g.phase === 'playing' && me && me.connected) {
-      if (!this.predictor.active) { this.predictor.start(me, g.epoch); this.lastSerial = s.gameSerial; }
-      if (s.gameSerial !== this.lastSerial) { this.lastSerial = s.gameSerial; this.predictor.reconcile(me, g.epoch); }
+      const ctx = { tick: g.tick, playerId: s.playerId, world: g.world }; // P3B: the same zones/impulses the server steps with
+      if (!this.predictor.active) { this.predictor.start(me, g.epoch, ctx); this.lastSerial = s.gameSerial; }
+      if (s.gameSerial !== this.lastSerial) { this.lastSerial = s.gameSerial; this.predictor.reconcile(me, g.epoch, ctx); }
       this.predictor.advance(delta, this.readInput());
     } else {
       this.predictor.stop();
@@ -249,17 +282,19 @@ export class GameScene extends Phaser.Scene {
     const st = s.stage;
     this.stageView.update(st ?? EMPTY_STAGE, g.tick, st ? meNow : null);
     this.stageHud.update(st, g.tick, s.playerId, s);
-    this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow);
+    this.abilityHud.update(st, g.tick, s.playerId);
+    this.worldView.update(g, delta);
+    this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow, me?.facing ?? 1);
 
     const briefing = g.phase === 'briefing';
     this.bannerBg.setVisible(briefing); this.banner.setVisible(briefing); this.bannerSub.setVisible(briefing);
     if (briefing) {
       this.banner.setText(`Stage ${g.stage}`);
-      this.bannerSub.setText(`${ARENA.name}  deploying in ${Math.max(1, Math.ceil(g.briefingMs / 1000))}`);
+      this.bannerSub.setText(`${this.arena.name}  deploying in ${Math.max(1, Math.ceil(g.briefingMs / 1000))}`);
     }
   }
 
-  private handleStageKeys(st: import('@wb/shared').StageState | null, canAct: boolean, me: { x: number; y: number } | null): void {
+  private handleStageKeys(st: import('@wb/shared').StageState | null, canAct: boolean, me: { x: number; y: number } | null, facing: 1 | -1): void {
     const K = this.stageKeys, J = Phaser.Input.Keyboard.JustDown;
     const send = (a: StageAction) => { void this.session.stageAction(a); };
     const pressed = {
@@ -277,6 +312,24 @@ export class GameScene extends Phaser.Scene {
       const tool = TOOL_KEYS[i]!;
       send({ kind: 'use_tool', tool, targetId: targetForTool(st, me, tool) });
     });
+
+    // P3B reality abilities: 6 Gravity Well, 7 Freeze, 8 Duplicate, 9 Momentum. The mouse aims; Shift = reduce / cancel.
+    const AK = this.abilityKeys;
+    const abilityPresses: [Phaser.Input.Keyboard.Key, ActiveAbilityId][] = [[AK.SIX, 'gravity_well'], [AK.SEVEN, 'freeze'], [AK.EIGHT, 'duplicate'], [AK.NINE, 'momentum']];
+    for (const [key, ability] of abilityPresses) {
+      if (!J(key)) continue;
+      const ptr = this.input.activePointer;
+      const r = buildAbilityAction(ability, {
+        me: { x: me.x, y: me.y, facing },
+        pointer: this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null,
+        props: this.session.game?.world?.props ?? [],
+        hazards: st.hazards,
+        dir: { up: this.cursors.up.isDown || this.keys.W.isDown, down: this.cursors.down.isDown, left: this.cursors.left.isDown || this.keys.A.isDown, right: this.cursors.right.isDown || this.keys.D.isDown },
+        modifier: AK.SHIFT.isDown,
+      });
+      if (r.ok) void this.session.abilityUse(r.action);
+      else this.session.notice = { text: r.reason, ok: false, at: performance.now() };
+    }
   }
 
   private flash(msg: string): void {
