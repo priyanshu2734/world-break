@@ -47,6 +47,22 @@ Shared **Reality Energy** meter (per player, regenerates when the team repairs t
 Abilities are puzzle pieces: stages must REQUIRE them in different ways (hold two pressure plates with a duplicate,
 freeze a hazard to cross it, flip gravity to reach a ceiling switch).
 
+
+## 4b. Salvage, carrying and requirements (the hunt)
+Repairs need PARTS, not just tools. Parts are physical items in the world that players must FIND, CARRY and INSTALL.
+* **Items (Salvage):** fuse, flux coil, coolant cell, valve wheel, access key, battery, revive cell, and so on. Each repair target
+  lists what it NEEDS once you have discovered it, for example "Needs: Flux Coil + Welder". The game tells you WHAT is needed,
+  never WHERE to find it.
+* **Hidden:** many items are hidden (in crates, behind panels, on ceilings, in other rooms). Scanner and exploration reveal them.
+  Some need an ability to reach (gravity well to reach a ceiling crate, freeze to cross a hazard, duplicate to hold a plate).
+* **Carry limit:** each player carries **2 slots** (heavy items use 2 slots; draft upgrades can add 1). Pick up with E, drop and swap
+  with G, hand over to a teammate in range. Limits force trips, planning and teamwork.
+* **Decoys and damage:** look-alike or cracked parts exist (installing a wrong part costs time or health). Hazards can destroy
+  carried items (bounded, telegraphed).
+* **Revival uses items:** a Revive Cell is a carried item. Rescuing a teammate may mean dropping the part you were carrying.
+* **Clarity by mode:** Easy shows item names and a hint of where; Intermediate shows silhouettes; Hardcore shows nothing until tried.
+* **Solo-safe:** every mandatory part is reachable and carryable by 1 player (the solver must prove it).
+
 ## 5. Disaster verbs (signature mechanics)
 | Disaster | Core verb | Example puzzle |
 |---|---|---|
