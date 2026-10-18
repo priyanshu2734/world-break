@@ -18,7 +18,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
 - [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
 - [x] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side). Verified as per docs/handoffs/P2.md (200 unit/integration tests, build, and an automated real-browser run of the full repair chain; NOT yet verified by a human playtest or on a real GPU)
-- [ ] P3 Abilities + disasters: gravity inversion, reactor overload, fractures, temporal storms, power cascade, combos
+- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (disaster combinations) not started.
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario
 - [ ] P5 Scenario generator + validator + fallback; then OpenAI integration (structured outputs, timeouts, retries)
 - [ ] P6 Persistence (stage progression, unlock 10/20, rewards), difficulty select per stage
@@ -78,6 +78,32 @@ Frozen unless a documented migration updates server AND client prediction togeth
 Frozen: `phases.ts`, `difficulty.ts`, `loop.ts`, `prediction.ts`, `interpolation.ts`, `tutorial.ts` (add new stages instead), all existing tests.
 Do not start OpenAI integration (P5), persistence (P6) or death review (P4).
 
+## P3B ability framework (current)
+Full rules and the limits table: `docs/ABILITIES.md`. How the pieces fit:
+
+    key 6-9 -> ui/abilityView.buildAbilityAction (aim; convenience only) -> Session.abilityUse -> 'ability:use'
+      -> gateway (Zod: AbilityActionSchema) -> Room.abilityAction -> StageEngine.abilityAction -> AbilitySystem.use
+      -> PhysicsWorld.addZone / addImpulse / impulseProp / freezeProp / addClone      (or the engine's frozen-hazard timer)
+      -> applied by the next GameSim.step; published as GameSnapshot.world and StageState.abilities
+
+* **Tick order** (`Room.tick`, phase playing): `GameSim.step()` (each body with `worldForTick(...)`, then `PhysicsWorld.step()`: props,
+  expiry of clones, zones and impulses, then the clock) and then `StageEngine.step(pos)` (frozen-hazard thaw, `AbilitySystem.step`,
+  plates, hazards, channels, objectives).
+* **Who owns what.** `GameSim` owns the `PhysicsWorld` (zones, impulses, props; `GameSim.configure` loads the stage's props,
+  `GameSim.loadArena` swaps arena). `StageEngine` owns the `AbilitySystem` (energy, cooldowns, caps, rules), created only when
+  `StageDef.abilities` exists, and reaches the world through `engine.attachWorld(world)`, which `Room.bindWorld` calls after every build.
+  Energy therefore resets with the engine: every stage start and every arena reset.
+* **Engine hooks (all additive):** `abilityAction`, `attachWorld`, `frozenHazards` (arc pulse countdown pauses while frozen),
+  `anchorPlacementError` (Anchor rules), `platesPressed` / `stepPlates`, `AbilitySystem.onRepair` from breakpoint and conduit repairs.
+* **Server-side validation lives in one place:** `server/src/abilities/system.ts` (enabled, rate, cooldown, energy, target, range,
+  ownership, caps) plus Zod at the gateway. The client never decides an outcome.
+* **Default stage economy:** `server/src/abilities/defaults.ts` (`ABILITIES_IN_ROTATION`, `withDefaultAbilities`): stage 2 and up get
+  every ability, the tutorial none, a stage that declares its own `abilities` keeps them.
+* **Client:** `ui/AbilityHud` (energy bar, five slots), `ui/WorldView` (props, copies, frozen overlay, gravity zones), `ui/abilityView`
+  (slot status and aiming, unit-tested), `GameScene` (keys 6-9, Shift, mouse aim).
+* **Tests:** `server/test/abilities/*`, `server/test/gateway.ability.test.ts`, `server/test/gateway.lab.test.ts`,
+  `shared/test/abilities.test.ts`, `client/test/abilityView.test.ts`.
+
 ## P3B physics migration (shared step, additive)
 `shared/src/sim.ts` is shared by the server (authoritative) and client prediction. P3B changed it ONLY additively:
 
@@ -108,7 +134,7 @@ Do not start OpenAI integration (P5), persistence (P6) or death review (P4).
   inside a solid), `server/test/abilities/parity.test.ts` (server `GameSim` vs client `LocalPredictor`: bit-for-bit lockstep over 2500
   ticks of random input and random zones/impulses, and a latency + reconcile scenario), `server/test/abilities/physics.room.test.ts`.
 
-## P3B pressure plates, props and the Ability Lab (steps 1-3)
+## P3B pressure plates, props and the Ability Lab (current)
 * **Props** (`PhysicsWorld`, `server/src/abilities/world.ts`): crates are server-simulated (gravity, zones, friction, solids, arena
   bounds), never collide with players or each other, and are published in `GameSnapshot.world.props` (clients ease toward them; no
   prediction). Hard cap: `MAX_PROPS_TOTAL` (12) alive per room, clones included. Clones expire (`ABILITY_SPECS.duplicate.durationTicks`).
@@ -117,11 +143,19 @@ Do not start OpenAI integration (P5), persistence (P6) or death review (P4).
   `activatedBy: 'any'` is pressed by a player standing on it (feet within 3 px of its surface, centre within 24 px) or a resting prop;
   `'object'` (a heavy plate) only by a RESTING prop. A prop in flight never presses a plate. The objective latches once complete.
   No new objective kind was added, so exhaustive switches in older code and test helpers are untouched.
-* **Per-stage arena.** `StageDef.arenaId` now selects the arena through `getArena(id)` (`shared/src/abilities/labArena.ts`; unknown id =
-  Relay Platform 01). `Room` builds the `GameSim` and the `StageEngine` for the stage's arena, `GameSim.loadArena` swaps it between
+* **Per-stage arena.** `StageDef.arenaId` now selects the arena through `getArena(id)` (`shared/src/abilities/labArena.ts`; an unregistered id is a
+  validation error, `arena mismatch`). `Room` builds the `GameSim` and the `StageEngine` for the stage's arena, `GameSim.loadArena` swaps it between
   stages and resets the world. `GameSnapshot.arenaId` already told clients which arena; `GameScene` redraws the platforms and
   `LocalPredictor.setArena` predicts against it when it changes.
 * **Ability Lab** (`server/src/systems/stages/abilityLab.ts`, arena `ability-lab-01`): stage 1 of a room created with the dev flag, never
-  returned by the stage registry (tested for stages 1..80 over several seeds). See `docs/handoffs/P3B.md` for how to open it.
+  returned by the stage registry (tested for stages 1..80 over several seeds). Open it with `ABILITY_LAB=1` on the server and `/?lab=1` in the
+  browser (details in `docs/ABILITIES.md` section 8 and `docs/handoffs/P3B.md`).
 * **Freeze substitutes the shield** in the validator only when the loadout has no Shield Projector, Freeze is enabled, and the channel
   fits inside one freeze with 10 ticks of slack (`FREEZE_CHANNEL_SLACK_TICKS`). Every other stage validates exactly as before.
+
+## Ownership boundaries after P3B
+Unchanged rules from P3 still hold. P3B's files: `shared/src/abilities/**`, `server/src/abilities/**`, `server/src/systems/stages/**`,
+`client/src/ui/{AbilityHud,WorldView,abilityView}.ts`, `client/src/net/labParam.ts`. `sim.ts` changed only by the documented additive migration
+above (optional 4th parameter, guarded by a bit-exact differential test against a frozen copy of the P2 step); `prediction.ts` only gained the
+optional `PredictionWorldCtx` and `setArena`; `arena.ts` was not touched. `phases.ts`, `difficulty.ts`, `loop.ts` and every pre-P3B test were not touched.
+
