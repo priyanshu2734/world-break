@@ -107,7 +107,7 @@ export class GameSim {
           if (p.staleTicks <= MAX_REPEAT_TICKS) input = { moveX: p.lastInput.moveX, jump: false };
         }
       }
-      stepBody(p.body, input, this._arena);
+      stepBody(p.body, input, this._arena, this.world.forPlayer(p.id)); // P3B: zones/impulses for THIS tick, or undefined
     }
     this.world.step();
     this.tick++;

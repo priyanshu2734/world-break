@@ -205,8 +205,9 @@ export class GameScene extends Phaser.Scene {
 
     // --- local prediction ---
     if (g.phase === 'playing' && me && me.connected) {
-      if (!this.predictor.active) { this.predictor.start(me, g.epoch); this.lastSerial = s.gameSerial; }
-      if (s.gameSerial !== this.lastSerial) { this.lastSerial = s.gameSerial; this.predictor.reconcile(me, g.epoch); }
+      const ctx = { tick: g.tick, playerId: s.playerId, world: g.world }; // P3B: the same zones/impulses the server steps with
+      if (!this.predictor.active) { this.predictor.start(me, g.epoch, ctx); this.lastSerial = s.gameSerial; }
+      if (s.gameSerial !== this.lastSerial) { this.lastSerial = s.gameSerial; this.predictor.reconcile(me, g.epoch, ctx); }
       this.predictor.advance(delta, this.readInput());
     } else {
       this.predictor.stop();

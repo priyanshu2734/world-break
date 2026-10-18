@@ -31,6 +31,28 @@ export class WorldView {
     this.used.clear();
     const tick = game?.tick ?? 0;
     const props: readonly Prop[] = game?.world?.props ?? [];
+    const now = this.scene.time.now;
+
+    // ---- gravity zones: a tinted box with arrows showing which way gravity pulls inside (violet = bent, never red) ----
+    for (const z of game?.world?.zones ?? []) {
+      if (tick < z.startTick || tick >= z.expiresTick) continue;
+      const up = z.gy < 0, weak = z.gy >= 0 && z.gy < 1800;
+      const col = up ? 0xb08cff : 0x7fa6ff;
+      g.fillStyle(col, 0.1 + 0.04 * Math.sin(now / 200)).fillRect(z.x, z.y, z.w, z.h);
+      g.lineStyle(2, col, 0.85).strokeRect(z.x, z.y, z.w, z.h);
+      const phase = (now / 700) % 1;
+      for (let ax = z.x + 40; ax < z.x + z.w; ax += 80) {
+        for (let k = 0; k < 3; k++) {
+          const f = (phase + k / 3) % 1;
+          const ay = up ? z.y + z.h - f * z.h : z.y + f * z.h;
+          const d = up ? -1 : 1, len = weak ? 6 : 10;
+          g.lineStyle(2, col, 0.5 * (1 - Math.abs(f - 0.5) * 1.6)).lineBetween(ax - len, ay - d * len, ax, ay).lineBetween(ax + len, ay - d * len, ax, ay);
+        }
+      }
+      const frac = (z.expiresTick - tick) / (z.expiresTick - z.startTick);
+      g.fillStyle(col, 0.9).fillRect(z.x, z.y - 6, z.w * Math.max(0, frac), 3);
+      this.label(`z_${z.id}`, `${up ? 'gravity flipped' : 'low gravity'} ${Math.max(0, (z.expiresTick - tick) / SERVER_TICK_HZ).toFixed(1)}s`, z.x + z.w / 2, z.y - 8, up ? '#b8a6ff' : '#9fbcff');
+    }
     const k = 1 - Math.exp(-dtMs / SMOOTH_MS);
     const live = new Set<string>();
     for (const p of props) {

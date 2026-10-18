@@ -77,3 +77,33 @@ Additive-only edits: `stageDef.ts`, `engine.ts` (hooks), `tools.ts`, `schemas.ts
 Frozen unless a documented migration updates server AND client prediction together: `shared/src/sim.ts`, `shared/src/arena.ts`.
 Frozen: `phases.ts`, `difficulty.ts`, `loop.ts`, `prediction.ts`, `interpolation.ts`, `tutorial.ts` (add new stages instead), all existing tests.
 Do not start OpenAI integration (P5), persistence (P6) or death review (P4).
+
+## P3B physics migration (shared step, additive)
+`shared/src/sim.ts` is shared by the server (authoritative) and client prediction. P3B changed it ONLY additively:
+
+    stepBody(body, input, arena = ARENA, world?: StepWorld)      // new optional 4th parameter
+    StepWorld = { zones?: StepZone[]; impulse?: { dvy, cancelVy, driftVx } }   // data for THIS tick only
+
+* **Default is untouched.** With `world` undefined, `{}`, empty zones or a zero impulse the arithmetic is the pre-P3B step.
+  `shared/test/sim.baseline.test.ts` proves it against a frozen copy of the old function (`test/helpers/simBaseline.ts`):
+  40 bodies x 1500 ticks x 5 "empty" world shapes, every field equal (`Object.is`) on every tick. Never edit that copy.
+* **Gravity zones are data**, not state: `GravityZone { id, ownerId, x, y, w, h, gx, gy, startTick, expiresTick }`. A zone is active for
+  `startTick <= tick < expiresTick`; the body is inside it if its CENTRE (x, y - 22) is in the rectangle at the start of a sub-step.
+  `gy` replaces gravity; `gx` is a lateral wind of `gx * 0.1 s` (walking overwrites `vx` every sub-step). Flipped gravity is capped at
+  `-TERMINAL_VELOCITY`.
+* **Momentum is data**, not state: `ImpulseEvent { id, tick, playerId, dvx, dvy, cancel, driftTicks }`. `dvy` and `cancel` apply once at
+  `tick`; `dvx` is a drift velocity that fades linearly to 0 over `driftTicks` (it is a function of `tick - event.tick`, so `PlayerBody`
+  gained no field). Impulses are bounded (`MOMENTUM_IMPULSE`) per axis.
+* **One pure bridge for both sides:** `worldForTick(worldData, tick, playerId) -> StepWorld | undefined` (`shared/src/abilities/world.ts`).
+  The server calls it from `PhysicsWorld.forPlayer` (inside `GameSim.step`), the client from `LocalPredictor`.
+* **Publication:** `GameSnapshot.world?: { zones, impulses, props }` (optional; absent when empty, so pre-P3B snapshots are byte-identical).
+  Expired zones and impulses stay listed for 40 ticks so a client replaying recent inputs still sees them.
+* **Prediction:** `LocalPredictor.start/reconcile` take an optional `PredictionWorldCtx { tick, playerId, world }`. `tick` is the snapshot's
+  tick = the NEXT tick the server simulates, so the i-th unacknowledged input replays at `tick + i`, exactly when the server applies it.
+  Omit the context and the predictor is the pre-P3B predictor (all existing prediction tests pass unchanged).
+* **What can still differ:** events created after a snapshot (a zone opened by a teammate) are unknown to the client until the next
+  snapshot; the server wins and the reconcile corrects it. Snapshots round to 0.01 px, so a body hovering exactly on a zone edge can
+  differ by one sub-step (a few px, far below `SNAP_DISTANCE`).
+* **Tests:** `shared/test/{sim.baseline,sim.world}.test.ts` (differential oracle, zone/impulse behaviour, fuzz: finite, in bounds, never
+  inside a solid), `server/test/abilities/parity.test.ts` (server `GameSim` vs client `LocalPredictor`: bit-for-bit lockstep over 2500
+  ticks of random input and random zones/impulses, and a latency + reconcile scenario), `server/test/abilities/physics.room.test.ts`.
