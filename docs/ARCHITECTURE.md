@@ -18,7 +18,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
 - [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
 - [x] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side). Verified as per docs/handoffs/P2.md (200 unit/integration tests, build, and an automated real-browser run of the full repair chain; NOT yet verified by a human playtest or on a real GPU)
-- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (salvage, carrying, requirements, a real stage 1) is IN PROGRESS: step 1 of 4 delivered (item model, actions, protocol), see the P3C section below.
+- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (salvage, carrying, requirements, a real stage 1) is IN PROGRESS: steps 1 and 2 of 4 delivered (item model, actions, protocol; requirements, hiding, decoys, hazards, solo-safe validator), see the P3C section below.
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario
 - [ ] P5 Scenario generator + validator + fallback; then OpenAI integration (structured outputs, timeouts, retries)
 - [ ] P6 Persistence (stage progression, unlock 10/20, rewards), difficulty select per stage
@@ -159,7 +159,7 @@ Unchanged rules from P3 still hold. P3B's files: `shared/src/abilities/**`, `ser
 above (optional 4th parameter, guarded by a bit-exact differential test against a frozen copy of the P2 step); `prediction.ts` only gained the
 optional `PredictionWorldCtx` and `setArena`; `arena.ts` was not touched. `phases.ts`, `difficulty.ts`, `loop.ts` and every pre-P3B test were not touched.
 
-## P3C salvage (IN PROGRESS: step 1 of 4, item model + actions + protocol)
+## P3C salvage (IN PROGRESS: steps 1-2 of 4)
 Rules and limits will be tabulated in `docs/SALVAGE.md` (step 4). Pieces added so far (all additive):
 
     shared/src/salvage/specs.ts      ItemKind, ITEM_KIND_SPECS (label, default slots), ITEM_LIMITS (the single source of truth for every limit)
@@ -176,6 +176,29 @@ Item life states: `hidden | in_world | carried | installed | consumed | destroye
 a hidden, consumed, destroyed or nonexistent id gets the SAME refusal text in every action (`NOTHING_THERE`, `NOT_CARRYING`, `NO_INSTALL_TARGET`).
 The decoy flag and the hidden rule are server-private. `StageDef.needs` maps a target id (breakpoint, conduit or entity) to the kinds that must be installed.
 
-Not yet implemented (later P3C steps): revealing hidden items (Scanner / interact), exposing a target's needs to clients by `clueClarity`,
-gating repairs on installed parts and tools, hazard damage to carried items, the client HUD, the new stage 1, generator items and the solvability proof.
+### P3C step 2 (requirements, hiding, decoys, hazards, validator)
+    server/src/salvage/reach.ts      platformGraph / reachableFrom: which platforms ONE player can reach unaided, computed with the REAL stepBody physics
+    server/src/salvage/validate.ts   validateSalvage (called from validateStageDef): hiding rules, ability gates, solo-safe supply, trip bound
 
+* **Hiding.** `ItemDef.hidden = { container, reveal: 'scan' | 'interact', stashId? }`. `scan`: the Phase Scanner reveals the part when used within its radius
+  (`ItemSystem.revealByScan`, called from the engine's scanner branch; message `The scan turned up hidden parts.` when nothing else was found).
+  `interact`: the part sits in a visible **stash** (`StageDef.stashes`, published as `items.stashes`, empty stashes look identical) and `item:action { action: 'open', stashId }`
+  reveals it. The open intent names a stash, never an item, so hidden parts have no id a client could probe; an unknown stash id gets `NOTHING_THERE`.
+  `ItemDef.gate` marks a spot that needs a P3B ability (`gravity_well | freeze | duplicate | momentum`); the validator requires the stage to enable it AND the spot to be unreachable on foot.
+* **Requirements (`StageDef.needs`, by target id).** Published as `items.needs` only for DISCOVERED targets: the team has stood within `needsRevealRange` of a visible target
+  (an unrevealed breakpoint never qualifies). Shape by clarity (`Engine opts.difficulty`, passed by `Room.buildEngine`): easy = part names + tools + the author's hint line;
+  intermediate = silhouettes (`small | heavy`), tools, no hint; hardcore = nothing until a first attempt on the target (a refused repair or an install), then silhouettes and no tools.
+  Installed parts are shown by name at every clarity.
+* **Gating.** A target with unmet needs refuses the Flux Welder (before any charge is spent) and `interact` on its entity (console, switch, cache): `ItemSystem.gateMessage`
+  (text by clarity, and the refusal counts as "tried"). Gates run only AFTER the existing visibility and range checks, so unrevealed and nonexistent targets still give identical answers.
+  Objective requirements are expressed on the objective's console/breakpoint (there is no separate objective-level gate).
+* **Decoys.** A decoy of the right kind shatters on install, costs `scoring.wrongTargetPenalty` (`wrong_part`) and is gone; the need stays unmet. `ItemDef.tell` (decoys only) publishes `cracked: true`
+  (not in hardcore); a decoy without a tell is indistinguishable until installed.
+* **Hazards.** An unshielded arc discharge hit destroys at most ONE carried part (the last picked up) and the player is safe for `hazardGraceTicks` (100) afterwards; installed parts are immune.
+  The pulse is telegraphed by the hazard's public `nextPulseTick`.
+* **Validator (`validateSalvage`).** One player, spawn 0: every part and target must lie on a platform reachable on foot (real physics) or carry a declared, enabled gate; every mandatory need must be matched to a
+  DISTINCT genuine (non-decoy) part that is revealable and can be carried from its platform to the target (bipartite matching, so one part never serves two demands); the 2-slot limit is respected by trips
+  (installs persist: a heavy part is one trip, two light parts share one; at most `maxTripsPerStage`). Hazards, crates and timing are NOT modelled: authored stages are additionally proven with the real-physics bot (step 3).
+  Needs may list only `flux_welder`, only on breakpoints or conduits.
+
+Not yet implemented (later P3C steps): the client HUD, the new stage 1, generator items, the bot solvability proof, docs/SALVAGE.md and the handoff.

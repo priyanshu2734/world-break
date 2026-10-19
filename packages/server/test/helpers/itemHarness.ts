@@ -1,6 +1,6 @@
-import { ITEM_LIMITS, type ItemAction, type StageAction, type StageState, type ToolId } from '@wb/shared';
+import { ITEM_LIMITS, type Difficulty, type ItemAction, type StageAction, type StageState, type ToolId } from '@wb/shared';
 import { StageEngine, type ActionResult } from '../../src/systems/engine';
-import type { ItemDef, NeedDef, StageDef } from '../../src/systems/stageDef';
+import type { ItemDef, NeedDef, StageDef, StashDef } from '../../src/systems/stageDef';
 import { ItemSystem, type ItemResult } from '../../src/salvage/system';
 import { TUTORIAL_STAGE } from '../../src/systems/tutorial';
 
@@ -32,17 +32,18 @@ type Where = { x: number; y: number; connected: boolean };
  * (engine step only: items need no physics). Players start at (290, 590).
  */
 export function itemHarness(opts: {
-  ids?: string[]; items?: ItemDef[]; needs?: NeedDef[]; mutate?: (def: StageDef) => void;
+  ids?: string[]; items?: ItemDef[]; needs?: NeedDef[]; stashes?: StashDef[]; difficulty?: Difficulty; mutate?: (def: StageDef) => void;
 } = {}) {
   const ids = opts.ids ?? ['a'];
   const def: StageDef = structuredClone(TUTORIAL_STAGE);
   def.items = structuredClone(opts.items ?? FIXTURE_ITEMS);
   def.needs = structuredClone(opts.needs ?? FIXTURE_NEEDS);
+  if (opts.stashes) def.stashes = structuredClone(opts.stashes);
   opts.mutate?.(def);
   const where = new Map<string, Where>();
   ids.forEach((id) => where.set(id, { x: 290, y: 590, connected: true }));
   const pos = (id: string): Where | undefined => where.get(id);
-  const e = new StageEngine(def, ids);
+  const e = new StageEngine(def, ids, { difficulty: opts.difficulty });
 
   const h = {
     e, def,
@@ -58,6 +59,8 @@ export function itemHarness(opts: {
     putDown: (id: string, itemId: string) => h.act(id, { action: 'drop', itemId }),
     stage: (id: string, a: StageAction): ActionResult => { h.run(3); return e.action(id, a, pos); },
     tool: (id: string, tool: ToolId, targetId?: string) => h.stage(id, { kind: 'use_tool', tool, targetId }),
+    use: (id: string, targetId: string) => h.stage(id, { kind: 'interact', targetId }),
+    open: (id: string, stashId: string) => h.act(id, { action: 'open', stashId }),
     /** Scans from (200, 590) so the hidden coupling at (200, 410) is revealed, then walks back to `back`. */
     scan: (id: string) => { h.at(id, 200, 590); return h.tool(id, 'phase_scanner'); },
     st: (): StageState => e.state(),
@@ -65,10 +68,18 @@ export function itemHarness(opts: {
     item: (id: string) => e.state().items!.items.find((i) => i.id === id),
     mine: (id: string) => e.state().items!.players.find((p) => p.id === id)!,
     breakdown: () => e.state().score.breakdown,
-    /** Test-only access to the item system (the engine exposes no reveal yet; hiding rules arrive in P3C step 2). */
+    needs: () => e.state().items!.needs,
+    /** Test-only access to the item system. */
     sys: (): ItemSystem => (e as unknown as { items: ItemSystem }).items,
   };
   return h;
 }
 
 export type ItemHarness = ReturnType<typeof itemHarness>;
+
+/** A crate that holds a hidden fuse, and an empty crate that looks exactly the same until opened. Both stand on the low-left platform. */
+export const FIXTURE_STASHES: StashDef[] = [
+  { id: 'crate_a', kind: 'crate', label: 'Dented crate', x: 160, y: 590 },
+  { id: 'crate_b', kind: 'crate', label: 'Dented crate', x: 380, y: 590 },
+];
+export const STASH_ITEM: ItemDef = part('stash_fuse', 'fuse', 170, 590, { hidden: { container: 'crate', reveal: 'interact', stashId: 'crate_a' } });

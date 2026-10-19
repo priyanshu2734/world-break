@@ -4,6 +4,7 @@ import { topoOrder } from './failures';
 import { evaluatePower } from './power';
 import { validateDisasterMeta } from '../disasters/validate';
 import { surfaceBelow } from '../salvage/rest';
+import { validateSalvage } from '../salvage/validate';
 
 /**
  * Deterministic structural validation. A stage that returns any error must not launch.
@@ -201,6 +202,7 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
       if (have < c) err(`target ${n.targetId} needs ${c} x ${k} but the stage provides ${have} genuine one(s)`);
     }
   }
+  errs.push(...validateSalvage(def, arena)); // P3C: hiding rules, reachability, solo-safe supply (no-op without items/needs/stashes)
   errs.push(...validateDisasterMeta(def)); // P3A: lifecycle, bounds, threats (no-op without def.disaster)
   return errs;
 }

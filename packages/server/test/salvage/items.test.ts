@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ARENA, ITEM_LIMITS, StageStateSchema, type ItemAction } from '@wb/shared';
-import { itemHarness, part } from '../helpers/itemHarness';
+import { FIXTURE_NEEDS, itemHarness, part } from '../helpers/itemHarness';
 import { ItemSystem, NOT_CARRYING, NOTHING_THERE, NO_INSTALL_TARGET, NO_RECEIVER, type ItemHost } from '../../src/salvage/system';
 
 const err = (error: string) => ({ ok: false, error });
@@ -215,7 +215,8 @@ describe('rate limit and busy hands', () => {
     expect(h.actNow('a', { action: 'pickup', itemId: 'fuse_1' })).toEqual(err('Too fast.')); // a refused intent also advances the clock
   });
   it('parts cannot be handled while channelling a repair', () => {
-    const h = itemHarness();
+    // (changed in P3C step 2: the coupling now needs a coil before it can be welded, so this stage only gates the cache)
+    const h = itemHarness({ needs: [FIXTURE_NEEDS[1]!] });
     h.scan('a');
     h.at('a', 200, 410);
     expect(h.tool('a', 'flux_welder', 'bp_coupling').ok).toBe(true);

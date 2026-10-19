@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ToolIdSchema } from '../systems/tools';
 import { ItemKindSchema } from './specs';
 
 /** Same shape as StageIdSchema (kept local: systems/schemas imports this file, so importing it back would be circular). */
@@ -14,6 +15,8 @@ export const ItemActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('swap'), dropId: Id, pickId: Id }).strict(),
   z.object({ action: z.literal('handover'), itemId: Id, toPlayerId: PlayerRef }).strict(),
   z.object({ action: z.literal('install'), itemId: Id, targetId: Id }).strict(),
+  /** Open a visible stash (crate, panel, locker). Names a stash, never an item: hidden parts have no id a client could know. */
+  z.object({ action: z.literal('open'), stashId: Id }).strict(),
 ]);
 export type ItemAction = z.infer<typeof ItemActionSchema>;
 
@@ -31,11 +34,32 @@ export const ItemsPublicSchema = z.object({
     x: z.number(), y: z.number(),
     carrierId: z.string().nullable(),
     targetId: z.string().nullable(),
+    /** Present (true) only when the stage lets a cracked part show it and the mode is not hardcore. Never says "decoy" about an unmarked part. */
+    cracked: z.boolean().optional(),
   })),
   players: z.array(z.object({
     id: z.string(),
     slotsUsed: z.number().int().min(0),
     carried: z.array(z.string()),
   })),
+  /** Visible containers (some are empty). `opened` flips when a player opens one. Absent when the stage has none. */
+  stashes: z.array(z.object({
+    id: z.string(), kind: z.enum(['crate', 'panel', 'locker', 'ceiling']), label: z.string(), x: z.number(), y: z.number(), opened: z.boolean(),
+  })).optional(),
+  /**
+   * Requirements of targets the team has DISCOVERED (stood near), by clue clarity: easy = names + hint, intermediate = silhouettes,
+   * hardcore = nothing until a first attempt. Undiscovered and unrevealed targets are never listed.
+   */
+  needs: z.array(z.object({
+    targetId: z.string(), label: z.string(), satisfied: z.boolean(),
+    hint: z.string().nullable(),
+    tools: z.array(ToolIdSchema),
+    parts: z.array(z.object({
+      /** Name and kind only when clarity shows them, or once that part is installed. */
+      kind: ItemKindSchema.nullable(), label: z.string().nullable(),
+      shape: z.enum(['small', 'heavy']),
+      installed: z.boolean(),
+    })),
+  })).optional(),
 });
 export type ItemsPublic = z.infer<typeof ItemsPublicSchema>;

@@ -52,4 +52,21 @@ export const ITEM_LIMITS = {
   maxNeedsPerStage: 8,
   /** An item must start within this many px above a platform (it rests on the first surface below its authored y). */
   maxAuthoredFall: 40,
+  /** Reach (px) to open a stash (crate, panel, locker). */
+  openRange: 70,
+  /** A target's requirements are shown to the team once any player has stood within this many px of it. */
+  needsRevealRange: 160,
+  /** Stashes per stage (authoring bound). */
+  maxStashesPerStage: 6,
+  /** An armed discharge destroys at most ONE carried part per hit, and a player is safe for this many ticks afterwards. */
+  hazardGraceTicks: 100,
+  /** Authoring bound on the trips a lone player needs to bring every mandatory part (heavy = 1 trip, two light parts = 1 trip). */
+  maxTripsPerStage: 12,
 } as const;
+
+/** Item kinds that may be a gate for hard-to-reach spots (see ItemDef.gate): the P3B abilities that open a path. */
+export const ITEM_GATES = ['gravity_well', 'freeze', 'duplicate', 'momentum'] as const;
+export type ItemGate = (typeof ITEM_GATES)[number];
+
+/** Silhouette of a part kind, shown instead of its name at lower clarity. */
+export const itemShape = (kind: ItemKind): 'small' | 'heavy' => (ITEM_KIND_SPECS[kind].defaultSlots === 2 ? 'heavy' : 'small');

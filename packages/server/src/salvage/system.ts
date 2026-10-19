@@ -1,8 +1,8 @@
 import {
-  ITEM_KIND_SPECS, ITEM_LIMITS, RANGE_DY,
-  type Arena, type ItemAction, type ItemKind, type ItemLifeState, type ItemsPublic,
+  ITEM_KIND_SPECS, ITEM_LIMITS, RANGE_DY, itemShape,
+  type Arena, type Difficulty, type ItemAction, type ItemKind, type ItemLifeState, type ItemsPublic, type ToolId,
 } from '@wb/shared';
-import type { ItemDef, NeedDef } from '../systems/stageDef';
+import type { ItemDef, NeedDef, StashDef } from '../systems/stageDef';
 import { clampX, hasFooting, restY } from './rest';
 
 export type ItemResult = { ok: true; message: string } | { ok: false; error: string };
@@ -49,10 +49,14 @@ interface ItemRt {
 interface PlayerIt {
   carried: string[];
   lastIntentTick: number;
+  /** After a discharge destroyed one of this player's parts, no further part is destroyed until this tick. */
+  nextHazardTick: number;
   nextPickupTick: number;
   nextHandoverTick: number;
   lastSafe: { x: number; y: number } | null;
 }
+
+interface StashRt { def: StashDef; opened: boolean }
 
 /** States a client is allowed to know about. Everything else behaves exactly like "does not exist". */
 const isVisible = (s: ItemLifeState): s is 'in_world' | 'carried' | 'installed' => s === 'in_world' || s === 'carried' || s === 'installed';
@@ -67,8 +71,19 @@ export class ItemSystem {
   private readonly order: string[];
   private players = new Map<string, PlayerIt>();
   private readonly needs = new Map<string, NeedDef>();
+  private readonly stashes = new Map<string, StashRt>();
+  /** Targets whose requirements the team has seen (stood near). Never contains an unrevealed target. */
+  private readonly discovered = new Set<string>();
+  /** Targets where a repair or install was attempted: this is what unlocks the hardcore listing. */
+  private readonly tried = new Set<string>();
+  private readonly clarity: Difficulty;
 
-  constructor(defs: readonly ItemDef[], needs: readonly NeedDef[], private readonly arena: Arena, private readonly host: ItemHost) {
+  constructor(
+    defs: readonly ItemDef[], needs: readonly NeedDef[], private readonly arena: Arena, private readonly host: ItemHost,
+    opts: { stashes?: readonly StashDef[]; clarity?: Difficulty } = {},
+  ) {
+    this.clarity = opts.clarity ?? 'easy';
+    for (const st of opts.stashes ?? []) this.stashes.set(st.id, { def: st, opened: false });
     for (const d of defs) {
       const x = clampX(arena, d.x);
       this.items.set(d.id, {
@@ -85,7 +100,7 @@ export class ItemSystem {
 
   // ------------------------------------------------------------------ roster
   addPlayer(id: string): void {
-    this.players.set(id, { carried: [], lastIntentTick: -100, nextPickupTick: 0, nextHandoverTick: 0, lastSafe: null });
+    this.players.set(id, { carried: [], lastIntentTick: -100, nextHazardTick: 0, nextPickupTick: 0, nextHandoverTick: 0, lastSafe: null });
     this.host.markDirty();
   }
   /** The player leaves the run: whatever they carried is dropped at their last safe position. */
@@ -116,6 +131,71 @@ export class ItemSystem {
       if (!at || !at.connected) continue;
       if (hasFooting(this.arena, at.x, at.y) && !this.host.unsafeAt(at.x, at.y)) p.lastSafe = { x: at.x, y: at.y };
     }
+    // Discovery: the team learns what a (visible) target needs once somebody stands near it. Unrevealed targets have no spot, so never qualify.
+    for (const targetId of this.needs.keys()) {
+      if (this.discovered.has(targetId)) continue;
+      const spot = this.host.installTarget(targetId);
+      if (!spot) continue;
+      for (const id of this.players.keys()) {
+        const at = pos(id);
+        if (at?.connected && this.reachOf(at, spot.x, spot.y, ITEM_LIMITS.needsRevealRange)) {
+          this.discovered.add(targetId);
+          this.host.markDirty();
+          break;
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ revealing and hazards
+  /** The Phase Scanner: reveals every hidden `scan` part within `radius` of (x, y). Returns how many appeared. */
+  revealByScan(x: number, y: number, radius: number): number {
+    let n = 0;
+    for (const id of this.order) {
+      const it = this.items.get(id)!;
+      if (it.state !== 'hidden' || it.def.hidden?.reveal !== 'scan') continue;
+      if (Math.hypot(it.x - x, it.y - y) > radius) continue;
+      it.state = 'in_world';
+      n++;
+    }
+    if (n > 0) { this.host.say(n === 1 ? 'Scanner: a hidden part came into focus.' : `Scanner: ${n} hidden parts came into focus.`, 'good'); this.host.markDirty(); }
+    return n;
+  }
+
+  /**
+   * An unshielded arc discharge hit this player. It destroys at most ONE carried part (the one picked up last), and the player is then
+   * safe from further losses for `hazardGraceTicks`. The pulse itself is telegraphed by the hazard's public `nextPulseTick`.
+   */
+  onHazardHit(playerId: string): boolean {
+    const p = this.players.get(playerId);
+    if (!p || p.carried.length === 0 || this.host.tick < p.nextHazardTick) return false;
+    const itemId = p.carried[p.carried.length - 1]!;
+    const it = this.items.get(itemId)!;
+    this.destroy(itemId);
+    p.nextHazardTick = this.host.tick + ITEM_LIMITS.hazardGraceTicks;
+    this.host.say(`The discharge fries the ${ITEM_KIND_SPECS[it.def.kind].label} you were carrying.`, 'bad');
+    return true;
+  }
+
+  // ------------------------------------------------------------------ requirements
+  private clarityShows(targetId: string): boolean {
+    return this.clarity !== 'hardcore' || this.tried.has(targetId);
+  }
+  /** Records a first attempt on a target (a refused repair, an install). In hardcore this is what unlocks the listing. */
+  noteTried(targetId: string): void {
+    if (this.needs.has(targetId) && !this.tried.has(targetId)) { this.tried.add(targetId); this.host.markDirty(); }
+  }
+  /**
+   * The refusal a repair or interaction gets while the target still lacks parts, or null if it has none to wait for.
+   * The text follows the clue clarity, and the attempt counts as "tried". Call only for targets the player can already see.
+   */
+  gateMessage(targetId: string): string | null {
+    const left = this.remainingNeeds(targetId);
+    if (left === undefined || left.length === 0) return null;
+    this.noteTried(targetId);
+    if (this.clarity === 'easy') return `It cannot be finished yet. Missing: ${left.map((k) => ITEM_KIND_SPECS[k].label).join(', ')}.`;
+    if (this.clarity === 'intermediate') return `It cannot be finished yet. It still needs ${left.length} part${left.length === 1 ? '' : 's'}.`;
+    return 'It will not take. Something is missing.';
   }
 
   // ------------------------------------------------------------------ queries (used by the engine and by tests)
@@ -210,6 +290,7 @@ export class ItemSystem {
       case 'swap': return this.swap(playerId, p, a.dropId, a.pickId, me);
       case 'handover': return this.handover(playerId, p, a.itemId, a.toPlayerId, me, posOf);
       case 'install': return this.install(playerId, p, a.itemId, a.targetId, me);
+      case 'open': return this.open(a.stashId, me);
     }
   }
 
@@ -276,6 +357,22 @@ export class ItemSystem {
     return ok(`Handed over the ${ITEM_KIND_SPECS[it.def.kind].label}.`);
   }
 
+  private open(stashId: string, me: PlayerPosLike): ItemResult {
+    const st = this.stashes.get(stashId);
+    if (!st) return fail(NOTHING_THERE);
+    if (!this.reachOf(me, st.def.x, st.def.y, ITEM_LIMITS.openRange)) return fail('Too far away.');
+    if (st.opened) return fail('That is already open.');
+    st.opened = true;
+    let n = 0;
+    for (const id of this.order) {
+      const it = this.items.get(id)!;
+      if (it.state === 'hidden' && it.def.hidden?.reveal === 'interact' && it.def.hidden.stashId === stashId) { it.state = 'in_world'; n++; }
+    }
+    this.host.say(n > 0 ? `${st.def.label} opened. There are parts inside.` : `${st.def.label} opened. It is empty.`, n > 0 ? 'good' : 'info');
+    this.host.markDirty();
+    return ok(n > 0 ? 'You open it. Something is inside.' : 'It is empty.');
+  }
+
   private install(pid: string, p: PlayerIt, itemId: string, targetId: string, me: PlayerPosLike): ItemResult {
     const it = this.items.get(itemId);
     if (!it || it.state !== 'carried' || it.carrierId !== pid) return fail(NOT_CARRYING);
@@ -283,6 +380,7 @@ export class ItemSystem {
     const spot = this.host.installTarget(targetId);
     const left = this.remainingNeeds(targetId);
     if (!spot || left === undefined) return fail(NO_INSTALL_TARGET);
+    this.noteTried(targetId);
     if (!this.reachOf(me, spot.x, spot.y, ITEM_LIMITS.installRange)) return fail('Too far away.');
     if (left.length === 0) return fail('Nothing more is needed there.');
     const kind = it.def.kind;
@@ -313,8 +411,36 @@ export class ItemSystem {
         id: i.def.id, kind: i.def.kind, label: ITEM_KIND_SPECS[i.def.kind].label, slots: i.slots,
         state: i.state as 'in_world' | 'carried' | 'installed',
         x: i.x, y: i.y, carrierId: i.carrierId, targetId: i.targetId,
+        ...(i.def.decoy === true && i.def.tell === true && this.clarity !== 'hardcore' ? { cracked: true } : {}),
       })),
       players: [...this.players].map(([id, p]) => ({ id, slotsUsed: this.usedSlots(p), carried: [...p.carried] })),
+      ...(this.stashes.size > 0 ? { stashes: [...this.stashes.values()].map((s) => ({
+        id: s.def.id, kind: s.def.kind, label: s.def.label, x: s.def.x, y: s.def.y, opened: s.opened,
+      })) } : {}),
+      ...(this.needs.size > 0 ? { needs: this.publicNeeds() } : {}),
     };
+  }
+
+  /** Needs of discovered targets, shaped by clarity. An undiscovered or unrevealed target is not listed (not even as "unknown"). */
+  private publicNeeds(): NonNullable<ItemsPublic['needs']> {
+    const out: NonNullable<ItemsPublic['needs']> = [];
+    for (const [targetId, need] of this.needs) {
+      if (!this.discovered.has(targetId) || !this.clarityShows(targetId)) continue;
+      const spot = this.host.installTarget(targetId);
+      if (!spot) continue;
+      const installed = this.installedFor(targetId);
+      const pool = [...installed];
+      const names = this.clarity === 'easy';
+      const parts = need.items.map((kind) => {
+        const i = pool.indexOf(kind);
+        const done = i >= 0;
+        if (done) pool.splice(i, 1);
+        const show = done || names;
+        return { kind: show ? kind : null, label: show ? ITEM_KIND_SPECS[kind].label : null, shape: itemShape(kind), installed: done };
+      });
+      const tools: ToolId[] = this.clarity === 'hardcore' ? [] : [...(need.tools ?? [])];
+      out.push({ targetId, label: spot.label, satisfied: parts.every((x) => x.installed), hint: names ? (need.hint ?? null) : null, tools, parts });
+    }
+    return out;
   }
 }

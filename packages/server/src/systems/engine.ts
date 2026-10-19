@@ -1,6 +1,6 @@
 import {
   ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type AbilityAction, type Arena, type ItemAction, type StageAction, type StageState, type ToolId,
+  type AbilityAction, type Arena, type Difficulty, type ItemAction, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
@@ -86,7 +86,8 @@ export class StageEngine {
   constructor(
     readonly def: StageDef,
     playerIds: readonly string[],
-    opts: { revBase?: number; arena?: Arena } = {},
+    /** `difficulty` sets the clue clarity of requirements (easy: names + hint, intermediate: silhouettes, hardcore: nothing until tried). */
+    opts: { revBase?: number; arena?: Arena; difficulty?: Difficulty } = {},
   ) {
     const errors = validateStageDef(def, opts.arena ?? ARENA);
     if (errors.length) throw new Error(`Invalid stage "${def.id}":\n - ${errors.join('\n - ')}`);
@@ -100,7 +101,7 @@ export class StageEngine {
     this.conduits = new Map(def.power.conduits.map((c) => [c.id, c]));
     this.objectives = new Map(def.objectives.map((o) => [o.id, o]));
     this.disaster = def.disaster ? new DisasterRuntime(def.disaster) : null;
-    this.items = def.items && def.items.length > 0 ? new ItemSystem(def.items, def.needs ?? [], this.arena, this.itemHost()) : null;
+    this.items = def.items && def.items.length > 0 ? new ItemSystem(def.items, def.needs ?? [], this.arena, this.itemHost(), { stashes: def.stashes ?? [], clarity: opts.difficulty ?? 'easy' }) : null;
 
     for (const b of def.breakpoints) this.bpRt.set(b.id, { revealed: false, repaired: false });
     for (const e of def.entities) if (e.kind === 'power_switch') this.switchClosed.set(e.id, e.initiallyClosed);
@@ -335,6 +336,7 @@ export class StageEngine {
         if (this.shielded(p, 'arc_discharge')) { this.say('The shield absorbs an arc discharge.', 'good'); continue; }
         this.award('hazard', -this.def.scoring.hazardHitPenalty);
         this.say('An arc discharge hits the core deck.', 'bad');
+        this.items?.onHazardHit(pid); // P3C: bounded loss of one carried part (shielded players never get here)
         if (this.channels.has(pid)) this.interrupt(pid, 'The discharge breaks your concentration.', true);
       }
     }
@@ -536,6 +538,9 @@ export class StageEngine {
       if (this.objStatus(oid) === 'complete') return fail('Already done.');
     }
 
+    const missing = this.items?.gateMessage(e.id); // P3C: a console, switch or cache that needs parts stays shut until they are installed
+    if (missing) return fail(missing);
+
     switch (e.kind) {
       case 'supply_cache': {
         if (this.tick < p.cacheReadyAt) return fail('The cache is still resupplying.');
@@ -617,7 +622,8 @@ export class StageEngine {
           this.say(c.text, 'clue');
           readings++;
         }
-        return ok(found.length ? `Found: ${found.join(', ')}.` : readings ? 'The scan picked up readings.' : 'Nothing unusual in range.');
+        const stash = this.items?.revealByScan(me.x, me.y, spec.radius) ?? 0; // P3C: hidden parts within range come into focus
+        return ok(found.length ? `Found: ${found.join(', ')}.` : readings ? 'The scan picked up readings.' : stash ? 'The scan turned up hidden parts.' : 'Nothing unusual in range.');
       }
       case 'flux_welder': {
         if (!targetId) return fail('Choose something to weld.');
@@ -639,6 +645,8 @@ export class StageEngine {
         } else if (info.type !== 'decoy') {
           return fail('The welder has no use on that.');
         }
+        const missing = this.items?.gateMessage(targetId); // P3C: a target that needs parts cannot be welded until they are installed
+        if (missing) return fail(missing);
         if (this.channels.has(pid)) return fail('Finish or cancel your current task first.');
         this.spend(inv, tool);
         this.channels.set(pid, { playerId: pid, targetId, range: spec.range });
