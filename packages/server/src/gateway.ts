@@ -16,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -24,7 +24,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(http, {
     cors: { origin: opts.corsOrigin ?? 'http://localhost:5173' },
   });
-  const rooms = new RoomManager({ briefingTicks: opts.briefingTicks });
+  const rooms = new RoomManager({ briefingTicks: opts.briefingTicks, huntStage: opts.huntStage });
   // socket.id -> membership. playerId is a server-issued opaque id, never client-chosen.
   const sessions = new Map<string, { playerId: string; roomCode: string }>();
 

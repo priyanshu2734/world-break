@@ -5,6 +5,8 @@ export const COLOR = {
   amber: 0xffb02e,
   amberDim: 0x6b4608,
   danger: 0xff4d4d,
+  /** P3C colour language (GAMEPLAY.md): red = danger, cyan = interactive, amber = hidden clue, green = repaired. */
+  green: 0x6dffb0,
   text: '#d8f6ff',
 } as const;
 export const FONT = { fontFamily: '"Share Tech Mono", "Courier New", monospace' };

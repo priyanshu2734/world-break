@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import {
   GameSnapshotSchema, RoomSnapshotSchema, StageStateSchema,
-  type AbilityAction, type Ack, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
+  type AbilityAction, type Ack, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
   type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { SnapshotBuffer } from './interpolation';
@@ -76,6 +76,11 @@ export class Session {
   /** P3B: ask the server to use a reality ability; the server's verdict shows in the HUD. */
   async abilityUse(action: AbilityAction): Promise<void> {
     const r = await this.call<Ack<{ message: string }>>('ability:use', action);
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
+  /** P3C: ask the server to pick up, drop, swap, hand over, install or open. The server's verdict shows in the HUD. */
+  async itemAction(action: ItemAction): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('item:action', action);
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }

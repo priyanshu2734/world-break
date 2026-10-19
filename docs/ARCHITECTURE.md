@@ -159,7 +159,7 @@ Unchanged rules from P3 still hold. P3B's files: `shared/src/abilities/**`, `ser
 above (optional 4th parameter, guarded by a bit-exact differential test against a frozen copy of the P2 step); `prediction.ts` only gained the
 optional `PredictionWorldCtx` and `setArena`; `arena.ts` was not touched. `phases.ts`, `difficulty.ts`, `loop.ts` and every pre-P3B test were not touched.
 
-## P3C salvage (IN PROGRESS: steps 1-2 of 4)
+## P3C salvage (IN PROGRESS: steps 1-3 of 4)
 Rules and limits will be tabulated in `docs/SALVAGE.md` (step 4). Pieces added so far (all additive):
 
     shared/src/salvage/specs.ts      ItemKind, ITEM_KIND_SPECS (label, default slots), ITEM_LIMITS (the single source of truth for every limit)
@@ -201,4 +201,11 @@ The decoy flag and the hidden rule are server-private. `StageDef.needs` maps a t
   (installs persist: a heavy part is one trip, two light parts share one; at most `maxTripsPerStage`). Hazards, crates and timing are NOT modelled: authored stages are additionally proven with the real-physics bot (step 3).
   Needs may list only `flux_welder`, only on breakpoints or conduits.
 
-Not yet implemented (later P3C steps): the client HUD, the new stage 1, generator items, the bot solvability proof, docs/SALVAGE.md and the handoff.
+* **Stage 1 hunt (step 3).** `systems/stages/hunt.ts` (`salvage_hunt`, copied by value from the tutorial, which is not edited): the Welder needs a Flux Coil on the coupling, the only genuine coil is hidden
+  in a locker (E opens it), one visible coil is cracked (decoy with a `tell`), breaker 2 needs a Fuse, and a spare Battery nothing needs competes for the two hands. It is an OPT-IN mapping:
+  `getStageDef(stage, seed, { hunt: true })` / `HUNT_REGISTRY`, `new Room(..., { hunt: true })`, `RoomManager({ huntStage })`, `createGameServer({ huntStage })` and env `HUNT_STAGE`
+  (`main.ts`: on unless `HUNT_STAGE=0`). Without the option stage 1 is still the tutorial, so the older tests are unchanged. Stage 2+ are generated as before (endless).
+* **Client (step 3).** `ui/itemView.ts` is the pure view-model (carry slots, "Needs: ..." prompts, tones and shapes, key -> intent, hand-over feedback); `ItemHud`, `ItemMarkers` and `itemDraw` only draw it.
+  Keys: E pick up / open (else use), G drop or swap (Shift = older part), F fit a part, H hand over. Colours: red danger/cracked, cyan interactive, amber closed stash, green installed. Parts differ by shape.
+
+Not yet implemented: generator items (item 7 of the P3C prompt), docs/SALVAGE.md and the handoff (step 4).
