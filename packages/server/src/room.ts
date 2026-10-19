@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, getArena, type AbilityAction, type Arena, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, getArena, type AbilityAction, type Arena, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -11,6 +11,7 @@ import { fallbackStageDef } from './disasters/fallback';
 import { withDefaultAbilities } from './abilities/defaults';
 import { ABILITY_LAB_STAGE } from './systems/stages/abilityLab';
 import type { AbilityResult } from './abilities/system';
+import type { ItemResult } from './salvage/system';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -240,6 +241,13 @@ export class Room {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     return this.engine.abilityAction(id, action, this.pos);
+  }
+
+  /** P3C: a player's salvage intent (pick up, drop, swap, hand over, install). The engine validates range, ownership, capacity, cooldown and rate. */
+  itemAction(id: string, action: ItemAction): ItemResult {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    return this.engine.itemAction(id, action, this.pos);
   }
 
   /** Read-only view of the current public stage state (does not mark it as sent). */

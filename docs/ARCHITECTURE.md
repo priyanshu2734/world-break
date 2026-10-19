@@ -18,7 +18,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
 - [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
 - [x] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side). Verified as per docs/handoffs/P2.md (200 unit/integration tests, build, and an automated real-browser run of the full repair chain; NOT yet verified by a human playtest or on a real GPU)
-- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (disaster combinations) not started.
+- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (salvage, carrying, requirements, a real stage 1) is IN PROGRESS: step 1 of 4 delivered (item model, actions, protocol), see the P3C section below.
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario
 - [ ] P5 Scenario generator + validator + fallback; then OpenAI integration (structured outputs, timeouts, retries)
 - [ ] P6 Persistence (stage progression, unlock 10/20, rewards), difficulty select per stage
@@ -158,4 +158,24 @@ Unchanged rules from P3 still hold. P3B's files: `shared/src/abilities/**`, `ser
 `client/src/ui/{AbilityHud,WorldView,abilityView}.ts`, `client/src/net/labParam.ts`. `sim.ts` changed only by the documented additive migration
 above (optional 4th parameter, guarded by a bit-exact differential test against a frozen copy of the P2 step); `prediction.ts` only gained the
 optional `PredictionWorldCtx` and `setArena`; `arena.ts` was not touched. `phases.ts`, `difficulty.ts`, `loop.ts` and every pre-P3B test were not touched.
+
+## P3C salvage (IN PROGRESS: step 1 of 4, item model + actions + protocol)
+Rules and limits will be tabulated in `docs/SALVAGE.md` (step 4). Pieces added so far (all additive):
+
+    shared/src/salvage/specs.ts      ItemKind, ITEM_KIND_SPECS (label, default slots), ITEM_LIMITS (the single source of truth for every limit)
+    shared/src/salvage/public.ts     ItemActionSchema (intents), ItemsPublicSchema (optional StageState.items)
+    server/src/salvage/rest.ts       restY / surfaceBelow / hasFooting: items rest on platforms, computed from the arena (no physics)
+    server/src/salvage/system.ts     ItemSystem: pick up, drop, swap, hand over, install; carry slots; last-safe-position drop on disconnect
+    server/src/systems/stageDef.ts   StageDef.items (ItemDef) and StageDef.needs (NeedDef), both optional
+    server/src/systems/engine.ts     itemAction(), itemHost(), items.step(pos); StageState.items published when the stage has items
+    server/src/systems/validate.ts   structural item/needs checks (ids, platform, fall limit, counts, genuine supply per need)
+
+Flow: client sends `item:action` -> gateway Zod (`ItemActionSchema`, error `Invalid item request`) -> `Room.itemAction` -> `StageEngine.itemAction` -> `ItemSystem.use`.
+Order of checks: known player > busy channelling > rate limit (`minGapTicks`, advances on refusals too) > action rules. Nothing changes on a refusal.
+Item life states: `hidden | in_world | carried | installed | consumed | destroyed`. Only `in_world`, `carried` and `installed` are ever published;
+a hidden, consumed, destroyed or nonexistent id gets the SAME refusal text in every action (`NOTHING_THERE`, `NOT_CARRYING`, `NO_INSTALL_TARGET`).
+The decoy flag and the hidden rule are server-private. `StageDef.needs` maps a target id (breakpoint, conduit or entity) to the kinds that must be installed.
+
+Not yet implemented (later P3C steps): revealing hidden items (Scanner / interact), exposing a target's needs to clients by `clueClarity`,
+gating repairs on installed parts and tools, hazard damage to carried items, the client HUD, the new stage 1, generator items and the solvability proof.
 

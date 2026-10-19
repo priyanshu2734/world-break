@@ -8,3 +8,4 @@ export * from './systems/tools';
 export * from './systems/schemas';
 export * from './disasters';
 export * from './abilities';
+export * from './salvage';

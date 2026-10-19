@@ -97,6 +97,8 @@ export interface ClientToServerEvents {
   'room:nextStage': (payload: unknown, ack: (r: Ack) => void) => void;
   /** P3B. A player's reality ability intent (gravity well, freeze, duplicate, momentum). The server decides the outcome. */
   'ability:use': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P3C. A player's salvage intent (pick up, drop, swap, hand over, install). The server decides the outcome. */
+  'item:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;

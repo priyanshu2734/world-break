@@ -1,6 +1,6 @@
 import {
   ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type AbilityAction, type Arena, type StageAction, type StageState, type ToolId,
+  type AbilityAction, type Arena, type ItemAction, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
@@ -9,6 +9,7 @@ import { validateStageDef } from './validate';
 import { DisasterRuntime } from '../disasters/runtime';
 import { AbilitySystem, type AbilityHazard, type AbilityResult } from '../abilities/system';
 import type { PhysicsWorld } from '../abilities/world';
+import { ItemSystem, type ItemResult } from '../salvage/system';
 
 export interface PlayerPos { x: number; y: number; connected: boolean }
 export type PosFn = (playerId: string) => PlayerPos | undefined;
@@ -75,6 +76,8 @@ export class StageEngine {
   private frozenHazards = new Map<string, number>();
   /** P3B: Reality Energy and ability rules (null when the stage has no abilities). */
   private readonly abilities: AbilitySystem | null;
+  /** P3C: parts the players find, carry and install (null when the stage has no items). */
+  private readonly items: ItemSystem | null;
   private world: PhysicsWorld | null = null;
   private readonly arena: Arena;
   private dirty = true;
@@ -97,6 +100,7 @@ export class StageEngine {
     this.conduits = new Map(def.power.conduits.map((c) => [c.id, c]));
     this.objectives = new Map(def.objectives.map((o) => [o.id, o]));
     this.disaster = def.disaster ? new DisasterRuntime(def.disaster) : null;
+    this.items = def.items && def.items.length > 0 ? new ItemSystem(def.items, def.needs ?? [], this.arena, this.itemHost()) : null;
 
     for (const b of def.breakpoints) this.bpRt.set(b.id, { revealed: false, repaired: false });
     for (const e of def.entities) if (e.kind === 'power_switch') this.switchClosed.set(e.id, e.initiallyClosed);
@@ -136,6 +140,41 @@ export class StageEngine {
     return this.abilities.use(playerId, a, me);
   }
 
+  // ------------------------------------------------------------------ P3C: salvage (items, carrying, installing)
+  private itemHost() {
+    const self = this;
+    return {
+      get tick() { return self.tick; },
+      say: (text: string, tone: 'info' | 'good' | 'warn' | 'bad') => self.say(text, tone),
+      markDirty: () => { self.dirty = true; },
+      award: (category: string, points: number) => self.award(category, points),
+      wrongPartCost: () => self.def.scoring.wrongTargetPenalty,
+      installTarget: (id: string): { x: number; y: number; label: string } | null => {
+        const b = self.bps.get(id);
+        if (b) return self.bpRt.get(id)!.revealed ? { x: b.x, y: b.y, label: b.label } : null; // hidden breakpoints do not exist yet
+        const c = self.conduits.get(id);
+        if (c) {
+          const a = self.nodes.get(c.from)!, n = self.nodes.get(c.to)!;
+          return { x: (a.x + n.x) / 2, y: Math.max(a.y, n.y), label: 'The connection' };
+        }
+        const e = self.entities.get(id);
+        return e ? { x: e.x, y: e.y, label: e.label } : null;
+      },
+      busy: (playerId: string) => self.channels.has(playerId),
+      unsafeAt: (x: number, y: number) => self.def.hazards.some((h) =>
+        h.kind === 'arc_discharge' && self.hazardArmed(h) && dist(h.x, h.y, x, y - 20) <= (self.disaster?.hazardMod(h.id)?.r ?? h.r)),
+    };
+  }
+
+  /** A player's salvage intent (pick up, drop, swap, hand over, install). */
+  itemAction(playerId: string, a: ItemAction, pos: PosFn): ItemResult {
+    const me = pos(playerId);
+    if (!this.players.has(playerId) || !me || !me.connected) return fail('You are not part of this run.');
+    if (this.status !== 'running') return fail('This stage is already stabilised.');
+    if (!this.items) return fail('There is nothing to carry in this stage.');
+    return this.items.use(playerId, a, me, pos);
+  }
+
   /** Placement rules for the Gravity Anchor tool (P3B). Returns the reason it cannot be planted, or null. */
   private anchorPlacementError(me: PlayerPos): string | null {
     const a = this.arena;
@@ -151,13 +190,14 @@ export class StageEngine {
   // ------------------------------------------------------------------ roster
   addPlayer(id: string): void {
     this.abilities?.addPlayer(id);
+    this.items?.addPlayer(id);
     const tools = new Map<ToolId, { charges: number; cooldownUntil: number }>();
     for (const t of this.def.loadout) tools.set(t, { charges: TOOL_SPECS[t].maxCharges, cooldownUntil: 0 });
     this.players.set(id, { tools, lastActionTick: -100, cacheReadyAt: 0 });
     this.dirty = true;
   }
-  removePlayer(id: string): void { this.players.delete(id); this.channels.delete(id); this.abilities?.removePlayer(id); this.dirty = true; }
-  onDisconnect(id: string): void { if (this.channels.delete(id)) this.dirty = true; }
+  removePlayer(id: string): void { this.items?.removePlayer(id); this.players.delete(id); this.channels.delete(id); this.abilities?.removePlayer(id); this.dirty = true; }
+  onDisconnect(id: string): void { this.items?.onDisconnect(id); if (this.channels.delete(id)) this.dirty = true; }
 
   // ------------------------------------------------------------------ derived world state
   private conducts = (conduitId: string): boolean => {
@@ -258,6 +298,7 @@ export class StageEngine {
 
     for (const [id, until] of [...this.frozenHazards]) if (until <= t) { this.frozenHazards.delete(id); this.say('The hazard thaws and resumes its cycle.', 'warn'); this.dirty = true; }
     this.abilities?.step();
+    this.items?.step(pos);
 
     this.stepHazards(pos);
     this.stepChannels(pos);
@@ -737,6 +778,7 @@ export class StageEngine {
       feed: this.feed.map((f) => ({ ...f })),
       ...(this.disaster ? { disaster: this.disaster.publicState() } : {}),
       ...(this.abilities ? { abilities: this.abilities.publicState() } : {}),
+      ...(this.items ? { items: this.items.publicState() } : {}),
     };
   }
 
