@@ -18,7 +18,7 @@ npm workspaces monorepo. `@wb/shared` is consumed as TypeScript source by both s
 - [x] P0 Foundation: monorepo, contracts, state machines, lobby (1-4 players), difficulty gating
 - [x] P1 Playable core: fixed-timestep sim @20Hz, movement, interpolation, one hand-authored arena, 1-4 players (see docs/P1_HANDOFF.md)
 - [x] P2 Systems graph: breakpoints, failure chains, tools, repair progress, timers, scoring (server-side). Verified as per docs/handoffs/P2.md (200 unit/integration tests, build, and an automated real-browser run of the full repair chain; NOT yet verified by a human playtest or on a real GPU)
-- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (salvage, carrying, requirements, a real stage 1) is IN PROGRESS: steps 1 and 2 of 4 delivered (item model, actions, protocol; requirements, hiding, decoys, hazards, solo-safe validator), see the P3C section below.
+- [~] P3 Abilities + disasters. P3A done (endless loop, disasters, seeding; docs/handoffs/P3A.md). P3B done (reality abilities, shared-step physics migration, Ability Lab; docs/ABILITIES.md, docs/handoffs/P3B.md). P3C (salvage, carrying, requirements, a real stage 1 behind the opt-in hunt option) is delivered except generator items (docs/SALVAGE.md, docs/handoffs/P3C.md; see the P3C section below).
 - [ ] P4 Downed/revive/spectate, team wipe, death review, retry with new scenario
 - [ ] P5 Scenario generator + validator + fallback; then OpenAI integration (structured outputs, timeouts, retries)
 - [ ] P6 Persistence (stage progression, unlock 10/20, rewards), difficulty select per stage
@@ -159,8 +159,8 @@ Unchanged rules from P3 still hold. P3B's files: `shared/src/abilities/**`, `ser
 above (optional 4th parameter, guarded by a bit-exact differential test against a frozen copy of the P2 step); `prediction.ts` only gained the
 optional `PredictionWorldCtx` and `setArena`; `arena.ts` was not touched. `phases.ts`, `difficulty.ts`, `loop.ts` and every pre-P3B test were not touched.
 
-## P3C salvage (IN PROGRESS: steps 1-3 of 4)
-Rules and limits will be tabulated in `docs/SALVAGE.md` (step 4). Pieces added so far (all additive):
+## P3C salvage (complete except generator items; see docs/handoffs/P3C.md)
+Rules, limits, keys and how to play the hunt are in `docs/SALVAGE.md`; the support status of each feature is in `docs/handoffs/P3C.md`. Pieces (all additive):
 
     shared/src/salvage/specs.ts      ItemKind, ITEM_KIND_SPECS (label, default slots), ITEM_LIMITS (the single source of truth for every limit)
     shared/src/salvage/public.ts     ItemActionSchema (intents), ItemsPublicSchema (optional StageState.items)
@@ -208,4 +208,6 @@ The decoy flag and the hidden rule are server-private. `StageDef.needs` maps a t
 * **Client (step 3).** `ui/itemView.ts` is the pure view-model (carry slots, "Needs: ..." prompts, tones and shapes, key -> intent, hand-over feedback); `ItemHud`, `ItemMarkers` and `itemDraw` only draw it.
   Keys: E pick up / open (else use), G drop or swap (Shift = older part), F fit a part, H hand over. Colours: red danger/cracked, cyan interactive, amber closed stash, green installed. Parts differ by shape.
 
-Not yet implemented: generator items (item 7 of the P3C prompt), docs/SALVAGE.md and the handoff (step 4).
+Not implemented: generator items (item 7 of the P3C prompt): no generated stage (stage 2 and later) has parts, needs or stashes, and `StageState.items` is absent there.
+Not covered by automation: the Phaser drawing and key wiring (`ItemHud`, `ItemMarkers`, `itemDraw`, `GameScene`); only the pure view-model `itemView.ts` is unit-tested.
+Ownership: `server/src/salvage/**`, `shared/src/salvage/**` and `client/src/ui/{itemView,itemDraw,ItemHud,ItemMarkers}.ts` belong to P3C; later phases extend them additively.
