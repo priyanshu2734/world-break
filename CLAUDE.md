@@ -19,7 +19,7 @@ TypeScript npm-workspaces monorepo: `@wb/shared` (Zod schemas, protocol, state m
 4. `shared/src/sim.ts`, `shared/src/arena.ts`, `client/src/sim/prediction.ts` must stay bit-exact between server and client.
    Change them only additively (optional parameters, defaults = old behaviour), with parity tests and a documented migration.
 5. The game is ENDLESS. No final stage, no ending screen, no credits. Complexity is bounded and validated (see GAMEPLAY.md section 6).
-6. Obey `docs/GAMEPLAY.md`: no checklist stages, every disaster has its own verb, decoys, bounded counts, readable visuals.
+6. Obey `docs/GAMEPLAY.md` (v4: escape-room co-op with a ghost chaser, 2D). Hidden info stays server-side except inside a player's vision.
 7. Secrets (OPENAI_API_KEY, auth keys) are server-side only; never in client code, logs, Git or tests. `.env.example` has placeholders only.
 8. Never claim something works unless you ran it. Write "NOT RUN". Mocked tests are not live verification.
    If you cannot run commands, ALSO review every test and helper for TypeScript type compatibility by hand (vitest does not typecheck).

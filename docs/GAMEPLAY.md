@@ -1,137 +1,123 @@
-# WORLD//BREAK: GAMEPLAY BIBLE (v2)
+# WORLD//BREAK: GAMEPLAY BIBLE (v4: escape-room co-op with a chaser)
 
-This file overrides any earlier, softer description of the game. Every phase prompt must obey it.
-Stages are **endless**. There is no ending, no credits, no final stage.
+Replaces v2/v3. Stages are ENDLESS: no final stage, no ending, no credits. Everything is 2D (Phaser), server-authoritative.
 
 ## 1. The promise
-> Start a stage, get hooked, fail once, say "one more try", and look up three hours later.
+1 to 4 players are trapped in a failing facility. Find items, solve puzzles, talk to each other, open the doors, and ESCAPE,
+while a ghost hunts you and reality itself starts to break. Easy to understand in 10 seconds ("get out, don't get caught"),
+deep enough to master over hundreds of stages.
 
-You are a crew of 1 to 4 **Relay Operators** on a failing reality relay station. Reality breaks in strange, physical ways
-(gravity flips, time loops, rooms fracture, power cascades). You must **investigate, deduce, improvise with reality
-abilities, and survive**. Success feels like "I figured that out". Failure feels like "I know what I did wrong".
+## 2. Pillars
+1. **Clear goal:** every stage = reach the exit. The HUD shows one short current-goal line, never a wall of text.
+2. **Fear and fairness:** the ghost is scary but always avoidable. Every catch can be explained ("it heard me running").
+3. **Communication:** players hold different information (symbols here, keypad there). Ping and chat are first-class.
+4. **Hidden things must really be hidden** (darkness, containers, big rooms, server-side visibility). See section 9.
+5. **Teach before test:** a new mechanic is introduced alone, with a visible prompt, before it is required.
+6. **Solo is real:** every mandatory puzzle has a solo-safe route (clone, echo, timer instead of a second person).
+7. **Bounded complexity:** rooms capped at 6; difficulty comes from smarter puzzles, locks, ghost behaviour and disasters, not 100 rooms.
+8. **Short loops:** a stage takes 4 to 12 minutes; instant retry; a reward every stage.
 
-## 2. Design pillars (every stage must pass these)
-1. **Deduce, don't follow.** The game shows symptoms and contradicting evidence, never "do step 1, then step 2".
-   Objective text states the GOAL ("Restore the core"), not the method.
-2. **Every disaster has its own verb.** No two disasters may be solved with the same sequence of actions.
-3. **Reality is physical.** Disasters change movement, rooms and objects. They are not just text and score penalties.
-4. **Decoys and misdirection.** Every stage above Easy has at least one tempting wrong answer with a visible cost.
-5. **Real stakes, fair stakes.** Mistakes cost health, time, resources or rooms. Deaths are always explainable
-   (death review) and never random. A player must always be able to say what they should have done.
-6. **Co-op by design.** 1 to 4 players can always solve it, but with 2+ players there are roles, information that only
-   one player can see, and actions that are faster or safer together. Solo is a real way to play (never "impossible").
-7. **Learn one thing at a time.** New concept first in isolation, then combined, then under pressure.
-8. **Short loops, strong hook.** A stage takes 4 to 12 minutes. Restart is instant. Rewards come every stage.
-9. **Bounded complexity.** Difficulty rises by smarter combinations, never by unbounded counts (see section 6).
-10. **Readable always.** Hazards, hidden things and scenery must be visually distinct. Effects never hide danger.
+## 3. Loop of one stage
+Spawn in room 1 -> search (dark, big rooms, containers) -> find items and clues -> solve the lock of the next door (key, code, power,
+two-person, reality) -> repeat through up to 6 rooms -> reach the EXIT. The ghost comes in waves. Disasters add pressure.
+**Clear rule:** the stage is cleared when at least ONE player reaches the exit alive. Players who were caught return for the next stage
+(so a sacrifice or decoy is a valid strategy). Bonus score if everyone escapes alive. If nobody can reach the exit (all caught), the stage restarts
+with a new seed (the stage number never resets).
 
-## 3. Core loop of one stage
-1. **Arrive:** short disaster intro (2 to 4 seconds), warning phase with a countdown.
-2. **Investigate:** scan, read gauges, compare contradicting readings, find clues in different rooms.
-3. **Hypothesise:** the evidence board (a simple in-game panel) shows what you know, never what to do.
-4. **Act:** use tools and reality abilities on the suspected cause. Wrong guess = a consequence (damage, a cascade, a
-   lost resource, a room sealing), not just a number.
-5. **Escalate:** the disaster gets worse on a deterministic server schedule. The pressure rises.
-6. **Stabilise or escape:** final objective under maximum pressure.
-7. **Reward:** score, a **draft pick** (choose 1 of 3 upgrades), progress toward unlocks, then "Next stage".
+## 4. Rooms (bounded)
+| Stage | Rooms |
+|---|---|
+| 1 to 2 | 1 |
+| 3 to 6 | 2 |
+| 7 to 14 | 3 |
+| 15 to 24 | 4 |
+| 25 to 39 | 5 |
+| 40+ | 6 (hard cap) |
+Rooms are LARGER than the screen (camera follows the player). Each room has its own arena, hiding spots, containers and a door to the next.
+Breather stage every 5th; "Major Breach" every 10th (extra room-ish complexity, bigger reward, celebration, then continue).
 
-## 4. Reality abilities (P3B) and tools (P2)
-Shared **Reality Energy** meter (per player, regenerates when the team repairs things; bounded, no infinite loops).
-| Ability | Effect | Limits (defaults, tune in tests) |
+## 5. Locks and puzzles (a different lock per door, never the same twice in a row)
+| Lock | Example | Co-op / solo |
 |---|---|---|
-| Gravity Well | local gravity zone (flip or reduce) | radius ~160, ~6 s, cooldown ~15 s, max 2 active per room |
-| Freeze | stops one object or hazard | ~3 s, cooldown ~12 s |
-| Duplicate | clone of a light object (hold a plate, block a beam) | max 2 per player, ~8 s life, cost energy |
-| Momentum | add or cancel an object's velocity | bounded impulse, cooldown ~8 s |
-| Anchor | pins an area stable (existing P2 tool) | existing limits |
-Abilities are puzzle pieces: stages must REQUIRE them in different ways (hold two pressure plates with a duplicate,
-freeze a hazard to cross it, flip gravity to reach a ceiling switch).
+| Key item | find the keycard (hidden in a locker) | any |
+| Code | symbols on a wall in room A, keypad in room B | one reads, one types (solo: notebook item) |
+| Power | carry a battery to the generator, then to the door | uses 2-slot carry |
+| Two-person | hold two switches at once | solo: clone ability or timed echo |
+| Reality | flip gravity (Gravity Well) to reach a ceiling switch | abilities unlock gradually |
+| Safe | combination found from clues; contains a key or the PULSE GUN | |
+Decoys: look-alike or cracked items, fake codes. Items carry limit: 2 slots (P3C). Keys, codes and clue text are generated by seed and validated solvable.
 
+## 6. The Ghost (the "Echo")
+Server-authoritative AI, deterministic by seed and tick, never wall-clock.
+* **States:** DORMANT -> WARNING (lights flicker, whisper audio, 3+ seconds) -> ROAMING (investigates noise) -> HUNTING (sees a player) -> STUNNED -> RESPAWN.
+* **Senses:** sight (cone, blocked by walls and closed doors) and noise (running and dropped items are loud; walking and crouching are quiet).
+* **Fairness rules:** never spawns near a player or inside a safe zone; warning always precedes an appearance; never faster than 95 percent of
+  sprint speed; doors take time to open; hiding works; every room has a reachable escape path. Every catch must be explainable in the review.
+* **Sound:** positional audio (distance volume and left/right pan), a heartbeat that rises as it nears, distinct footsteps. You can HEAR it before you see it.
+* **Catch:** the caught player is CAPTURED, a rescue window (about 45 s) lets a teammate revive them at the spot, then they are ELIMINATED and spectate.
+* **Pulse Gun:** found in a safe or locker. 1 charge, needs aim and range. A hit STUNS the ghost (not kills): about 150 s at low stages, shrinking with stage.
+  Carrying it uses a slot. Only one gun per stage (more on later stages is a tuning choice).
+### Ghost types (new type every few stages; looks, sound and power all change)
+Each type has its own SILHOUETTE and COLOUR, its own SOUND signature, one signature power, and a COUNTER the player can learn. A new type is introduced
+ALONE in its first stage with a visible clue (teach before test). Later stages mix at most 2 types (cap), and every 10th stage ("Major Breach") has a
+stronger variant. All behaviour is server-side, deterministic by seed, and every power has a warning cue.
+| From stage | Type | Look | Power | Counter |
+|---|---|---|---|---|
+| 2 | Wisp | small pale glow | follows noise, basic chase | hide, stay quiet |
+| 7 | Shade | dark tall figure | only moves when it is NOT in your flashlight | keep your light on it, retreat slowly |
+| 12 | Howler | long-armed, red eyes | scream breaks nearby lights and alerts it to all rooms | crouch, break line of sight, avoid noise |
+| 18 | Mimic | looks like a teammate | fake pings and fake teammate markers | confirm with the ping wheel code word, real pings have a signature |
+| 25 | Phantom | flickering outline | short blink through walls (telegraphed by a sound) | stay in lit areas, use doors it cannot blink through |
+| 35 | Warden | huge, slow, armoured | breaks ordinary doors, but slow | two-person doors hold, stun lasts longer on it |
+| 45 | Twins | two small mirrored ghosts | two weaker ghosts hunting together | split their attention, hide separately |
+After stage 45 the game recombines these types and modifiers (never more than 2 types, never faster than the speed cap, always a counter and a warning).
+Speed, interval and stun timers still follow the tuning table below; the type only changes behaviour, look and sound.
 
-## 4b. Salvage, carrying and requirements (the hunt)
-Repairs need PARTS, not just tools. Parts are physical items in the world that players must FIND, CARRY and INSTALL.
-* **Items (Salvage):** fuse, flux coil, coolant cell, valve wheel, access key, battery, revive cell, and so on. Each repair target
-  lists what it NEEDS once you have discovered it, for example "Needs: Flux Coil + Welder". The game tells you WHAT is needed,
-  never WHERE to find it.
-* **Hidden:** many items are hidden (in crates, behind panels, on ceilings, in other rooms). Scanner and exploration reveal them.
-  Some need an ability to reach (gravity well to reach a ceiling crate, freeze to cross a hazard, duplicate to hold a plate).
-* **Carry limit:** each player carries **2 slots** (heavy items use 2 slots; draft upgrades can add 1). Pick up with E, drop and swap
-  with G, hand over to a teammate in range. Limits force trips, planning and teamwork.
-* **Decoys and damage:** look-alike or cracked parts exist (installing a wrong part costs time or health). Hazards can destroy
-  carried items (bounded, telegraphed).
-* **Revival uses items:** a Revive Cell is a carried item. Rescuing a teammate may mean dropping the part you were carrying.
-* **Clarity by mode:** Easy shows item names and a hint of where; Intermediate shows silhouettes; Hardcore shows nothing until tried.
-* **Solo-safe:** every mandatory part is reachable and carryable by 1 player (the solver must prove it).
+### Scaling (one tuning table, with caps; tested at stage 1, 10, 100 and 1,000,000)
+| Parameter | Stage 1-2 | Rises or falls | Cap |
+|---|---|---|---|
+| Ghost present | no ghost on stage 1; mild from stage 2 | | |
+| Speed (share of sprint) | 70 percent | +0.5 percent per stage | 95 percent |
+| Appearance interval | 120 s | shrinks | floor 40 s |
+| Stun duration after a hit | 150 s | shrinks | floor 45 s |
+| Hearing range | small | grows | cap |
+| Hiding spots per room | 4 | fewer | min 1 per room |
+| Ambient brightness | 100 percent | dims | floor 35 percent |
+New tricks unlock by stage (breaks lights, blinks short distances, imitates a teammate's ping), never all at once.
+Mode (Easy, Intermediate at stage 10, Hardcore at stage 20) scales severity (how fast the curves move), stage scales complexity.
 
-## 5. Disaster verbs (signature mechanics)
-| Disaster | Core verb | Example puzzle |
-|---|---|---|
-| Gravity inversion | **Orient** | Gravity flips on a schedule; some switches only work upside down; plan routes across flips. |
-| Reactor overload | **Route and sacrifice** | Heat rises; route coolant/vents through a pipe graph; venting one sector saves the core and floods that room. |
-| Reality fracture | **Tell real from ghost** | Duplicate rooms and doors; one copy is real. Evidence reveals which. A wrong door costs health. |
-| Temporal storm | **Cooperate with your past** | Record 8 s; your echo replays it. Solve with yourself (solo-safe) or teammates' echoes. |
-| Cascading power failure | **Isolate** | Lights die, vision shrinks; cut the failing circuit before it spreads through the graph. |
-Combinations (P3C) must be explicitly written and tested. Example: reactor overload + gravity inversion = the coolant valve
-is on the ceiling until you flip gravity.
+## 7. Disasters as a difficulty layer
+From stage 3 a disaster runs alongside the escape: gravity inversion, reactor overload, reality fracture, temporal storm, cascading power failure.
+* You CAN escape while it is active, but it makes everything harder (dark and failing power, flipped gravity, ghost doors).
+* Each disaster has an optional CURE puzzle (parts and tools from P2 and P3C). Curing it gives relief (light returns, ghost slows, a shortcut opens).
+* Intensity and number grow with stage (caps: 1 disaster until stage 14, 2 until stage 39, then 3). Combinations only where tested.
 
-## 6. Difficulty model (what rises, and what must NOT)
-Two independent knobs:
-* **Stage number = complexity** (how many ideas, how deep the dependency chain, how many rooms).
-* **Mode = severity** (damage, clue clarity, repair windows, resource scarcity). Easy from stage 1, Intermediate at 10, Hardcore at 20.
+## 8. Death, spectating, revive
+* Caught -> CAPTURED (rescue window) -> ELIMINATED -> SPECTATING.
+* Spectators see ONLY the ghost and their teammates (never items, codes or solutions). They can ping "ghost here" and use chat.
+* A teammate revives a CAPTURED player by staying next to them a few seconds (a Revive Cell item may be required on harder modes).
+* All players captured or eliminated -> stage over, restart with a new seed. At least one escapes -> stage cleared, all return next stage.
 
-### Rooms (sectors) per stage, bounded
-| Stage | Rooms | Notes |
-|---|---|---|
-| 1 | 1 | tutorial |
-| 2 to 5 | 1 to 2 | first two-room puzzle at stage 4 |
-| 6 to 14 | 2 to 3 | |
-| 15 to 29 | 3 to 4 | |
-| 30+ | 4 to 5, **hard cap 6** | stage 100 does NOT have 100 rooms |
-After the cap, variety and depth come from: new mechanics, combined disasters (cap 3 at once), modifiers, new layouts, hidden
-cross-room dependencies, and "Major Breach" stages. A stage never exceeds its solver-verified complexity budget and human-time budget.
+## 9. Making 2D work (hidden things stay hidden)
+1. **Darkness + flashlight:** the level is dark; each player sees a light cone and a small radius. Brightness dims with stage.
+2. **Big rooms and camera follow:** you never see a whole room at once. No minimap.
+3. **Server-side visibility:** the server only sends a client the entities inside that player's line of sight or radius. Hidden items, safes, codes and
+   the ghost (until seen or heard) are not in the snapshot, so a modified client cannot cheat. Spectators get the restricted view in section 8.
+4. **Containers and look-alikes:** items are inside lockers, crates, safes and behind panels; decoys look similar.
+5. **Sound and clues instead of vision:** direction of footsteps, whispers, flicker patterns.
+6. Accessibility: a brightness assist option, shapes plus colours, reduced-flash mode (assist options never change server rules).
+Colour language: red danger, cyan interactive, amber clue, green done.
 
-### Rhythm (repeats forever, 10-stage "acts")
-x1 to x3: introduce a mechanic or twist. x4 to x6: combine. x7: **breather** (calmer, extra resources, optional objectives).
-x8 to x9: pressure. x10: **Major Breach** (milestone): multi-room, multi-disaster, big reward, short celebration, then continue.
-Act 1 uses one disaster at a time. Act 2 introduces pairs. Act 3 adds modifiers. Later acts recombine with caps.
+## 10. Communication
+* **Tab** opens the team panel: **ping wheel** (Key here, Danger, Need help, Door locked, Ghost near, Go here) and **chat**.
+* Chat limits: room-scoped, 120 characters, 1 message per 1.5 s, server-side sanitised, mute button. No voice (players may use their own).
+* Players can hold DIFFERENT information (for example only one sees the symbols), so talking is required.
 
-### Risk and death (rises with level, always fair)
-* Player **health**. Damage sources are telegraphed. Easy damage is small. Intermediate and Hardcore hurt more, with tighter windows.
-* Lifecycle: ACTIVE, DOWNED (rescue window), REVIVED or ELIMINATED, SPECTATING. Team shares a limited **Reserve** (revive cells).
-* Team wipe: the stage restarts with a NEW validated seed. Drafted upgrades and progress are kept. Stage number never resets.
-* Optional **Risk Contracts** before a stage ("Lights flicker", "double damage", "one fewer revive") for extra reward. The player chooses risk.
-* Death review shows the real cause from recorded events (no invented explanations).
+## 11. Controls (small on purpose)
+Move, Jump, E (interact, pick up, open), G (drop or swap), F (use item or fit), Q (quick ping), Tab (team panel), Mouse (aim the gun and abilities).
+The old tool bar (1 to 5) is removed from the HUD for escape stages. Abilities (gravity, freeze, clone, momentum) appear later as reward pickups, not from the start.
 
-## 7. Hooks that keep people playing
-* **Draft pick** after every stage: 1 of 3 upgrades (for example Scanner range, faster Welder, longer Anchor, cheaper Freeze) that
-  last for the run, some with trade-offs. Builds make every run different.
-* **Streak and "close call" moments** (cleared with 1 HP, saved a teammate), shown on the results screen.
-* **Workshop (meta progression, account only):** permanent unlocks, cosmetics, new draft options.
-* **Optional objectives** and **Risk Contracts** for mastery players.
-* **Daily Breach** (later): same seed for everyone, best stage reached. Only if time allows; not required.
-* Fast restart, short loops, constant small rewards, new idea every few stages.
-
-## 8. Accounts and saving
-* **Guest:** play instantly, nothing is saved server-side. Guest progress lives only in that browser session or device and may be lost.
-  A banner invites sign-in to keep progress.
-* **Account:** sign in with a managed provider (Google and/or email magic link; never store passwords ourselves). Server stores:
-  highest stage, unlocked modes, Workshop unlocks, completed stage results, schema version.
-* Team rule (confirm in P6): the room runs the **host's** save slot for the stage; every account earns personal records and unlocks.
-  The server validates everything; clients never submit stage numbers, scores or unlock flags.
-* Persistence and auth are one P6 decision, documented. Guests must always still be able to play if storage is down.
-
-## 9. Look, feel and dimension (2D, polished)
-**Decision: stay 2D (Phaser).** Going 3D would rewrite the client, the movement code, networking parity and all assets. For a solo student
-project that risks never finishing. A polished 2D game can look stunning and plays well in a browser.
-Target look: clean dark sci-fi, strong neon accents, clear silhouettes, parallax backgrounds, dynamic lighting, particles, screen shake,
-glow on interactables, distinct color language: **red = danger, cyan = interactive, amber = hidden clue, green = repaired**.
-Audio: procedural cues for discovery, danger, repair, rescue, failure; layered ambient track that intensifies with escalation.
-Accessibility: color-blind-safe shapes, reduced-motion option, scalable text.
-
-## 10. Hard rules for AI sessions
-1. Never write a stage whose objective text spells out the solution steps (Easy may give one hint line; Intermediate cryptic; Hardcore minimal).
-2. Every disaster needs its own signature mechanic and at least one decoy.
-3. Every mandatory objective must be solvable by 1 player; co-op must add speed, safety or information.
-4. Every generated stage must pass the validator and the real-physics solvability bot for 1 to 4 players.
-5. No unbounded counts (rooms, objects, hazards, clones). All caps documented in `docs/DISASTERS.md` or `docs/LIMITS.md`.
-6. Never claim "supported" or "fun" without tests and a human playtest note.
+## 12. Hard rules for AI sessions
+1. No checklist stages. Objective text states goals only. 2. Every lock and puzzle is validated solvable for 1 to 4 players by the solver.
+3. All counts bounded and documented. 4. Hidden information never leaves the server except inside a player's vision.
+5. The ghost must be deterministic, fair and explainable. 6. Never claim supported or fun without tests and a human playtest note.

@@ -1,19 +1,17 @@
-# Roadmap v3 (replaces v2)
+# Roadmap v4 (escape-room pivot)
 
-Done: P0 lobby, P1 multiplayer core, P2 repair systems, P3A disaster registry and endless stage loop.
-In progress: P3B reality abilities (steps 1 and 2 merged to branch phase/p3b; steps 3 and 4 pending).
-Rule: one phase at a time, each from the latest git tag, each ending in a handoff in `docs/handoffs/`.
+Done: P0 lobby, P1 multiplayer core, P2 repair systems, P3A disaster registry + endless loop, P3B abilities, P3C salvage items (924 tests).
+Rule: one phase at a time from the latest tag; each ends with a handoff in `docs/handoffs/`.
 
-| Phase | Goal | Fun it adds |
-|---|---|---|
-| **P3B** | Reality abilities + physics migration + Ability Lab | gravity wells, freeze, duplicate, momentum |
-| **P3C** | **Salvage and carrying**: hidden items, 2-slot carry, "Needs X" requirements, decoy parts, and a rebuilt stage 1 that is a real hunt | the brain-use and treasure-hunt feel |
-| **P3D** | Physical disasters with signature verbs, deduction clues, decoys, tested combinations | every disaster plays differently |
-| **P3E** | Game feel pass: lighting, particles, shake, audio, clear visual language | it looks and sounds alive |
-| **P4** | Health, danger, downed/revive (Revive Cell item), spectate, team wipe, death review, Reserve, Risk Contracts | real stakes, chaos that rises with level |
-| **P4B** | Multi-room stages (sector graph, doors, cross-room items and dependencies, bounded room counts by stage) | bigger worlds as you progress |
-| **P5A/P5B** | Scenario model, validator, deterministic fallback, then OpenAI generation (items, rooms, mechanics) | endless variety |
-| **P6** | Accounts, save, guests, Workshop, draft picks, endless progression and unlocks | reasons to come back |
-| **P7A/P7B** | Polish, onboarding, Playwright E2E, security, deployment, submission | release |
+| Phase | Goal |
+|---|---|
+| **P3D** | Escape-room foundation: darkness spike, multi-room world (bigger than screen), doors and locks, exit, server-side vision, minimal HUD |
+| **P3E** | The Ghost: senses, sound, waves, stun gun in a safe, hiding spots, stage scaling tuning table, ghost types (Wisp, Shade, Howler, Mimic, Phantom, Warden, Twins) with different looks, sounds and powers |
+| **P3F** | Disasters as a difficulty layer with optional cure puzzles; more lock and puzzle variety; items in generated stages |
+| **P3G** | Team panel (Tab): ping wheel and chat, per-player information, first-minute onboarding and hints |
+| **P4** | Captured, revive, eliminated, spectating (limited view), stage retry, death review |
+| **P5A/B** | Scenario model, validator (rooms, locks, ghost fairness), deterministic fallback, then OpenAI generation |
+| **P6** | Accounts, save, guests, endless progression and unlocks |
+| **P7** | Polish (lighting, audio, art), Playwright E2E, security, performance, deployment, submission |
 
-Between phases: a 20 minute playtest with friends. Write down where people get bored or stuck.
+Between phases: a 20-minute playtest with 2 or 3 friends who have never seen the game. Do not help them. Write down where they get lost.
