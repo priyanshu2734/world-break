@@ -12,6 +12,7 @@ import { buildAbilityAction } from '../ui/abilityView';
 import { TOOL_KEYS, nearestInteractable, targetForTool } from '../ui/targeting';
 import { ItemHud } from '../ui/ItemHud';
 import { ItemMarkers } from '../ui/ItemMarkers';
+import { Darkness } from '../ui/Darkness';
 import { carryChanges, dropIntent, handoverIntent, installIntent, pickIntent, type ItemIntent } from '../ui/itemView';
 
 const W = ARENA.width, H = ARENA.height;
@@ -47,6 +48,8 @@ export class GameScene extends Phaser.Scene {
   private abilityHud!: AbilityHud;
   private itemHud!: ItemHud;
   private itemMarkers!: ItemMarkers;
+  /** P3D step 1: client-only dark view, created only with ?dark=1. */
+  private darkness: Darkness | null = null;
   private prevItems: import('@wb/shared').ItemsPublic | undefined;
   /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
   private where = new Map<string, { x: number; y: number }>();
@@ -96,6 +99,8 @@ export class GameScene extends Phaser.Scene {
     this.itemHud = new ItemHud(this);
     this.itemMarkers = new ItemMarkers(this);
     this.worldView = new WorldView(this);
+    this.darkness = Darkness.create(this, window.location.search);
+    this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
     this.input.on('pointermove', () => { this.pointerSeen = true; });
     const onBlur = () => kb.resetKeys(); // never leave a key "stuck down" after alt-tab
@@ -303,6 +308,10 @@ export class GameScene extends Phaser.Scene {
     if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
     this.worldView.update(g, delta);
     this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow, me?.facing ?? 1);
+    if (this.darkness) {
+      const ptr = this.input.activePointer;
+      this.darkness.update(g.phase === 'playing' ? meNow : null, this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null, me?.facing ?? 1);
+    }
 
     const briefing = g.phase === 'briefing';
     this.bannerBg.setVisible(briefing); this.banner.setVisible(briefing); this.bannerSub.setVisible(briefing);
