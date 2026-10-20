@@ -1,48 +1,83 @@
 import Phaser from 'phaser';
-import { ARENA } from '@wb/shared';
-import { COLOR, FONT } from '../palette';
-import { AMBIENT_STEP, LIGHT, aimAngle, clampAmbient, darkParams, effectiveAmbient, type DarkParams } from './darkParam';
+import { ARENA, type Arena } from '@wb/shared';
+import { FONT } from '../palette';
+import {
+  ASSIST, AMBIENT_STEP, LIGHT, aimAngle, clampAmbient, conePolygon, effectiveAmbient, lightGeometry, type DarkSettings, type LightGeometry,
+} from './darkParam';
 
 const W = ARENA.width, H = ARENA.height;
 const DEPTH = 50; // above the world (<= 10) and below the HUD (>= 100)
 const TEX_RADIUS = 'dark_light_radius';
 const TEX_CONE = 'dark_light_cone';
+const STORE_KEY = 'wb_assist';
+/** World objects drawn between these depths (stage markers, item markers, props and their labels) only show inside the player's light. */
+const MASK_MIN_DEPTH = 5, MASK_MAX_DEPTH = 9;
+
+export interface DarkFrame {
+  /** The local player's feet position, or null while no stage is running (a plain dark screen). */
+  me: { x: number; y: number } | null;
+  pointer: { x: number; y: number } | null;
+  facing: 1 | -1;
+  /** Ambient brightness outside the light (0..1), from the stage and mode. Ignored only by the dev keys. */
+  ambient: number;
+}
 
 /**
- * P3D step 1: a client-only dark layer. A full-screen black render texture is drawn over the world; each frame the
- * radius light and the flashlight cone are ERASED from it, so only what they touch is visible. HUD stays above it.
- * This is presentation only: it hides nothing from a modified client (server-side visibility is step 4).
+ * A client-side dark layer. A black render texture covers the world; the radius light and the flashlight cone are ERASED from it.
+ * Objects at depth 5 to 9 (stage and item markers, props, their labels) are additionally clipped to the light with a geometry mask,
+ * so they are not visible outside it at any ambient level. The HUD stays above the layer.
+ *
+ * Ambient comes from the stage and mode and is the same for everyone. The accessibility assist (V) only improves what is inside the
+ * light. The old spike keys (B, [ ]) exist only with `?dark=1&dev=1`.
+ * This is presentation only; what a modified client can learn is decided by the server (P3D step 4).
  */
 export class Darkness {
   private rt: Phaser.GameObjects.RenderTexture;
   private radiusImg: Phaser.GameObjects.Image;
   private coneImg: Phaser.GameObjects.Image;
-  /** Faint warm additive copies of the lights, drawn under the dark layer so lit areas look lit, not just uncovered. */
   private radiusGlow: Phaser.GameObjects.Image;
   private coneGlow: Phaser.GameObjects.Image;
+  private outlines: Phaser.GameObjects.Graphics;
+  private maskGfx: Phaser.GameObjects.Graphics;
+  private mask: Phaser.Display.Masks.GeometryMask;
   private status: Phaser.GameObjects.Text;
-  private params: DarkParams;
-  private keys: Record<'B' | 'OPEN_BRACKET' | 'CLOSED_BRACKET', Phaser.Input.Keyboard.Key>;
+  private masked = new Set<Phaser.GameObjects.GameObject>();
+  private labelState = new Map<Phaser.GameObjects.Text, boolean>();
+  private arena: Arena = ARENA;
+  private outlinesFor = '';
+  private assistOn: boolean;
+  private devFull = false;
+  private devAmbient: number | null;
+  private keys: Record<'V' | 'B' | 'OPEN_BRACKET' | 'CLOSED_BRACKET', Phaser.Input.Keyboard.Key>;
+  /** Geometry of the light drawn this frame (null with no player). Exposed for tests and the debug hook. */
+  geometry: LightGeometry | null = null;
+  /** The ambient actually drawn last frame. */
+  drawnAmbient = 0;
 
-  /** Returns null (and creates nothing) unless the URL has ?dark=1. */
-  static create(scene: Phaser.Scene, search: string): Darkness | null {
-    const p = darkParams(search);
-    return p.enabled ? new Darkness(scene, p) : null;
-  }
-
-  private constructor(private scene: Phaser.Scene, params: DarkParams) {
-    this.params = { ...params };
+  constructor(private scene: Phaser.Scene, private settings: DarkSettings) {
     Darkness.makeTextures(scene);
+    this.assistOn = settings.assist || Darkness.stored();
+    this.devAmbient = settings.ambientOverride;
     this.rt = scene.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(DEPTH);
     this.radiusImg = scene.make.image({ key: TEX_RADIUS, add: false }).setOrigin(0.5);
     this.coneImg = scene.make.image({ key: TEX_CONE, add: false }).setOrigin(0, 0.5);
     const glow = (key: string, ox: number) => scene.add.image(0, 0, key).setOrigin(ox, 0.5).setDepth(DEPTH - 1)
-      .setBlendMode(Phaser.BlendModes.ADD).setTint(0xffd9a0).setAlpha(0.16).setVisible(false);
+      .setBlendMode(Phaser.BlendModes.ADD).setTint(0xffd9a0).setAlpha(ASSIST.baseGlowAlpha).setVisible(false);
     this.radiusGlow = glow(TEX_RADIUS, 0.5); this.coneGlow = glow(TEX_CONE, 0);
+    this.outlines = scene.add.graphics().setDepth(6.5);
+    this.maskGfx = new Phaser.GameObjects.Graphics(scene);
+    this.mask = new Phaser.Display.Masks.GeometryMask(scene, this.maskGfx);
     this.status = scene.add.text(16, H - 14, '', { ...FONT, fontSize: '14px', color: '#9fb6c2', backgroundColor: '#04101acc' })
-      .setOrigin(0, 1).setDepth(DEPTH + 60).setPadding(8, 3);
+      .setOrigin(0, 1).setDepth(DEPTH + 60).setPadding(8, 3).setVisible(settings.dev);
     const kb = scene.input.keyboard!;
-    this.keys = kb.addKeys('B,OPEN_BRACKET,CLOSED_BRACKET') as typeof this.keys;
+    this.keys = kb.addKeys('V,B,OPEN_BRACKET,CLOSED_BRACKET') as typeof this.keys;
+  }
+
+  private static stored(): boolean {
+    try { return window.localStorage.getItem(STORE_KEY) === '1'; } catch { return false; }
+  }
+  private static store(on: boolean): void {
+    try { window.localStorage.setItem(STORE_KEY, on ? '1' : '0'); } catch { /* storage may be unavailable: the setting just lasts for this page */ }
   }
 
   /** Soft-edged light textures, drawn once with the 2D canvas API (no assets). */
@@ -59,7 +94,6 @@ export class Darkness {
       const L = LIGHT.coneLength, half = LIGHT.coneAngle / 2, h = Math.ceil(Math.sin(half) * L) * 2 + 4;
       const t = scene.textures.createCanvas(TEX_CONE, L, h)!;
       const c = t.getContext();
-      // the beam points along +x from the left-middle edge; brightness falls off with distance
       const g = c.createRadialGradient(0, h / 2, 10, 0, h / 2, L);
       g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.6, 'rgba(255,255,255,0.75)'); g.addColorStop(1, 'rgba(255,255,255,0)');
       c.fillStyle = g;
@@ -68,34 +102,75 @@ export class Darkness {
     }
   }
 
-  get ambient(): number { return effectiveAmbient(this.params.ambient, this.params.assist); }
-  get assist(): boolean { return this.params.assist; }
+  get assist(): boolean { return this.assistOn; }
 
-  /** `me` is the local player's feet position; null (no snapshot yet, or the stage is not running) shows a plain dark screen. */
-  update(me: { x: number; y: number } | null, pointer: { x: number; y: number } | null, facing: 1 | -1): void {
+  setArena(arena: Arena): void { this.arena = arena; this.outlinesFor = ''; }
+
+  update(f: DarkFrame): void {
     const J = Phaser.Input.Keyboard.JustDown;
-    if (J(this.keys.B)) this.params.assist = !this.params.assist;
-    if (J(this.keys.OPEN_BRACKET)) this.params.ambient = clampAmbient(this.params.ambient - AMBIENT_STEP);
-    if (J(this.keys.CLOSED_BRACKET)) this.params.ambient = clampAmbient(this.params.ambient + AMBIENT_STEP);
+    if (J(this.keys.V)) { this.assistOn = !this.assistOn; Darkness.store(this.assistOn); }
+    if (this.settings.dev) {
+      if (J(this.keys.B)) this.devFull = !this.devFull;
+      if (J(this.keys.OPEN_BRACKET)) this.devAmbient = clampAmbient((this.devAmbient ?? f.ambient) - AMBIENT_STEP);
+      if (J(this.keys.CLOSED_BRACKET)) this.devAmbient = clampAmbient((this.devAmbient ?? f.ambient) + AMBIENT_STEP);
+    }
+    // The ONLY ways the ambient changes: the stage value, and (dev flag only) the old spike keys.
+    const amb = this.settings.dev ? effectiveAmbient(this.devAmbient ?? f.ambient, this.devFull) : clampAmbient(f.ambient);
+    this.drawnAmbient = amb;
 
-    const amb = this.ambient;
     this.rt.clear();
     this.rt.fill(0x000000, 1 - amb);
     this.radiusGlow.setVisible(false); this.coneGlow.setVisible(false);
-    if (me) {
-      const cx = me.x, cy = me.y - 28; // chest height
-      const ang = aimAngle(me, pointer, facing);
-      this.coneImg.setRotation(ang);
-      this.radiusGlow.setPosition(cx, cy).setVisible(true);
-      this.coneGlow.setPosition(cx, cy).setRotation(ang).setVisible(true);
-      this.rt.erase(this.radiusImg, cx, cy);
-      this.rt.erase(this.coneImg, cx, cy);
+    this.maskGfx.clear();
+    this.geometry = null;
+    if (f.me) {
+      const ang = aimAngle(f.me, f.pointer, f.facing);
+      const g = lightGeometry(f.me, ang, this.assistOn);
+      this.geometry = g;
+      const k = this.assistOn ? ASSIST.lightScale : 1;
+      this.radiusImg.setScale(k); this.coneImg.setScale(k).setRotation(ang);
+      this.rt.erase(this.radiusImg, g.cx, g.cy);
+      this.rt.erase(this.coneImg, g.cx, g.cy);
+      const a = this.assistOn ? ASSIST.glowAlpha : ASSIST.baseGlowAlpha;
+      this.radiusGlow.setPosition(g.cx, g.cy).setScale(k).setAlpha(a).setVisible(true);
+      this.coneGlow.setPosition(g.cx, g.cy).setScale(k).setRotation(ang).setAlpha(a).setVisible(true);
+      this.maskGfx.fillStyle(0xffffff, 1).fillCircle(g.cx, g.cy, g.radius * 0.88).fillPoints(conePolygon(g), true);
     }
-    this.status.setText(`DARK  ambient ${(amb * 100).toFixed(0)}%${this.params.assist ? '  (assist ON)' : ''}   [B] assist  [ ] ambient`);
+    this.drawOutlines();
+    this.applyMaskAndLabels();
+    this.status.setText(`DARK dev  ambient ${(amb * 100).toFixed(0)}%${this.devFull ? '  (full bright)' : ''}${this.assistOn ? '  assist' : ''}   [B] bright  [ ] ambient  [V] assist`);
+  }
+
+  /** Assist: white outlines on the platforms. They live at depth 6.5, so the light mask clips them to what is already in view. */
+  private drawOutlines(): void {
+    const key = `${this.arena.id}|${this.assistOn}`;
+    if (key === this.outlinesFor) return;
+    this.outlinesFor = key;
+    this.outlines.clear();
+    if (!this.assistOn) return;
+    this.outlines.lineStyle(2, 0xffffff, 0.9);
+    for (const r of this.arena.solids) this.outlines.strokeRect(r.x, r.y, r.w, r.h);
+  }
+
+  /** Clip world objects to the light, and (assist) enlarge and outline their labels. Objects are created lazily, so this runs each frame. */
+  private applyMaskAndLabels(): void {
+    const want = this.assistOn;
+    for (const o of this.scene.children.list) {
+      const d = (o as Phaser.GameObjects.GameObject & { depth: number }).depth;
+      if (d < MASK_MIN_DEPTH || d > MASK_MAX_DEPTH) continue;
+      if (!this.masked.has(o)) { (o as Phaser.GameObjects.Graphics).setMask(this.mask); this.masked.add(o); }
+      if (o instanceof Phaser.GameObjects.Text && this.labelState.get(o) !== want) {
+        this.labelState.set(o, want);
+        o.setScale(want ? ASSIST.labelScale : 1).setStroke('#000000', want ? ASSIST.labelStroke : 0);
+      }
+    }
   }
 
   destroy(): void {
-    this.rt.destroy(); this.radiusImg.destroy(); this.coneImg.destroy(); this.radiusGlow.destroy(); this.coneGlow.destroy(); this.status.destroy();
+    for (const o of this.masked) if (o.active) (o as Phaser.GameObjects.Graphics).clearMask();
+    for (const [t, on] of this.labelState) if (on && t.active) t.setScale(1).setStroke('#000000', 0);
+    this.masked.clear(); this.labelState.clear();
+    this.mask.destroy();
+    for (const o of [this.rt, this.radiusImg, this.coneImg, this.radiusGlow, this.coneGlow, this.outlines, this.maskGfx, this.status]) o.destroy();
   }
 }
-

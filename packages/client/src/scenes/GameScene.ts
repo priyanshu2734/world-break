@@ -13,6 +13,7 @@ import { TOOL_KEYS, nearestInteractable, targetForTool } from '../ui/targeting';
 import { ItemHud } from '../ui/ItemHud';
 import { ItemMarkers } from '../ui/ItemMarkers';
 import { Darkness } from '../ui/Darkness';
+import { darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
 import { carryChanges, dropIntent, handoverIntent, installIntent, pickIntent, type ItemIntent } from '../ui/itemView';
 
 const W = ARENA.width, H = ARENA.height;
@@ -48,8 +49,12 @@ export class GameScene extends Phaser.Scene {
   private abilityHud!: AbilityHud;
   private itemHud!: ItemHud;
   private itemMarkers!: ItemMarkers;
-  /** P3D step 1: client-only dark view, created only with ?dark=1. */
+  /** P3D: the dark view. Created when the URL has ?dark=1 or the stage publishes `darkness`; removed when neither holds. */
   private darkness: Darkness | null = null;
+  private darkCfg: DarkSettings = darkSettings('');
+  /** Backdrop decorations (shards, the amber fracture). Hidden while the view is dark. */
+  private decor: Phaser.GameObjects.GameObject[] = [];
+  private solidsDark = false;
   private prevItems: import('@wb/shared').ItemsPublic | undefined;
   /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
   private where = new Map<string, { x: number; y: number }>();
@@ -99,7 +104,7 @@ export class GameScene extends Phaser.Scene {
     this.itemHud = new ItemHud(this);
     this.itemMarkers = new ItemMarkers(this);
     this.worldView = new WorldView(this);
-    this.darkness = Darkness.create(this, window.location.search);
+    this.darkCfg = darkSettings(window.location.search);
     this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
     this.input.on('pointermove', () => { this.pointerSeen = true; });
@@ -121,6 +126,7 @@ export class GameScene extends Phaser.Scene {
       const s = this.add.image(Math.random() * W, Math.random() * H, 'shard').setDepth(-9)
         .setScale(0.5 + Math.random() * 2).setAlpha(0.04 + Math.random() * 0.1)
         .setTint(Math.random() < 0.25 ? COLOR.amber : COLOR.cyan).setAngle(Math.random() * 360);
+      this.decor.push(s);
       this.tweens.add({ targets: s, y: s.y + 40, angle: s.angle + 25, duration: 6000 + Math.random() * 5000,
         yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     }
@@ -134,21 +140,24 @@ export class GameScene extends Phaser.Scene {
       for (const [x, y] of crack.slice(1)) g.lineTo(x!, y!);
       g.strokePath();
     };
+    this.decor.push(glow, core);
     path(glow, 22, COLOR.amber, 0.12); path(glow, 8, COLOR.amber, 0.25); path(core, 2, 0xfff1c9, 0.9);
     this.tweens.add({ targets: glow, alpha: 0.45, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
     this.drawSolids();
   }
 
-  /** Platforms of the current arena. Redrawn when the server switches arena. */
+  /** Platforms of the current arena. Redrawn when the server switches arena or the view turns dark. */
   private drawSolids(): void {
     for (const o of this.solidsArt) o.destroy();
     this.solidsArt = [];
     const arena = this.arena;
+    const dark = this.solidsDark;
     const g = this.add.graphics().setDepth(-5);
     this.solidsArt.push(g);
     for (const r of arena.solids) {
       g.fillStyle(0x0a1822, 1).fillRect(r.x, r.y, r.w, r.h);
+      if (dark) continue; // dark view: plain slabs, no grid lines or warning strip (nothing decorative outside the light)
       g.lineStyle(1, COLOR.cyanDim, 0.55);
       for (let x = r.x + 40; x < r.x + r.w; x += 40) g.lineBetween(x, r.y + 4, x, r.y + r.h);
       g.fillStyle(COLOR.amberDim, 0.9).fillRect(r.x, r.y + r.h - 2, r.w, 2); // underside warning strip
@@ -156,10 +165,26 @@ export class GameScene extends Phaser.Scene {
     const edge = this.add.graphics().setDepth(-4).setBlendMode(Phaser.BlendModes.ADD);
     this.solidsArt.push(edge);
     for (const r of arena.solids) {
+      if (dark) { edge.lineStyle(2, COLOR.cyan, 0.5).lineBetween(r.x, r.y, r.x + r.w, r.y); continue; } // steady, no glow, no pulse
       edge.lineStyle(8, COLOR.cyan, 0.12).lineBetween(r.x, r.y, r.x + r.w, r.y);
       edge.lineStyle(2, COLOR.cyan, 0.95).lineBetween(r.x, r.y, r.x + r.w, r.y);
     }
-    this.tweens.add({ targets: edge, alpha: 0.6, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    if (!dark) this.tweens.add({ targets: edge, alpha: 0.6, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  }
+
+  /** P3D: switch the dark view on or off as the URL flag and the stage's published `darkness` dictate. */
+  private syncDarkness(wantDark: boolean): void {
+    if (wantDark === (this.darkness !== null)) return;
+    if (wantDark) {
+      this.darkness = new Darkness(this, this.darkCfg);
+      this.darkness.setArena(this.arena);
+    } else {
+      this.darkness?.destroy();
+      this.darkness = null;
+    }
+    for (const d of this.decor) (d as unknown as { setVisible(v: boolean): void }).setVisible(!wantDark);
+    this.solidsDark = wantDark;
+    this.drawSolids();
   }
 
   // ---------------------------------------------------------------- HUD
@@ -237,6 +262,7 @@ export class GameScene extends Phaser.Scene {
       this.arena = getArena(g.arenaId) ?? ARENA;
       this.predictor.setArena(this.arena);
       this.drawSolids();
+      this.darkness?.setArena(this.arena);
     }
 
     // --- local prediction ---
@@ -308,9 +334,15 @@ export class GameScene extends Phaser.Scene {
     if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
     this.worldView.update(g, delta);
     this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow, me?.facing ?? 1);
+    this.syncDarkness(this.darkCfg.enabled || !!st?.darkness);
     if (this.darkness) {
       const ptr = this.input.activePointer;
-      this.darkness.update(g.phase === 'playing' ? meNow : null, this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null, me?.facing ?? 1);
+      this.darkness.update({
+        me: g.phase === 'playing' ? meNow : null,
+        pointer: this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null,
+        facing: me?.facing ?? 1,
+        ambient: resolveAmbient(st?.darkness?.ambient, room.difficulty, g.stage),
+      });
     }
 
     const briefing = g.phase === 'briefing';
@@ -388,6 +420,7 @@ export class GameScene extends Phaser.Scene {
         const g = this.session.game;
         return {
           fps: Math.round(this.game.loop.actualFps), predActive: this.predictor.active, sent: this.predictor.sentCount, pending: this.predictor.pendingCount,
+          dark: this.darkness ? { ambient: this.darkness.drawnAmbient, assist: this.darkness.assist } : null,
           stage: this.session.stage, notice: this.session.notice?.text ?? null,
           phase: g?.phase ?? null, tick: g?.tick ?? null, epoch: g?.epoch ?? null, localId: this.session.playerId,
           hostId: this.session.snapshot?.hostId ?? null,

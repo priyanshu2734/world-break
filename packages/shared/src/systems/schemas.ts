@@ -87,5 +87,7 @@ export const StageStateSchema = z.object({
   abilities: AbilitiesPublicSchema.optional(),
   /** P3C (additive, optional): parts lying in the world, carried and installed. Hidden parts are never listed. Absent for stages without items. */
   items: ItemsPublicSchema.optional(),
+  /** P3D (additive, optional): the stage is dark. `ambient` is the 0..1 brightness outside every player's own light, set by stage and mode. Absent = a lit stage. */
+  darkness: z.object({ ambient: z.number().min(0).max(1) }).optional(),
 });
 export type StageState = z.infer<typeof StageStateSchema>;

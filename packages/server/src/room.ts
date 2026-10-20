@@ -70,12 +70,12 @@ export class Room {
     let engine: StageEngine;
     const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE : getStageDef(stage, seed, { hunt: this.opts.hunt === true });
     try {
-      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: getArena(base.arenaId) ?? ARENA, difficulty: this.difficulty });
+      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: getArena(base.arenaId) ?? ARENA, difficulty: this.difficulty, stage });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
       const fb = fallbackStageDef(stage);
-      engine = new StageEngine(withDefaultAbilities(fb, stage), ids, { ...opts, arena: getArena(fb.arenaId) ?? ARENA, difficulty: this.difficulty });
+      engine = new StageEngine(withDefaultAbilities(fb, stage), ids, { ...opts, arena: getArena(fb.arenaId) ?? ARENA, difficulty: this.difficulty, stage });
     }
     this.stageRec = { stage, seed, defId: engine.def.id, fallback };
     return engine;

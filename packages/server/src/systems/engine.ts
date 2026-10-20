@@ -1,5 +1,5 @@
 import {
-  ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
+  ACTION_MIN_GAP_TICKS, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
   type AbilityAction, type Arena, type Difficulty, type ItemAction, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
@@ -82,16 +82,19 @@ export class StageEngine {
   private readonly arena: Arena;
   private dirty = true;
   private revCounter = 0;
+  /** P3D: ambient brightness published for a dark stage (null = lit). */
+  private readonly darkAmbient: number | null;
 
   constructor(
     readonly def: StageDef,
     playerIds: readonly string[],
     /** `difficulty` sets the clue clarity of requirements (easy: names + hint, intermediate: silhouettes, hardcore: nothing until tried). */
-    opts: { revBase?: number; arena?: Arena; difficulty?: Difficulty } = {},
+    opts: { revBase?: number; arena?: Arena; difficulty?: Difficulty; stage?: number } = {},
   ) {
     const errors = validateStageDef(def, opts.arena ?? ARENA);
     if (errors.length) throw new Error(`Invalid stage "${def.id}":\n - ${errors.join('\n - ')}`);
     this.revBase = opts.revBase ?? 0;
+    this.darkAmbient = def.dark === true ? ambientFor(opts.difficulty ?? 'easy', opts.stage ?? 1) : null;
     this.arena = opts.arena ?? ARENA;
     this.abilities = def.abilities ? new AbilitySystem(def.abilities, this.abilityHost()) : null;
     this.order = topoOrder(def.failures, def.edges)!;
@@ -787,6 +790,7 @@ export class StageEngine {
       ...(this.disaster ? { disaster: this.disaster.publicState() } : {}),
       ...(this.abilities ? { abilities: this.abilities.publicState() } : {}),
       ...(this.items ? { items: this.items.publicState() } : {}),
+      ...(this.darkAmbient !== null ? { darkness: { ambient: this.darkAmbient } } : {}),
     };
   }
 

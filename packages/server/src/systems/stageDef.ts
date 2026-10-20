@@ -171,6 +171,8 @@ export const StageDefSchema = z.object({
   needs: z.array(NeedDefSchema).max(ITEM_LIMITS.maxNeedsPerStage).optional(),
   /** P3C (additive, optional): visible containers that hide parts. */
   stashes: z.array(StashDefSchema).max(ITEM_LIMITS.maxStashesPerStage).optional(),
+  /** P3D (additive, optional): the stage is played in the dark (published as `StageState.darkness`). Omitted = lit, as before. */
+  dark: z.boolean().optional(),
   scoring: z.object({
     timeBonusPerSecond: z.number().int(),
     expiredPenalty: z.number().int(),
