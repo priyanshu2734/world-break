@@ -1,8 +1,10 @@
-import { ABILITY_SPECS, MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena } from '@wb/shared';
+import { ABILITY_SPECS, ITEM_LIMITS, MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena, type ItemKind } from '@wb/shared';
 import type { StageDef } from './stageDef';
 import { topoOrder } from './failures';
 import { evaluatePower } from './power';
 import { validateDisasterMeta } from '../disasters/validate';
+import { surfaceBelow } from '../salvage/rest';
+import { validateSalvage } from '../salvage/validate';
 
 /**
  * Deterministic structural validation. A stage that returns any error must not launch.
@@ -173,6 +175,34 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
       if ((def.props ?? []).length > 0) err('duplicate is enabled but no prop is light');
     }
   }
+  // --- P3C: salvage items and the needs of repair targets (both optional; absent = a P2/P3A/P3B stage) ---
+  const items = def.items ?? [];
+  const needDefs = def.needs ?? [];
+  if (items.length > ITEM_LIMITS.maxItemsPerStage) err(`too many items (${items.length} > ${ITEM_LIMITS.maxItemsPerStage})`);
+  if (needDefs.length > ITEM_LIMITS.maxNeedsPerStage) err(`too many targets with needs (${needDefs.length} > ${ITEM_LIMITS.maxNeedsPerStage})`);
+  dupes('item', items.map((i) => i.id));
+  dupes('need', needDefs.map((n) => n.targetId));
+  const targetIds = new Set<string>([...def.entities.map((e) => e.id), ...def.breakpoints.map((b) => b.id),
+    ...def.power.nodes.map((n) => n.id), ...def.power.conduits.map((c) => c.id), ...(def.props ?? []).map((p) => p.id)]);
+  for (const i of items) {
+    if (targetIds.has(i.id)) err(`item ${i.id} shares an id with a target`);
+    if (i.x < 0 || i.x > arena.width) { err(`item ${i.id} is outside the arena`); continue; }
+    const surf = surfaceBelow(arena, i.x, i.y);
+    if (!surf) err(`item ${i.id} (${i.x},${i.y}) has no platform under it`);
+    else if (surf.y - i.y > ITEM_LIMITS.maxAuthoredFall) err(`item ${i.id} would fall ${Math.round(surf.y - i.y)} px to its platform (max ${ITEM_LIMITS.maxAuthoredFall}); author it on the platform`);
+  }
+  for (const n of needDefs) {
+    const isBp = bp.has(n.targetId), isConduit = conduit.has(n.targetId), isEntity = entity.has(n.targetId);
+    if (!isBp && !isConduit && !isEntity) { err(`need references unknown target ${n.targetId} (must be a breakpoint, conduit or entity)`); continue; }
+    // Every needed kind must exist at least as many times as needed among the genuine (non-decoy) items.
+    const counts = new Map<ItemKind, number>();
+    for (const k of n.items) counts.set(k, (counts.get(k) ?? 0) + 1);
+    for (const [k, c] of counts) {
+      const have = items.filter((i) => i.kind === k && i.decoy !== true).length;
+      if (have < c) err(`target ${n.targetId} needs ${c} x ${k} but the stage provides ${have} genuine one(s)`);
+    }
+  }
+  errs.push(...validateSalvage(def, arena)); // P3C: hiding rules, reachability, solo-safe supply (no-op without items/needs/stashes)
   errs.push(...validateDisasterMeta(def)); // P3A: lifecycle, bounds, threats (no-op without def.disaster)
   return errs;
 }

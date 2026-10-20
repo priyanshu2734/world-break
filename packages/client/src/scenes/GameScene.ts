@@ -10,6 +10,9 @@ import { AbilityHud } from '../ui/AbilityHud';
 import { WorldView } from '../ui/WorldView';
 import { buildAbilityAction } from '../ui/abilityView';
 import { TOOL_KEYS, nearestInteractable, targetForTool } from '../ui/targeting';
+import { ItemHud } from '../ui/ItemHud';
+import { ItemMarkers } from '../ui/ItemMarkers';
+import { carryChanges, dropIntent, handoverIntent, installIntent, pickIntent, type ItemIntent } from '../ui/itemView';
 
 const W = ARENA.width, H = ARENA.height;
 const RESET_HOLD_MS = 1000;
@@ -42,6 +45,11 @@ export class GameScene extends Phaser.Scene {
   private stageView!: StageView;
   private stageHud!: StageHud;
   private abilityHud!: AbilityHud;
+  private itemHud!: ItemHud;
+  private itemMarkers!: ItemMarkers;
+  private prevItems: import('@wb/shared').ItemsPublic | undefined;
+  /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
+  private where = new Map<string, { x: number; y: number }>();
   private worldView!: WorldView;
   private abilityKeys!: Record<'SIX' | 'SEVEN' | 'EIGHT' | 'NINE' | 'SHIFT', Phaser.Input.Keyboard.Key>;
   private pointerSeen = false;
@@ -49,7 +57,7 @@ export class GameScene extends Phaser.Scene {
   private arena: import('@wb/shared').Arena = ARENA;
   private arenaId = ARENA.id;
   private solidsArt: Phaser.GameObjects.GameObject[] = [];
-  private stageKeys!: Record<'E' | 'Q' | 'N' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
+  private stageKeys!: Record<'E' | 'Q' | 'N' | 'G' | 'F' | 'H' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
   /** Dev-only scripted movement override (set through __WB_DEBUG__ by the browser verification script). */
   private debugInput: InputIntent | null = null;
   /** Real wall-clock time of the previous frame. Phaser's `delta` is smoothed/clamped, so it is NOT used for simulation. */
@@ -81,10 +89,12 @@ export class GameScene extends Phaser.Scene {
     const kb = this.input.keyboard!;
     this.cursors = kb.createCursorKeys();
     this.keys = kb.addKeys('W,A,D,SPACE,R') as typeof this.keys;
-    this.stageKeys = kb.addKeys('E,Q,N,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
+    this.stageKeys = kb.addKeys('E,Q,N,G,F,H,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
     this.stageView = new StageView(this);
     this.stageHud = new StageHud(this);
     this.abilityHud = new AbilityHud(this);
+    this.itemHud = new ItemHud(this);
+    this.itemMarkers = new ItemMarkers(this);
     this.worldView = new WorldView(this);
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
     this.input.on('pointermove', () => { this.pointerSeen = true; });
@@ -162,7 +172,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.hudStage = this.add.text(W / 2, 22, '', { ...FONT, fontSize: '22px', color: '#ffb02e' }).setOrigin(0.5, 0).setDepth(D);
     this.hudRoom = this.add.text(W - 16, 18, '', { ...FONT, fontSize: '15px', color: COLOR.text }).setOrigin(1, 0).setDepth(D);
-    this.hint = this.add.text(W / 2, H - 14, 'A/D move  W/Space jump  E use  1-5 tools  6-9 abilities (mouse aims, Shift = alt)  Q cancel  hold R reset (host)',
+    this.hint = this.add.text(W / 2, H - 14, 'A/D move  W/Space jump  E use/pick up  1-5 tools  6-9 abilities (mouse aims, Shift = alt)  Q cancel  hold R reset (host)',
       { ...FONT, fontSize: '14px', color: '#5f8da0' }).setOrigin(0.5, 1).setDepth(D);
 
     this.bannerBg = this.add.rectangle(W / 2, H / 2 - 40, W, 170, 0x020509, 0.78).setDepth(D + 1);
@@ -249,12 +259,14 @@ export class GameScene extends Phaser.Scene {
     // --- entities ---
     const sampled = s.buffer.sample(performance.now() - INTERP_DELAY_MS);
     const live = new Set<string>();
+    this.where.clear();
     for (const p of g.players) {
       live.add(p.id);
       const v = this.ensureView(p);
       const isMe = p.id === s.playerId;
       const pred = isMe ? this.predictor.render() : null;
       const pos = pred ?? sampled.get(p.id) ?? p;
+      this.where.set(p.id, { x: pos.x, y: pos.y });
       v.box.setPosition(pos.x, pos.y - PLAYER_HEIGHT / 2);
       v.visor.setX(pos.facing * 6);
       v.box.setAlpha(p.connected ? 1 : 0.35);
@@ -283,6 +295,12 @@ export class GameScene extends Phaser.Scene {
     this.stageView.update(st ?? EMPTY_STAGE, g.tick, st ? meNow : null);
     this.stageHud.update(st, g.tick, s.playerId, s);
     this.abilityHud.update(st, g.tick, s.playerId);
+    this.itemHud.update(st, s.playerId);
+    this.itemMarkers.update(st, s.playerId, st ? meNow : null, this.where);
+    // P3C hand-over and loss feedback: said to both people involved, from the public state alone
+    const heard = carryChanges(this.prevItems, st?.items, s.playerId, (id) => g.players.find((x) => x.id === id)?.name ?? 'A teammate');
+    this.prevItems = st?.items;
+    if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
     this.worldView.update(g, delta);
     this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow, me?.facing ?? 1);
 
@@ -302,10 +320,25 @@ export class GameScene extends Phaser.Scene {
     };
     if (!canAct || !st || !me) return;
     if (pressed.Q) send({ kind: 'cancel' });
+    // P3C salvage keys: E pick up / open (else use), G drop or swap (Shift = the older part), F fit a part, H hand over
+    const itemSend = (r: ItemIntent) => {
+      if (r.ok) void this.session.itemAction(r.action);
+      else this.session.notice = { text: r.reason, ok: false, at: performance.now() };
+    };
     if (pressed.E) {
-      const id = nearestInteractable(st, me);
-      if (id) send({ kind: 'interact', targetId: id });
-      else this.session.notice = { text: 'Nothing to use here.', ok: false, at: performance.now() };
+      const mine = pickIntent(st, me);
+      if (mine) itemSend(mine);
+      else {
+        const id = nearestInteractable(st, me);
+        if (id) send({ kind: 'interact', targetId: id });
+        else this.session.notice = { text: 'Nothing to use here.', ok: false, at: performance.now() };
+      }
+    }
+    if (st.items) {
+      const localId = this.session.playerId;
+      if (J(K.G)) itemSend(dropIntent(st, localId, me, this.abilityKeys.SHIFT.isDown));
+      if (J(K.F)) itemSend(installIntent(st, localId, me));
+      if (J(K.H)) itemSend(handoverIntent(st, localId, me, [...this.where].map(([id, p]) => ({ id, x: p.x, y: p.y }))));
     }
     pressed.tool.forEach((p, i) => {
       if (!p) return;

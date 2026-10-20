@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, getArena, type AbilityAction, type Arena, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, getArena, type AbilityAction, type Arena, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -11,6 +11,7 @@ import { fallbackStageDef } from './disasters/fallback';
 import { withDefaultAbilities } from './abilities/defaults';
 import { ABILITY_LAB_STAGE } from './systems/stages/abilityLab';
 import type { AbilityResult } from './abilities/system';
+import type { ItemResult } from './salvage/system';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -45,8 +46,11 @@ export class Room {
     readonly code: string,
     private readonly briefingTicks: number = BRIEFING_TICKS,
     private readonly runSeed: number = deriveSeed('run', code),
-    /** P3B dev option: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation). */
-    private readonly opts: { lab?: boolean } = {},
+    /**
+     * P3B dev option `lab`: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation).
+     * P3C option `hunt`: stage 1 is the salvage hunt instead of the tutorial. `lab` wins when both are set.
+     */
+    private readonly opts: { lab?: boolean; hunt?: boolean } = {},
   ) {}
 
   /** True for a room created as an Ability Lab room. Only stage 1 is the Lab; stage 2+ are the normal endless stages. */
@@ -64,14 +68,14 @@ export class Room {
     const ids = [...this.members.keys()];
     let fallback = false;
     let engine: StageEngine;
-    const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE : getStageDef(stage, seed);
+    const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE : getStageDef(stage, seed, { hunt: this.opts.hunt === true });
     try {
-      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: getArena(base.arenaId) ?? ARENA });
+      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: getArena(base.arenaId) ?? ARENA, difficulty: this.difficulty });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
       const fb = fallbackStageDef(stage);
-      engine = new StageEngine(withDefaultAbilities(fb, stage), ids, { ...opts, arena: getArena(fb.arenaId) ?? ARENA });
+      engine = new StageEngine(withDefaultAbilities(fb, stage), ids, { ...opts, arena: getArena(fb.arenaId) ?? ARENA, difficulty: this.difficulty });
     }
     this.stageRec = { stage, seed, defId: engine.def.id, fallback };
     return engine;
@@ -242,6 +246,13 @@ export class Room {
     return this.engine.abilityAction(id, action, this.pos);
   }
 
+  /** P3C: a player's salvage intent (pick up, drop, swap, hand over, install). The engine validates range, ownership, capacity, cooldown and rate. */
+  itemAction(id: string, action: ItemAction): ItemResult {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    return this.engine.itemAction(id, action, this.pos);
+  }
+
   /** Read-only view of the current public stage state (does not mark it as sent). */
   peekStageState(): StageState | null {
     return this.engine?.state() ?? null;
@@ -278,14 +289,14 @@ export class Room {
 export class RoomManager {
   private rooms = new Map<string, Room>();
 
-  constructor(private readonly opts: { briefingTicks?: number } = {}) {}
+  constructor(private readonly opts: { briefingTicks?: number; huntStage?: boolean } = {}) {}
 
-  create(opts: { lab?: boolean } = {}): Room {
+  create(opts: { lab?: boolean; hunt?: boolean } = {}): Room {
     let code: string;
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');
     } while (this.rooms.has(code));
-    const room = new Room(code, this.opts.briefingTicks, randomInt(0x7fffffff), opts);
+    const room = new Room(code, this.opts.briefingTicks, randomInt(0x7fffffff), { hunt: this.opts.huntStage === true, ...opts });
     this.rooms.set(code, room);
     return room;
   }

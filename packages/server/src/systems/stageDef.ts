@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AbilityIdSchema, ENERGY_MAX, ENERGY_START, HazardKindSchema, MAX_PROPS_PER_STAGE, StageIdSchema, ToolIdSchema } from '@wb/shared';
+import { AbilityIdSchema, ENERGY_MAX, ENERGY_START, HazardKindSchema, ITEM_GATES, ITEM_LIMITS, ItemKindSchema, MAX_PROPS_PER_STAGE, StageIdSchema, ToolIdSchema } from '@wb/shared';
 import { DisasterMetaSchema } from '../disasters/meta';
 
 /**
@@ -93,6 +93,50 @@ export const AbilityConfigSchema = z.object({
 });
 export type AbilityConfig = z.infer<typeof AbilityConfigSchema>;
 
+/**
+ * P3C: a part (salvage item) placed by the stage author. `x` and the authored `y` give a start point; the item RESTS on the
+ * first platform surface at or below `y` (computed from the arena, no physics). Everything here is server-private.
+ */
+export const ItemDefSchema = z.object({
+  id: Id, kind: ItemKindSchema, ...Pt,
+  /** 1 or 2 carry slots. Omitted = the kind's default (ITEM_KIND_SPECS). */
+  slots: z.union([z.literal(1), z.literal(2)]).optional(),
+  /** A look-alike or cracked part: installing it destroys it, costs score and does not satisfy the need. Never published. */
+  decoy: z.boolean().optional(),
+  /** A decoy that carries a visible crack (published as `cracked`, except in hardcore). Only meaningful with `decoy`. */
+  tell: z.boolean().optional(),
+  /**
+   * Present = the item starts hidden (not in the public state) until revealed.
+   * `scan`: the Phase Scanner reveals it when used within its radius. `interact`: opening the stash `stashId` reveals it.
+   */
+  hidden: z.object({
+    container: z.enum(['crate', 'panel', 'ceiling', 'locker']),
+    reveal: z.enum(['scan', 'interact']),
+    stashId: Id.optional(),
+  }).optional(),
+  /** The spot is not reachable on foot: it needs this P3B ability (and the stage must enable it). The validator checks both ways. */
+  gate: z.enum(ITEM_GATES).optional(),
+});
+
+/** P3C: a visible container players can open. It may be empty (a decoy container); nothing publishes what it holds. */
+export const StashDefSchema = z.object({
+  id: Id, kind: z.enum(['crate', 'panel', 'locker', 'ceiling']), label: z.string().min(1).max(40), ...Pt,
+  gate: z.enum(ITEM_GATES).optional(),
+});
+
+/**
+ * P3C: what a repair target needs before it can be finished. `targetId` is a breakpoint, a conduit or an entity (never a hidden
+ * breakpoint that has not been revealed). `items` is a multiset of kinds that must be INSTALLED; `tools` are tools that must be
+ * used (enforced by the repair gate in P3C step 2).
+ */
+export const NeedDefSchema = z.object({
+  targetId: Id,
+  items: z.array(ItemKindSchema).min(1).max(2),
+  tools: z.array(ToolIdSchema).max(2).optional(),
+  /** One line shown at easy clarity ("names + a hint"). Must not give coordinates; max 120 chars. */
+  hint: z.string().max(120).optional(),
+});
+
 export const ClueSchema = z.object({ id: Id, ...Pt, text: z.string() });
 
 export const StageDefSchema = z.object({
@@ -121,6 +165,12 @@ export const StageDefSchema = z.object({
   abilities: AbilityConfigSchema.optional(),
   /** P3B (additive, optional): physical objects (crates). */
   props: z.array(PropDefSchema).max(MAX_PROPS_PER_STAGE).optional(),
+  /** P3C (additive, optional): salvage items. Omitted = no items (P2/P3A/P3B behaviour). */
+  items: z.array(ItemDefSchema).max(ITEM_LIMITS.maxItemsPerStage).optional(),
+  /** P3C (additive, optional): requirements of repair targets, by target id. */
+  needs: z.array(NeedDefSchema).max(ITEM_LIMITS.maxNeedsPerStage).optional(),
+  /** P3C (additive, optional): visible containers that hide parts. */
+  stashes: z.array(StashDefSchema).max(ITEM_LIMITS.maxStashesPerStage).optional(),
   scoring: z.object({
     timeBonusPerSecond: z.number().int(),
     expiredPenalty: z.number().int(),
@@ -135,3 +185,6 @@ export type StageDefInput = z.input<typeof StageDefSchema>;
 export type Entity = z.infer<typeof EntitySchema>;
 export type Objective = z.infer<typeof ObjectiveSchema>;
 export type PropDef = z.infer<typeof PropDefSchema>;
+export type ItemDef = z.infer<typeof ItemDefSchema>;
+export type NeedDef = z.infer<typeof NeedDefSchema>;
+export type StashDef = z.infer<typeof StashDefSchema>;

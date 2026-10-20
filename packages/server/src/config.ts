@@ -7,6 +7,8 @@ const EnvSchema = z.object({
   OPENAI_MODEL: z.string().optional(),
   // P3B dev flag. '1' lets a client create an Ability Lab room (`/?lab=1`). Anything else = off.
   ABILITY_LAB: z.enum(['0', '1']).optional(),
+  // P3C: stage 1 is the salvage hunt. Default ON for the dev server; '0' restores the tutorial as stage 1.
+  HUNT_STAGE: z.enum(['0', '1']).optional(),
 });
 export type ServerConfig = z.infer<typeof EnvSchema>;
 

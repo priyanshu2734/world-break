@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { HazardKindSchema, ToolIdSchema } from './tools';
 import { DisasterPublicSchema } from '../disasters/public';
 import { AbilitiesPublicSchema } from '../abilities/public';
+import { ItemsPublicSchema } from '../salvage/public';
 
 /** Ids are server-authored slugs. */
 export const StageIdSchema = z.string().regex(/^[a-z][a-z0-9_]*$/).max(40);
@@ -84,5 +85,7 @@ export const StageStateSchema = z.object({
   disaster: DisasterPublicSchema.optional(),
   /** P3B (additive, optional): Reality Energy and ability cooldowns. Absent for stages without abilities. */
   abilities: AbilitiesPublicSchema.optional(),
+  /** P3C (additive, optional): parts lying in the world, carried and installed. Hidden parts are never listed. Absent for stages without items. */
+  items: ItemsPublicSchema.optional(),
 });
 export type StageState = z.infer<typeof StageStateSchema>;
