@@ -20,6 +20,8 @@ export interface DarkFrame {
   facing: 1 | -1;
   /** Ambient brightness outside the light (0..1), from the stage and mode. Ignored only by the dev keys. */
   ambient: number;
+  /** Camera scroll (world pixels at the screen's top-left). The dark layer is screen-fixed; lights are placed in screen space. Default 0,0. */
+  scroll?: { x: number; y: number };
 }
 
 /**
@@ -58,17 +60,17 @@ export class Darkness {
     Darkness.makeTextures(scene);
     this.assistOn = settings.assist || Darkness.stored();
     this.devAmbient = settings.ambientOverride;
-    this.rt = scene.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(DEPTH);
+    this.rt = scene.add.renderTexture(0, 0, W, H).setOrigin(0).setDepth(DEPTH).setScrollFactor(0);
     this.radiusImg = scene.make.image({ key: TEX_RADIUS, add: false }).setOrigin(0.5);
     this.coneImg = scene.make.image({ key: TEX_CONE, add: false }).setOrigin(0, 0.5);
     const glow = (key: string, ox: number) => scene.add.image(0, 0, key).setOrigin(ox, 0.5).setDepth(DEPTH - 1)
-      .setBlendMode(Phaser.BlendModes.ADD).setTint(0xffd9a0).setAlpha(ASSIST.baseGlowAlpha).setVisible(false);
+      .setScrollFactor(0).setBlendMode(Phaser.BlendModes.ADD).setTint(0xffd9a0).setAlpha(ASSIST.baseGlowAlpha).setVisible(false);
     this.radiusGlow = glow(TEX_RADIUS, 0.5); this.coneGlow = glow(TEX_CONE, 0);
     this.outlines = scene.add.graphics().setDepth(6.5);
     this.maskGfx = new Phaser.GameObjects.Graphics(scene);
     this.mask = new Phaser.Display.Masks.GeometryMask(scene, this.maskGfx);
     this.status = scene.add.text(16, H - 14, '', { ...FONT, fontSize: '14px', color: '#9fb6c2', backgroundColor: '#04101acc' })
-      .setOrigin(0, 1).setDepth(DEPTH + 60).setPadding(8, 3).setVisible(settings.dev);
+      .setOrigin(0, 1).setDepth(DEPTH + 60).setScrollFactor(0).setPadding(8, 3).setVisible(settings.dev);
     const kb = scene.input.keyboard!;
     this.keys = kb.addKeys('V,B,OPEN_BRACKET,CLOSED_BRACKET') as typeof this.keys;
   }
@@ -123,17 +125,19 @@ export class Darkness {
     this.radiusGlow.setVisible(false); this.coneGlow.setVisible(false);
     this.maskGfx.clear();
     this.geometry = null;
+    const sc = f.scroll ?? { x: 0, y: 0 };
     if (f.me) {
       const ang = aimAngle(f.me, f.pointer, f.facing);
       const g = lightGeometry(f.me, ang, this.assistOn);
       this.geometry = g;
       const k = this.assistOn ? ASSIST.lightScale : 1;
       this.radiusImg.setScale(k); this.coneImg.setScale(k).setRotation(ang);
-      this.rt.erase(this.radiusImg, g.cx, g.cy);
-      this.rt.erase(this.coneImg, g.cx, g.cy);
+      const sx = g.cx - sc.x, sy = g.cy - sc.y; // screen space (the layer does not scroll)
+      this.rt.erase(this.radiusImg, sx, sy);
+      this.rt.erase(this.coneImg, sx, sy);
       const a = this.assistOn ? ASSIST.glowAlpha : ASSIST.baseGlowAlpha;
-      this.radiusGlow.setPosition(g.cx, g.cy).setScale(k).setAlpha(a).setVisible(true);
-      this.coneGlow.setPosition(g.cx, g.cy).setScale(k).setRotation(ang).setAlpha(a).setVisible(true);
+      this.radiusGlow.setPosition(sx, sy).setScale(k).setAlpha(a).setVisible(true);
+      this.coneGlow.setPosition(sx, sy).setScale(k).setRotation(ang).setAlpha(a).setVisible(true);
       this.maskGfx.fillStyle(0xffffff, 1).fillCircle(g.cx, g.cy, g.radius * 0.88).fillPoints(conePolygon(g), true);
     }
     this.drawOutlines();

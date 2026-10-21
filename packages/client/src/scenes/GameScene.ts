@@ -13,6 +13,8 @@ import { TOOL_KEYS, nearestInteractable, targetForTool } from '../ui/targeting';
 import { ItemHud } from '../ui/ItemHud';
 import { ItemMarkers } from '../ui/ItemMarkers';
 import { Darkness } from '../ui/Darkness';
+import { DoorView } from '../ui/DoorView';
+import { cameraScroll, pickArena } from '../ui/roomMath';
 import { darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
 import { carryChanges, dropIntent, handoverIntent, installIntent, pickIntent, type ItemIntent } from '../ui/itemView';
 
@@ -55,6 +57,8 @@ export class GameScene extends Phaser.Scene {
   /** Backdrop decorations (shards, the amber fracture). Hidden while the view is dark. */
   private decor: Phaser.GameObjects.GameObject[] = [];
   private solidsDark = false;
+  /** P3D rooms: doorways of the current room. */
+  private doors!: DoorView;
   private prevItems: import('@wb/shared').ItemsPublic | undefined;
   /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
   private where = new Map<string, { x: number; y: number }>();
@@ -105,6 +109,8 @@ export class GameScene extends Phaser.Scene {
     this.itemMarkers = new ItemMarkers(this);
     this.worldView = new WorldView(this);
     this.darkCfg = darkSettings(window.location.search);
+    this.doors = new DoorView(this);
+    this.events.once('shutdown', () => this.doors.destroy());
     this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
     this.input.on('pointermove', () => { this.pointerSeen = true; });
@@ -256,18 +262,25 @@ export class GameScene extends Phaser.Scene {
 
     const me = g.players.find((p) => p.id === s.playerId);
 
-    // --- P3B: the server may switch arena between stages (the Ability Lab). Redraw platforms and predict against the new one. ---
-    if (g.arenaId !== this.arenaId) {
-      this.arenaId = g.arenaId;
-      this.arena = getArena(g.arenaId) ?? ARENA;
+    // --- P3B/P3D: the arena the local player is simulated in. The server may switch arena between stages (the Ability Lab), and on a
+    //     multi-room stage each player is in one room, whose layout the server sent to this player only. Unknown yet = wait, do not guess. ---
+    const myRoom = me?.roomId;
+    const wantArena = pickArena(myRoom, g.arenaId, s.layouts);
+    if (wantArena && wantArena.id !== this.arenaId) {
+      this.arenaId = wantArena.id;
+      this.arena = wantArena;
       this.predictor.setArena(this.arena);
+      if (myRoom !== undefined) this.predictor.stop(); // a door moved the body: start prediction afresh from the server's position
       this.drawSolids();
       this.darkness?.setArena(this.arena);
     }
+    this.doors.set(myRoom !== undefined ? s.layouts.get(myRoom)?.doors ?? [] : []);
+    // Stage content (items, entities, props) lives in the start room until step 3 gives every room its own.
+    const contentHere = myRoom === undefined || myRoom === g.arenaId;
 
     // --- local prediction ---
-    if (g.phase === 'playing' && me && me.connected) {
-      const ctx = { tick: g.tick, playerId: s.playerId, world: g.world }; // P3B: the same zones/impulses the server steps with
+    if (g.phase === 'playing' && me && me.connected && wantArena) {
+      const ctx = { tick: g.tick, playerId: s.playerId, world: contentHere ? g.world : undefined }; // P3B: the same zones/impulses the server steps with
       if (!this.predictor.active) { this.predictor.start(me, g.epoch, ctx); this.lastSerial = s.gameSerial; }
       if (s.gameSerial !== this.lastSerial) { this.lastSerial = s.gameSerial; this.predictor.reconcile(me, g.epoch, ctx); }
       this.predictor.advance(delta, this.readInput());
@@ -295,9 +308,11 @@ export class GameScene extends Phaser.Scene {
       live.add(p.id);
       const v = this.ensureView(p);
       const isMe = p.id === s.playerId;
+      const sameRoom = !p.roomId || !myRoom || p.roomId === myRoom; // a player in another room is not drawn here (different coordinates)
+      v.box.setVisible(sameRoom);
       const pred = isMe ? this.predictor.render() : null;
       const pos = pred ?? sampled.get(p.id) ?? p;
-      this.where.set(p.id, { x: pos.x, y: pos.y });
+      if (sameRoom) this.where.set(p.id, { x: pos.x, y: pos.y });
       v.box.setPosition(pos.x, pos.y - PLAYER_HEIGHT / 2);
       v.visor.setX(pos.facing * 6);
       v.box.setAlpha(p.connected ? 1 : 0.35);
@@ -323,17 +338,26 @@ export class GameScene extends Phaser.Scene {
     // --- P2: stage overlay, HUD and action keys (all outcomes are decided by the server) ---
     const meNow = this.predictor.render() ?? sampled.get(s.playerId) ?? me ?? null;
     const st = s.stage;
-    this.stageView.update(st ?? EMPTY_STAGE, g.tick, st ? meNow : null);
+    const stHere = contentHere ? st : null; // the world art of the stage is only drawn in the room it belongs to
+    this.stageView.update(stHere ?? EMPTY_STAGE, g.tick, stHere ? meNow : null);
     this.stageHud.update(st, g.tick, s.playerId, s);
     this.abilityHud.update(st, g.tick, s.playerId);
     this.itemHud.update(st, s.playerId);
-    this.itemMarkers.update(st, s.playerId, st ? meNow : null, this.where);
+    this.itemMarkers.update(stHere, s.playerId, stHere ? meNow : null, this.where);
     // P3C hand-over and loss feedback: said to both people involved, from the public state alone
     const heard = carryChanges(this.prevItems, st?.items, s.playerId, (id) => g.players.find((x) => x.id === id)?.name ?? 'A teammate');
     this.prevItems = st?.items;
     if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
-    this.worldView.update(g, delta);
-    this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow, me?.facing ?? 1);
+    if (contentHere) this.worldView.update(g, delta);
+    else { const { world: _unused, ...noWorld } = g; void _unused; this.worldView.update(noWorld, delta); }
+    this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected && contentHere, meNow, me?.facing ?? 1);
+
+    // --- P3D: the camera follows the local player inside the room (a room no bigger than the screen never scrolls) ---
+    if (meNow) {
+      const sc = cameraScroll({ x: meNow.x, y: meNow.y - PLAYER_HEIGHT / 2 }, this.arena);
+      this.cameras.main.setScroll(sc.x, sc.y);
+    }
+    this.pinHud();
     this.syncDarkness(this.darkCfg.enabled || !!st?.darkness);
     if (this.darkness) {
       const ptr = this.input.activePointer;
@@ -342,6 +366,7 @@ export class GameScene extends Phaser.Scene {
         pointer: this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null,
         facing: me?.facing ?? 1,
         ambient: resolveAmbient(st?.darkness?.ambient, room.difficulty, g.stage),
+        scroll: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY },
       });
     }
 
@@ -350,6 +375,14 @@ export class GameScene extends Phaser.Scene {
     if (briefing) {
       this.banner.setText(`Stage ${g.stage}`);
       this.bannerSub.setText(`${this.arena.name}  deploying in ${Math.max(1, Math.ceil(g.briefingMs / 1000))}`);
+    }
+  }
+
+  /** HUD objects are drawn in screen space: they must not scroll with the camera. Depth 90+ is the HUD; objects appear lazily, so check every frame. */
+  private pinHud(): void {
+    for (const o of this.children.list) {
+      const h = o as Phaser.GameObjects.GameObject & { depth: number; scrollFactorX?: number; setScrollFactor?: (x: number, y?: number) => unknown };
+      if (h.depth >= 90 && h.scrollFactorX !== undefined && h.scrollFactorX !== 0) h.setScrollFactor?.(0);
     }
   }
 
@@ -421,6 +454,7 @@ export class GameScene extends Phaser.Scene {
         return {
           fps: Math.round(this.game.loop.actualFps), predActive: this.predictor.active, sent: this.predictor.sentCount, pending: this.predictor.pendingCount,
           dark: this.darkness ? { ambient: this.darkness.drawnAmbient, assist: this.darkness.assist } : null,
+          view: { roomId: g?.players.find((p) => p.id === this.session.playerId)?.roomId ?? null, arena: this.arena.id, scroll: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY }, layouts: [...this.session.layouts.keys()] },
           stage: this.session.stage, notice: this.session.notice?.text ?? null,
           phase: g?.phase ?? null, tick: g?.tick ?? null, epoch: g?.epoch ?? null, localId: this.session.playerId,
           hostId: this.session.snapshot?.hostId ?? null,
@@ -428,7 +462,7 @@ export class GameScene extends Phaser.Scene {
             const v = this.views.get(p.id);
             return {
               id: p.id, name: p.name, slot: p.slot, connected: p.connected, grounded: p.grounded, isLocal: p.id === this.session.playerId,
-              serverX: p.x, serverY: p.y, renderX: v?.box.x ?? null, renderY: v ? v.box.y + PLAYER_HEIGHT / 2 : null,
+              roomId: p.roomId ?? null, hidden: v ? !v.box.visible : null, serverX: p.x, serverY: p.y, renderX: v?.box.x ?? null, renderY: v ? v.box.y + PLAYER_HEIGHT / 2 : null,
             };
           }),
         };

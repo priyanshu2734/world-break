@@ -16,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -48,10 +48,12 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
       if (sessions.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
-      const { roomCode, name, lab } = parsed.data;
+      const { roomCode, name, lab, rooms: wantRooms } = parsed.data;
       // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true });
+      // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
+      if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, rooms: wantRooms === true });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);
@@ -145,6 +147,13 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       // Steady-state snapshots are volatile (a stale one is worthless). A snapshot that carries a phase change is
       // sent reliably: after stage completion the sim stops, so a dropped one would leave clients on a stale phase.
       if (snap) (phaseChanged ? io.to(room.code) : io.to(room.code).volatile).emit('game:snapshot', snap);
+      // P3D: each player is told the layout of the room they begin in or enter: to that player's socket only, never broadcast.
+      const layouts = room.drainLayouts();
+      if (layouts.length > 0) {
+        const socketOf = new Map<string, string>();
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code) socketOf.set(sess.playerId, sid);
+        for (const { playerId, layout } of layouts) { const sid = socketOf.get(playerId); if (sid) io.to(sid).emit('room:layout', layout); }
+      }
       const stage = room.consumeStageState();
       if (stage) io.to(room.code).emit('stage:state', stage); // reliable: full, idempotent state
     });

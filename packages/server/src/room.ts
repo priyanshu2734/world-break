@@ -2,14 +2,16 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, getArena, type AbilityAction, type Arena, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, getArena, layoutOf, roomById, type AbilityAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
+import type { StageDef } from './systems/stageDef';
 import { getStageDef } from './systems/registry';
 import { fallbackStageDef } from './disasters/fallback';
 import { withDefaultAbilities } from './abilities/defaults';
 import { ABILITY_LAB_STAGE } from './systems/stages/abilityLab';
+import { ROOMS_DEMO_STAGE } from './rooms/demoStage';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
 
@@ -50,7 +52,7 @@ export class Room {
      * P3B dev option `lab`: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation).
      * P3C option `hunt`: stage 1 is the salvage hunt instead of the tutorial. `lab` wins when both are set.
      */
-    private readonly opts: { lab?: boolean; hunt?: boolean } = {},
+    private readonly opts: { lab?: boolean; hunt?: boolean; rooms?: boolean } = {},
   ) {}
 
   /** True for a room created as an Ability Lab room. Only stage 1 is the Lab; stage 2+ are the normal endless stages. */
@@ -68,9 +70,12 @@ export class Room {
     const ids = [...this.members.keys()];
     let fallback = false;
     let engine: StageEngine;
-    const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE : getStageDef(stage, seed, { hunt: this.opts.hunt === true });
+    // `lab` wins over `rooms` (P3D dev demo), which wins over the hunt/tutorial choice of the registry.
+    const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE
+      : this.opts.rooms === true && stage === 1 ? ROOMS_DEMO_STAGE
+      : getStageDef(stage, seed, { hunt: this.opts.hunt === true });
     try {
-      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: getArena(base.arenaId) ?? ARENA, difficulty: this.difficulty, stage });
+      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: this.stageArena(base), difficulty: this.difficulty, stage });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
@@ -82,7 +87,34 @@ export class Room {
   }
 
   /** The arena a built stage is played on (its `arenaId`; Relay Platform 01 for every rotation stage). */
-  private arenaOf(engine: StageEngine): Arena { return getArena(engine.def.arenaId) ?? ARENA; }
+  private arenaOf(engine: StageEngine): Arena {
+    const g = engine.def.rooms; // P3D: a multi-room stage plays on its start room's arena
+    if (g) { const start = roomById(g, g.start); if (start) return start.arena; }
+    return getArena(engine.def.arenaId) ?? ARENA;
+  }
+
+  private stageArena(def: StageDef): Arena {
+    if (def.rooms) { const start = roomById(def.rooms, def.rooms.start); if (start) return start.arena; }
+    return getArena(def.arenaId) ?? ARENA;
+  }
+
+  /** P3D: layouts waiting to be sent, each to ONE player. */
+  private layoutQueue: { playerId: string; layout: RoomLayout }[] = [];
+  /** P3D: the room graph of the current stage, if it has one. */
+  private graph() { return this.engine?.def.rooms; }
+  private queueLayout(playerId: string, roomId: string): void {
+    const g = this.graph(); const r = g && roomById(g, roomId);
+    if (r) this.layoutQueue.push({ playerId, layout: layoutOf(r) });
+  }
+  /** P3D: puts every player in the start room of a multi-room stage (or back on one arena) and queues the start room's layout for all. */
+  private bindRooms(engine: StageEngine): void {
+    this.layoutQueue = [];
+    this.sim?.loadRooms(engine.def.rooms ?? null);
+    const g = engine.def.rooms;
+    if (g) for (const m of this.members.values()) this.layoutQueue.push({ playerId: m.id, layout: layoutOf(roomById(g, g.start)!) });
+  }
+  /** P3D: layouts to deliver (each to its player only). Empty on single-arena stages. */
+  drainLayouts(): { playerId: string; layout: RoomLayout }[] { const q = this.layoutQueue; this.layoutQueue = []; return q; }
 
   /** Gives the stage engine the sim's physical world and loads the stage's authored props into it. */
   private bindWorld(engine: StageEngine): void {
@@ -139,6 +171,7 @@ export class Room {
     this.sim = new GameSim([...this.members.values()].map((m, slot) => ({ id: m.id, name: m.name, slot })), this.arenaOf(engine));
     this.engine = engine;
     this.bindWorld(this.engine);
+    this.bindRooms(engine);
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
   }
@@ -160,14 +193,24 @@ export class Room {
     this.stage = next;
     this.highestStage = Math.max(this.highestStage, next);
     this.sim.loadArena(this.arenaOf(engine)); // a stage may play on its own arena (the Lab); back to Relay Platform 01 afterwards
+    this.sim.loadRooms(null); // P3D: leave any previous room chain before the new stage binds its own
     this.sim.reset(); // spawn positions, tick 0, new epoch: clients drop prediction state
     this.engine = engine;
     this.bindWorld(engine);
+    this.bindRooms(engine);
     this.briefingTicksLeft = this.briefingTicks;
     return { ok: true };
   }
 
-  private pos = (id: string) => this.sim?.positionOf(id);
+  /**
+   * Positions the stage engine sees. P3D: until step 3 gives every room its own content, the stage's content lives in the start
+   * room, so a player standing in another room is simply not part of it (every action from there is refused).
+   */
+  private pos = (id: string) => {
+    const sim = this.sim;
+    if (sim?.contentRoom && sim.roomOf(id) !== sim.contentRoom) return undefined;
+    return sim?.positionOf(id);
+  };
 
   /** Advance one server tick. Briefing counts down (then BEGIN); playing steps the simulation. */
   tick(): { phaseChanged: boolean } {
@@ -181,6 +224,7 @@ export class Room {
       }
     } else if (this.phase === 'playing') {
       this.sim.step();
+      for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       this.engine?.step(this.pos);
       if (this.engine?.status === 'stabilized') {
         this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
@@ -226,9 +270,11 @@ export class Room {
     const nextRev = (this.engine?.state().rev ?? 0) + 1;
     const engine = this.buildEngine(this.stage, { revBase: nextRev });
     this.sim.loadArena(this.arenaOf(engine));
+    this.sim.loadRooms(null);
     this.sim.reset();
     this.engine = engine;
     this.bindWorld(this.engine);
+    this.bindRooms(engine);
     return { ok: true };
   }
 
@@ -291,7 +337,7 @@ export class RoomManager {
 
   constructor(private readonly opts: { briefingTicks?: number; huntStage?: boolean } = {}) {}
 
-  create(opts: { lab?: boolean; hunt?: boolean } = {}): Room {
+  create(opts: { lab?: boolean; hunt?: boolean; rooms?: boolean } = {}): Room {
     let code: string;
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');

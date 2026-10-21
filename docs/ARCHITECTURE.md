@@ -211,3 +211,38 @@ The decoy flag and the hidden rule are server-private. `StageDef.needs` maps a t
 Not implemented: generator items (item 7 of the P3C prompt): no generated stage (stage 2 and later) has parts, needs or stashes, and `StageState.items` is absent there.
 Not covered by automation: the Phaser drawing and key wiring (`ItemHud`, `ItemMarkers`, `itemDraw`, `GameScene`); only the pure view-model `itemView.ts` is unit-tested.
 Ownership: `server/src/salvage/**`, `shared/src/salvage/**` and `client/src/ui/{itemView,itemDraw,ItemHud,ItemMarkers}.ts` belong to P3C; later phases extend them additively.
+
+## P3D rooms (steps 1, 1B and 2 done; steps 3 to 5 pending, see docs/handoffs/P3D.md when written)
+
+* **Darkness (steps 1, 1B).** `shared/src/rooms/ambient.ts` is the ambient table (a stage and mode value, never a player setting). A stage def with `dark: true` publishes `StageState.darkness.ambient`
+  (optional, additive). The client (`ui/Darkness.ts`, `ui/darkParam.ts`) draws a screen-fixed dark layer with a radius light and a flashlight cone, clips depth 5 to 9 world objects to the light with a geometry
+  mask, and offers an in-light accessibility assist (key V). `?dark=1&dev=1` keeps the old spike keys. This is presentation only: server-side hiding is step 4.
+* **Rooms (step 2).** `shared/src/rooms/**`: `RoomGraph` (rooms, each with its own `Arena` and doors), `validateRoomGraph`, `bodyInDoor`/`doorAt`, `layoutOf`, `ROOM_LIMITS` and the schemas. A stage def may carry
+  `rooms` (optional). **A room id is its arena id**, so ids must be unique per stage. Until step 3 the stage's content (items, entities) lives in the START room; a player in another room is not part of the
+  engine's world (`Room.pos` returns undefined, so every action from there is refused as "not part of this run").
+* **Server.** `GameSim.loadRooms(graph | null)` gives each player a `roomId`; `step()` runs `stepBody` against THAT player's room arena (the P3B physical world stays with the start room), then `passDoors`: a body
+  overlapping a door of its room moves to the door's `arrive` point in the target room (cooldown `doorCooldownTicks` = 4). `doorGate(doorId, playerId)` is the hook step 3 plugs locks into. `drainTransitions()`
+  reports passages. `Room` queues one `room:layout` per player at stage start/reset and on every transition (`drainLayouts`); the gateway emits each to that player's socket only (never broadcast).
+  `GamePlayer.roomId` is optional and written only on room stages (single-arena snapshots are byte-identical to before).
+* **Client.** `Session.layouts` keeps the layouts the server sent. `GameScene` simulates the local player in `pickArena(me.roomId, ...)`; on a room change it stops the predictor, switches arena and restarts it from the
+  server position. The camera follows the player (`ui/roomMath.cameraScroll`); HUD objects (depth 90+) are pinned to the screen; the dark layer takes the scroll. Players in other rooms are hidden (different
+  coordinates); stage world art is drawn only in the content room. `ui/DoorView.ts` draws the doorways.
+* **Dev entry.** `/?rooms=1` creates a room whose stage 1 is `server/src/rooms/demoStage.ts` (3 rooms, dark, hunt content in room 0). It needs the server env `ESCAPE_STAGES` not `0` (default on in `main.ts`);
+  `createGameServer({ escapeStages })` defaults to off, so every existing test is unchanged.
+
+### P3D migration: arena-per-stage to arena-per-room (additive)
+
+The P3B Ability Lab swaps ONE arena for a whole stage (`GameSim.loadArena`, `getArena(id)`, `LocalPredictor.setArena`). Rooms generalise that without touching the shared movement code:
+
+| Piece | What changed | Default behaviour |
+|---|---|---|
+| `shared/src/sim.ts` (`stepBody`) | nothing: it already took the arena as a parameter | identical |
+| `shared/src/arena.ts` | nothing | identical |
+| `client/src/sim/prediction.ts` | nothing: `setArena` + `stop()` + `start()` is the room-change sequence | identical |
+| `GameSim` | optional `loadRooms`, per-player `roomId`, `passDoors`, `doorGate`, `drainTransitions`; `loadRooms(null)` restores single-arena mode | no rooms loaded = old code path |
+| `GamePlayerSchema` | optional `roomId` | absent on single-arena stages |
+| protocol | event `room:layout` (per player), optional join flag `rooms` | never sent without a room graph |
+| `StageDef` | optional `dark`, `rooms` | absent on every existing stage |
+
+Rule for later phases: never read a position or an arena without the player's room. Anything keyed by an arena (items, entities, hazards, props) is, from step 3, keyed by room id too.
+Parity is proven by `server/test/rooms/sim.test.ts` (server step equals `stepBody` on the room arena across a door passage) and `client/test/rooms.test.ts` (the predictor equals `stepBody` on a room arena, reconciles with no correction, and restarts cleanly after a door).

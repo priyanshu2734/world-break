@@ -1,4 +1,4 @@
-import { ABILITY_SPECS, ITEM_LIMITS, MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena, type ItemKind } from '@wb/shared';
+import { ABILITY_SPECS, ITEM_LIMITS, MOVE_SPEED, TICK_DT, TOOL_SPECS, validateRoomGraph, type Arena, type ItemKind } from '@wb/shared';
 import type { StageDef } from './stageDef';
 import { topoOrder } from './failures';
 import { evaluatePower } from './power';
@@ -201,6 +201,11 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
       const have = items.filter((i) => i.kind === k && i.decoy !== true).length;
       if (have < c) err(`target ${n.targetId} needs ${c} x ${k} but the stage provides ${have} genuine one(s)`);
     }
+  }
+  if (def.rooms) {
+    errs.push(...validateRoomGraph(def.rooms)); // P3D: structure of the room chain
+    const start = def.rooms.rooms.find((r) => r.id === def.rooms!.start);
+    if (start && start.arena.id !== def.arenaId) err(`rooms: arenaId ${def.arenaId} must be the start room's arena ${start.arena.id}`);
   }
   errs.push(...validateSalvage(def, arena)); // P3C: hiding rules, reachability, solo-safe supply (no-op without items/needs/stashes)
   errs.push(...validateDisasterMeta(def)); // P3A: lifecycle, bounds, threats (no-op without def.disaster)

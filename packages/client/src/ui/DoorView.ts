@@ -1,0 +1,35 @@
+import Phaser from 'phaser';
+import type { RoomLayout } from '@wb/shared';
+import { COLOR, FONT } from '../palette';
+
+type Doorway = RoomLayout['doors'][number];
+
+/**
+ * P3D step 2: draws the doorways of the room the player is in. Depth 6 puts them inside the dark view's light mask, so in a dark
+ * room a door is seen only when the player's light reaches it. (Locks, open and shut states arrive with step 3.)
+ */
+export class DoorView {
+  private art: Phaser.GameObjects.GameObject[] = [];
+  private key = '';
+  constructor(private scene: Phaser.Scene) {}
+
+  /** Redraw only when the doorway set changes. */
+  set(doors: readonly Doorway[]): void {
+    const key = doors.map((d) => `${d.id}:${d.x},${d.y},${d.w},${d.h}`).join('|');
+    if (key === this.key) return;
+    this.key = key;
+    for (const o of this.art) o.destroy();
+    this.art = [];
+    if (doors.length === 0) return;
+    const g = this.scene.add.graphics().setDepth(6);
+    this.art.push(g);
+    for (const d of doors) {
+      g.fillStyle(0x061622, 1).fillRect(d.x, d.y, d.w, d.h);
+      g.lineStyle(3, COLOR.cyan, 0.9).strokeRect(d.x, d.y, d.w, d.h);
+      g.lineStyle(1, COLOR.cyan, 0.35).lineBetween(d.x + d.w / 2, d.y + 6, d.x + d.w / 2, d.y + d.h - 6);
+      this.art.push(this.scene.add.text(d.x + d.w / 2, d.y - 6, 'DOOR', { ...FONT, fontSize: '12px', color: '#9fe9ff' }).setOrigin(0.5, 1).setDepth(6));
+    }
+  }
+
+  destroy(): void { for (const o of this.art) o.destroy(); this.art = []; this.key = ''; }
+}

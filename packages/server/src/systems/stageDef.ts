@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AbilityIdSchema, ENERGY_MAX, ENERGY_START, HazardKindSchema, ITEM_GATES, ITEM_LIMITS, ItemKindSchema, MAX_PROPS_PER_STAGE, StageIdSchema, ToolIdSchema } from '@wb/shared';
+import { AbilityIdSchema, RoomGraphSchema, ENERGY_MAX, ENERGY_START, HazardKindSchema, ITEM_GATES, ITEM_LIMITS, ItemKindSchema, MAX_PROPS_PER_STAGE, StageIdSchema, ToolIdSchema } from '@wb/shared';
 import { DisasterMetaSchema } from '../disasters/meta';
 
 /**
@@ -173,6 +173,8 @@ export const StageDefSchema = z.object({
   stashes: z.array(StashDefSchema).max(ITEM_LIMITS.maxStashesPerStage).optional(),
   /** P3D (additive, optional): the stage is played in the dark (published as `StageState.darkness`). Omitted = lit, as before. */
   dark: z.boolean().optional(),
+  /** P3D (additive, optional): the stage is a chain of rooms. `arenaId` must be the start room's arena; stage content (items, entities) lives in the start room until step 3 adds per-room content. */
+  rooms: RoomGraphSchema.optional(),
   scoring: z.object({
     timeBonusPerSecond: z.number().int(),
     expiredPenalty: z.number().int(),

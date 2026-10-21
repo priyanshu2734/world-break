@@ -1,8 +1,8 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  GameSnapshotSchema, RoomSnapshotSchema, StageStateSchema,
+  GameSnapshotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
   type AbilityAction, type Ack, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
-  type RoomSnapshot, type ServerToClientEvents,
+  type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { SnapshotBuffer } from './interpolation';
 
@@ -18,6 +18,8 @@ export class Session {
   gameSerial = 0;
   /** P2: latest public stage state (server-authoritative; the client never computes repair outcomes). */
   stage: StageState | null = null;
+  /** P3D: the layout of every room this player has been told about, by room id (= arena id). Only rooms the server sent are known. */
+  readonly layouts = new Map<string, RoomLayout>();
   /** Result of the most recent action, for HUD feedback. */
   notice: { text: string; ok: boolean; at: number } | null = null;
   playerId = '';
@@ -26,11 +28,15 @@ export class Session {
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.buffer.clear(); });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.layouts.clear(); this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
       if (parsed.success) this.snapshot = parsed.data;
+    });
+    this.socket.on('room:layout', (raw) => {
+      const parsed = RoomLayoutSchema.safeParse(raw);
+      if (parsed.success) this.layouts.set(parsed.data.roomId, parsed.data);
     });
     this.socket.on('stage:state', (raw) => {
       const parsed = StageStateSchema.safeParse(raw);
@@ -52,8 +58,8 @@ export class Session {
     });
   }
 
-  async join(name: string, roomCode?: string, lab = false): Promise<void> {
-    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}) });
+  async join(name: string, roomCode?: string, lab = false, rooms = false): Promise<void> {
+    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}), ...(rooms && !roomCode ? { rooms: true } : {}) });
     if (r.ok) { this.playerId = r.playerId; this.error = ''; } else this.error = r.error;
   }
   async setReady(ready: boolean) { this.report(await this.call('room:ready', { ready })); }
