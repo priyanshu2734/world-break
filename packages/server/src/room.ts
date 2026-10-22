@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, getArena, layoutOf, roomById, type AbilityAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, getArena, layoutOf, roomById, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -11,7 +11,8 @@ import { getStageDef } from './systems/registry';
 import { fallbackStageDef } from './disasters/fallback';
 import { withDefaultAbilities } from './abilities/defaults';
 import { ABILITY_LAB_STAGE } from './systems/stages/abilityLab';
-import { ROOMS_DEMO_STAGE } from './rooms/demoStage';
+import { LOCK_SAMPLER_STAGE, ROOMS_DEMO_STAGE } from './rooms/demoStage';
+import type { EscapeResult } from './rooms/escape';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
 
@@ -52,7 +53,7 @@ export class Room {
      * P3B dev option `lab`: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation).
      * P3C option `hunt`: stage 1 is the salvage hunt instead of the tutorial. `lab` wins when both are set.
      */
-    private readonly opts: { lab?: boolean; hunt?: boolean; rooms?: boolean } = {},
+    private readonly opts: { lab?: boolean; hunt?: boolean; rooms?: boolean | 2 } = {},
   ) {}
 
   /** True for a room created as an Ability Lab room. Only stage 1 is the Lab; stage 2+ are the normal endless stages. */
@@ -73,9 +74,10 @@ export class Room {
     // `lab` wins over `rooms` (P3D dev demo), which wins over the hunt/tutorial choice of the registry.
     const base = this.isLab && stage === 1 ? ABILITY_LAB_STAGE
       : this.opts.rooms === true && stage === 1 ? ROOMS_DEMO_STAGE
+      : this.opts.rooms === 2 && stage === 1 ? LOCK_SAMPLER_STAGE
       : getStageDef(stage, seed, { hunt: this.opts.hunt === true });
     try {
-      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: this.stageArena(base), difficulty: this.difficulty, stage });
+      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: this.stageArena(base), difficulty: this.difficulty, stage, rooms: this.roomsHost });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
@@ -98,6 +100,12 @@ export class Room {
     return getArena(def.arenaId) ?? ARENA;
   }
 
+  /** P3D: how the stage engine reaches the rooms (who is where; carrying a player through a door). */
+  private readonly roomsHost = {
+    roomOf: (id: string): string | undefined => this.sim?.roomOf(id),
+    sendThrough: (id: string, doorId: string): boolean => this.sim?.sendThrough(id, doorId) ?? false,
+  };
+
   /** P3D: layouts waiting to be sent, each to ONE player. */
   private layoutQueue: { playerId: string; layout: RoomLayout }[] = [];
   /** P3D: the room graph of the current stage, if it has one. */
@@ -110,6 +118,7 @@ export class Room {
   private bindRooms(engine: StageEngine): void {
     this.layoutQueue = [];
     this.sim?.loadRooms(engine.def.rooms ?? null);
+    if (this.sim) this.sim.touchDoors = !engine.def.escape; // an escape stage opens doors with E, not by touch
     const g = engine.def.rooms;
     if (g) for (const m of this.members.values()) this.layoutQueue.push({ playerId: m.id, layout: layoutOf(roomById(g, g.start)!) });
   }
@@ -203,12 +212,12 @@ export class Room {
   }
 
   /**
-   * Positions the stage engine sees. P3D: until step 3 gives every room its own content, the stage's content lives in the start
-   * room, so a player standing in another room is simply not part of it (every action from there is refused).
+   * Positions the stage engine sees. P3D: a multi-room stage WITHOUT an escape spec keeps its content in the start room, so a player
+   * standing elsewhere is not part of it. An escape stage has content in every room; its systems check rooms themselves.
    */
   private pos = (id: string) => {
     const sim = this.sim;
-    if (sim?.contentRoom && sim.roomOf(id) !== sim.contentRoom) return undefined;
+    if (sim?.contentRoom && !this.engine?.def.escape && sim.roomOf(id) !== sim.contentRoom) return undefined;
     return sim?.positionOf(id);
   };
 
@@ -224,8 +233,8 @@ export class Room {
       }
     } else if (this.phase === 'playing') {
       this.sim.step();
-      for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       this.engine?.step(this.pos);
+      for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       if (this.engine?.status === 'stabilized') {
         this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
         return { phaseChanged: true };
@@ -293,6 +302,13 @@ export class Room {
   }
 
   /** P3C: a player's salvage intent (pick up, drop, swap, hand over, install). The engine validates range, ownership, capacity, cooldown and rate. */
+  /** P3D: a player's escape intent (use a door, enter a code, press a switch, read a clue). */
+  escapeAction(id: string, action: EscapeAction): EscapeResult {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    return this.engine.escapeAction(id, action, this.pos);
+  }
+
   itemAction(id: string, action: ItemAction): ItemResult {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
@@ -337,7 +353,7 @@ export class RoomManager {
 
   constructor(private readonly opts: { briefingTicks?: number; huntStage?: boolean } = {}) {}
 
-  create(opts: { lab?: boolean; hunt?: boolean; rooms?: boolean } = {}): Room {
+  create(opts: { lab?: boolean; hunt?: boolean; rooms?: boolean | 2 } = {}): Room {
     let code: string;
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');

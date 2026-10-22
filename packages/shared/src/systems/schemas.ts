@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { HazardKindSchema, ToolIdSchema } from './tools';
 import { DisasterPublicSchema } from '../disasters/public';
 import { AbilitiesPublicSchema } from '../abilities/public';
+import { EscapePublicSchema } from '../rooms/escape';
 import { ItemsPublicSchema } from '../salvage/public';
 
 /** Ids are server-authored slugs. */
@@ -89,5 +90,7 @@ export const StageStateSchema = z.object({
   items: ItemsPublicSchema.optional(),
   /** P3D (additive, optional): the stage is dark. `ambient` is the 0..1 brightness outside every player's own light, set by stage and mode. Absent = a lit stage. */
   darkness: z.object({ ambient: z.number().min(0).max(1) }).optional(),
+  /** P3D (additive, optional): doors, keypads, safes, clues, switches and the exit of an escape stage. Absent on every other stage. */
+  escape: EscapePublicSchema.optional(),
 });
 export type StageState = z.infer<typeof StageStateSchema>;

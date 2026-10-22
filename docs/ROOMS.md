@@ -1,6 +1,6 @@
 # Rooms (P3D)
 
-Status: step 2 (room graph, per-room arenas, camera, doors without locks). Locks, the exit, server-side vision and the generator arrive in steps 3 to 5; this file is extended then.
+Status: steps 2 and 3 (room graph, per-room arenas, camera, doors with locks, keypads, safes, clues, switches, exit). Server-side vision and the seeded generator arrive in steps 4 and 5; this file is extended then.
 
 ## Limits (`shared/src/rooms/limits.ts`)
 
@@ -27,3 +27,40 @@ Per player, only the layout (walls and doorways) of the room they are in, as eve
 ## Try it
 
 `npm run dev:server`, `npm run dev:client`, open `http://localhost:5173/?rooms=1` (ESCAPE_STAGES must not be `0`). Three dark rooms in a row; walk east through the doors. Room 1 is taller than the screen.
+
+## Doors and locks (step 3)
+
+| Lock | Opens when | Solo-safe because |
+|---|---|---|
+| key_item | a carried `access_key` is used up (E at the door) | the key lies on the near side (often hidden in a locker) |
+| code | the 4-digit code is typed at a keypad elsewhere | the clue notes on the near side spell it |
+| power | a carried `battery` is used up | the battery lies on the near side |
+| two_person | both switches are lit at once (each holds 6 s) | one player runs from one switch to the other in time (validator bound: 70 percent of the hold) |
+| safe | the door's key, found in a safe opened with a 3-digit combination | three clue notes spell the combination |
+
+Never the same lock type on two neighbouring doors. Decoys (a cracked key or battery) break in the lock and cost the wrong-part penalty. Two hand slots, as in P3C.
+
+## Interaction rules
+
+| Rule | Value |
+|---|---|
+| Reach for E | 70 px horizontally (+ half a door's width), `RANGE_DY` vertically |
+| Door opening delay | 10 ticks (0.5 s); drifting more than 60 px cancels |
+| Wrong tries before a lockout | 3 (keypad or safe), lockout 100 ticks (5 s) |
+| Switch hold | 120 ticks (6 s) |
+| Escape intents per player | at least 4 ticks apart (refused ones count) |
+| Exit zone | 60 x 100 px; the first connected player inside clears the stage |
+| Authoring bounds | at most 5 doors, 12 clues, 5 keypads, 5 safes, 10 switches per stage |
+
+## What a refusal reveals
+
+A locked door says what is missing (`Locked. Needs a key.`, `Locked. Needs a 4-symbol code.`, `Locked. Needs power.`, `Locked. Needs two switches held at once.`), never where it is. A key door and a safe door read the same.
+A door, keypad, safe, switch or clue that is hidden, in another room or nonexistent answers `Nothing there.`, byte for byte.
+
+## Clearing a stage
+
+Reaching the exit alive clears the stage for the whole team (the others come back next stage): `StageEngine.clearStage` makes the engine `stabilized`, and the existing STAGE_CLEAR transition does the rest.
+
+## Try it
+
+`/?rooms=1`: key from the locker (the cracked key lying about is a decoy), then a 4-digit code (the note is on a high platform; the keypad is by the door). `/?rooms=2`: all five lock types in six rooms.

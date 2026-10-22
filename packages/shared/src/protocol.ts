@@ -4,6 +4,7 @@ import type { StageState } from './systems/schemas';
 import { WorldPublicSchema } from './abilities/world';
 import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
+import type { EscapeAck } from './rooms/escape';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -14,7 +15,7 @@ export const JoinPayloadSchema = z.object({
   /** P3B dev flag: create the room as an Ability Lab room. Honoured only when the server runs with ABILITY_LAB=1, and only on creation. */
   lab: z.boolean().optional(),
   /** P3D dev flag: create the room with the multi-room demo stage as stage 1. Honoured only when the server runs with ESCAPE_STAGES on, and only on creation. */
-  rooms: z.boolean().optional(),
+  rooms: z.union([z.boolean(), z.literal(2)]).optional(),
 });
 export const ReadyPayloadSchema = z.object({ ready: z.boolean() });
 export const DifficultyPayloadSchema = z.object({ difficulty: DifficultySchema });
@@ -104,6 +105,8 @@ export interface ClientToServerEvents {
   'ability:use': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3C. A player's salvage intent (pick up, drop, swap, hand over, install). The server decides the outcome. */
   'item:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P3D: doors (E), keypads and safes (enter a code), switches (press), clues (read). */
+  'escape:action': (payload: unknown, ack: (r: Ack<EscapeAck>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;

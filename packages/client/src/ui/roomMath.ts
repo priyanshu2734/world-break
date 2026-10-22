@@ -3,6 +3,12 @@ import { ARENA, VIEW_HEIGHT, VIEW_WIDTH, getArena, type Arena, type RoomLayout }
 /** `?rooms=1` asks the server for the multi-room demo stage when it creates the room (dev flag; the server needs ESCAPE_STAGES on). */
 export function roomsRequested(search: string): boolean { return new URLSearchParams(search).get('rooms') === '1'; }
 
+/** `?rooms=2` asks for the six-room lock sampler (every lock type); `?rooms=1` for the three-room mini escape. Anything else: no demo. */
+export function roomsFlag(search: string): true | 2 | false {
+  const v = new URLSearchParams(search).get('rooms');
+  return v === '1' ? true : v === '2' ? 2 : false;
+}
+
 /**
  * The arena for a room id: a built-in arena (Relay Platform 01, the Ability Lab) or the layout the server sent for that room.
  * `undefined` = not known yet (the server sends the layout of a room before, or together with, the first snapshot that names it).

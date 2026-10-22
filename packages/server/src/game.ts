@@ -48,6 +48,8 @@ export class GameSim {
   private transitions: RoomTransition[] = [];
   /** P3D: step 3 plugs door locks in here. Return false to keep the door shut for this player. Default: every door is open. */
   doorGate: ((doorId: string, playerId: string) => boolean) | null = null;
+  /** P3D: doors open by walking into them (the step 2 behaviour, default). An escape stage turns this off: doors open with E (`sendThrough`). */
+  touchDoors = true;
 
   constructor(inits: SimPlayerInit[], arena: Arena = ARENA) {
     this._arena = arena;
@@ -146,21 +148,36 @@ export class GameSim {
       // P3B: zones/impulses for THIS tick, or undefined. P3D: each player steps in THEIR room's arena; the physical world is the start room's.
       const here = !this.rooms || p.roomId === this.startRoom;
       stepBody(p.body, input, this.arenaFor(p), here ? this.world.forPlayer(p.id) : undefined);
-      if (this.rooms && p.roomId) this.passDoors(p);
+      if (this.rooms && p.roomId && this.touchDoors) this.passDoors(p);
     }
     this.world.step();
     this.tick++;
   }
 
+  /**
+   * P3D: carry a player through one of the doors of the room they are in (the escape runtime calls this after E and the opening delay).
+   * Same move as walking into the door: the arrival point of the target room, then the new room's layout is sent to that player.
+   */
+  sendThrough(playerId: string, doorId: string): boolean {
+    const p = this.players.get(playerId);
+    const room = p && this.rooms && p.roomId ? this.rooms.get(p.roomId) : undefined;
+    const door = room?.doors.find((d) => d.id === doorId);
+    if (!p || !room || !door) return false;
+    this.teleport(p, room, door);
+    return true;
+  }
+  private teleport(p: SimPlayer, room: RoomDef, door: RoomDef['doors'][number]): void {
+    p.body = spawnBody(door.arrive.x, door.arrive.y);
+    p.doorCooldown = ROOM_LIMITS.doorCooldownTicks;
+    this.transitions.push({ playerId: p.id, from: room.id, to: door.to, doorId: door.id });
+    p.roomId = door.to;
+  }
   private passDoors(p: SimPlayer): void {
     if (p.doorCooldown > 0) { p.doorCooldown--; return; }
     const room = this.rooms!.get(p.roomId!);
     const door = room ? doorAt(room, p.body) : null;
     if (!room || !door || (this.doorGate && !this.doorGate(door.id, p.id))) return;
-    p.body = spawnBody(door.arrive.x, door.arrive.y);
-    p.doorCooldown = ROOM_LIMITS.doorCooldownTicks;
-    this.transitions.push({ playerId: p.id, from: room.id, to: door.to, doorId: door.id });
-    p.roomId = door.to;
+    this.teleport(p, room, door);
   }
 
   /** Restore the known initial state: spawn positions, tick 0, empty queues. New epoch tells clients to resync. */

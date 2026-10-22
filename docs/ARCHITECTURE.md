@@ -212,7 +212,7 @@ Not implemented: generator items (item 7 of the P3C prompt): no generated stage 
 Not covered by automation: the Phaser drawing and key wiring (`ItemHud`, `ItemMarkers`, `itemDraw`, `GameScene`); only the pure view-model `itemView.ts` is unit-tested.
 Ownership: `server/src/salvage/**`, `shared/src/salvage/**` and `client/src/ui/{itemView,itemDraw,ItemHud,ItemMarkers}.ts` belong to P3C; later phases extend them additively.
 
-## P3D rooms (steps 1, 1B and 2 done; steps 3 to 5 pending, see docs/handoffs/P3D.md when written)
+## P3D rooms (steps 1, 1B, 2 and 3 done; steps 4 and 5 pending, see docs/handoffs/P3D.md when written)
 
 * **Darkness (steps 1, 1B).** `shared/src/rooms/ambient.ts` is the ambient table (a stage and mode value, never a player setting). A stage def with `dark: true` publishes `StageState.darkness.ambient`
   (optional, additive). The client (`ui/Darkness.ts`, `ui/darkParam.ts`) draws a screen-fixed dark layer with a radius light and a flashlight cone, clips depth 5 to 9 world objects to the light with a geometry
@@ -246,3 +246,28 @@ The P3B Ability Lab swaps ONE arena for a whole stage (`GameSim.loadArena`, `get
 
 Rule for later phases: never read a position or an arena without the player's room. Anything keyed by an arena (items, entities, hazards, props) is, from step 3, keyed by room id too.
 Parity is proven by `server/test/rooms/sim.test.ts` (server step equals `stepBody` on the room arena across a door passage) and `client/test/rooms.test.ts` (the predictor equals `stepBody` on a room arena, reconciles with no correction, and restarts cleanly after a door).
+
+### P3D step 3: doors, locks, exit, clear rule
+
+* **Doors open with E, not by touching.** On an escape stage (`StageDef.escape` present) `GameSim.touchDoors` is false. `use_door` (event `escape:action`) starts a 0.5 s opening delay (`ESCAPE_LIMITS.doorDelayTicks`); the runtime then calls
+  `GameSim.sendThrough(player, doorId)`, which is the same move as the step 2 touch passage. Drifting more than 60 px away cancels it. An opened door stays open for everybody.
+* **`server/src/rooms/escape.ts` (`EscapeRuntime`)** owns doors, keypads, safes, clues, switches and the exit. The engine builds it from `def.escape` and `def.rooms` and reaches the rooms only through `EscapeHost`
+  (roomOf, sendThrough, say, award, markDirty, clear), so it is unit-testable. Every intent checks, in order: player in the run > rate limit (4 ticks, accepted and refused alike) > same room and reach > the rule of the intent.
+  Anything nonexistent, hidden or in another room answers `Nothing there.` (byte-identical); only a thing you can see answers `Too far away.`
+* **Lock types** (`server/src/rooms/escapeSpec.ts`, one per physical door, shared by both sides): `key_item` (an `access_key` part is consumed), `power` (a `battery` part is consumed), `code` (4-digit keypad, clue digits spell the code),
+  `two_person` (two switches lit together; a lit switch holds 6 s so one player can run between them), `safe` (the door needs a key that lies in a safe opened with a 3-digit combination spelled by its clues).
+  Wrong tries: 3 on a keypad or safe, then a 5 s lockout (the end of the lockout is published too), so brute force is bounded. A refusal on a locked door says WHAT is missing (`needText`), never where.
+* **P3C reuse.** Keys and batteries are ordinary P3C parts: 2 hand slots, hidden in stashes (`interact` reveal), decoys (a cracked key or battery is destroyed by the lock and costs the wrong-part penalty). `ItemSystem` gained optional room
+  support: `ItemDef.room`/`StashDef.room` (default: the start room), `opts.arenaOf`, `host.roomOf`; a part is reachable only from its own room; dropped parts rest in the dropper's room; `consumeCarried(player, kind)` is what a lock takes.
+  Single-arena stages pass none of this and behave as before (all 124 salvage tests unchanged). The P3C `NeedDef` repair-target model is not used: doors are not repair targets.
+* **Exit and clear rule (GAMEPLAY.md section 3).** The exit is a 60x100 zone on a floor. Each tick the runtime checks every connected player in the exit room; the first one inside calls `StageEngine.clearStage()`, which sets
+  `status = 'stabilized'` and pays the same time bonus an objective clear pays. `Room.tick` already turns `stabilized` into the existing STAGE_CLEAR phase transition (`phases.ts` is untouched), and `room.nextStage` resets
+  every player (including those who never left room 0) onto the next stage. `StageDef.objectives` may now be empty, but only with an `escape` spec (`validateStageDef` enforces it).
+* **Validation.** `server/src/rooms/escapeValidate.ts` proves structurally that every lock can be opened by one player from its near side of the door: keys/batteries/keypads/safes/clues/switches lie on the near side, clue digits spell
+  the code, counts of parts cover the locks that need them, two-person switches are one room and one run apart, every door has exactly one lock, no two neighbouring doors share a lock type, every object stands on a solid.
+  Physical reachability by real physics is shown by `server/test/rooms/bot.ts` (look-ahead with `stepBody`) in `escape.test.ts`; step 5 turns that into the generic solvability bot.
+* **Client.** `ui/escapeUse.ts` (pure: what is in reach, prompts, code entry, per-room state), `ui/EscapeView.ts` (keypads, safes, clues, switches, exit, the E prompt, the NOTES panel), `ui/CodePad.ts` (typing a code), `ui/DoorView.ts`
+  (red = locked, green = open). E picks up or opens parts first, then acts on the nearest door/keypad/safe/clue/switch. Clue text goes to the reader only (`EscapeAck.note`, kept in `Session.notes`), never in the public state.
+* **Public state** (`StageState.escape`, optional): doors (open, and the requirement only after somebody tried), keypads, safes, clues (position and label only), switches, exit. Step 4 filters this per player by vision;
+  until then a modified client can see where everything is (not any code or clue text).
+* **Dev stages.** `/?rooms=1`: 3 rooms, key then code. `/?rooms=2`: 6 rooms, key, code, power, two-person, safe (`server/src/rooms/demoStage.ts`). Both need ESCAPE_STAGES not `0`.

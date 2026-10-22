@@ -14,6 +14,9 @@ import { ItemHud } from '../ui/ItemHud';
 import { ItemMarkers } from '../ui/ItemMarkers';
 import { Darkness } from '../ui/Darkness';
 import { DoorView } from '../ui/DoorView';
+import { EscapeView } from '../ui/EscapeView';
+import { CodePad } from '../ui/CodePad';
+import { nearestUse, stateForRoom, takesCode, useIntent, usablesIn, type EscapeUse } from '../ui/escapeUse';
 import { cameraScroll, pickArena } from '../ui/roomMath';
 import { darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
 import { carryChanges, dropIntent, handoverIntent, installIntent, pickIntent, type ItemIntent } from '../ui/itemView';
@@ -59,6 +62,12 @@ export class GameScene extends Phaser.Scene {
   private solidsDark = false;
   /** P3D rooms: doorways of the current room. */
   private doors!: DoorView;
+  /** P3D escape stages: keypads, safes, clues, switches, the exit, the E prompt and the player's notes. */
+  private escapeView!: EscapeView;
+  private pad!: CodePad;
+  /** What E would act on this frame (null = nothing in reach). */
+  private escapeNearest: EscapeUse | null = null;
+  private notesStage = -1;
   private prevItems: import('@wb/shared').ItemsPublic | undefined;
   /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
   private where = new Map<string, { x: number; y: number }>();
@@ -110,6 +119,9 @@ export class GameScene extends Phaser.Scene {
     this.worldView = new WorldView(this);
     this.darkCfg = darkSettings(window.location.search);
     this.doors = new DoorView(this);
+    this.escapeView = new EscapeView(this);
+    this.events.once('shutdown', () => this.escapeView.destroy());
+    this.pad = new CodePad(this, (t, code) => { void this.session.escapeAction({ action: 'enter_code', targetId: t.id, code }); });
     this.events.once('shutdown', () => this.doors.destroy());
     this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
@@ -274,9 +286,11 @@ export class GameScene extends Phaser.Scene {
       this.drawSolids();
       this.darkness?.setArena(this.arena);
     }
-    this.doors.set(myRoom !== undefined ? s.layouts.get(myRoom)?.doors ?? [] : []);
-    // Stage content (items, entities, props) lives in the start room until step 3 gives every room its own.
-    const contentHere = myRoom === undefined || myRoom === g.arenaId;
+    const es = s.stage?.escape;
+    this.doors.set(myRoom !== undefined ? s.layouts.get(myRoom)?.doors ?? [] : [], es ? new Map(es.doors.map((d) => [d.id, d.open])) : undefined);
+    // Stage content lives in the start room on a plain multi-room stage; on an escape stage every room has its own (filtered by room below).
+    const contentHere = myRoom === undefined || myRoom === g.arenaId || es !== undefined;
+    if (this.notesStage !== g.stage) { this.notesStage = g.stage; s.notes.length = 0; } // clues are per stage
 
     // --- local prediction ---
     if (g.phase === 'playing' && me && me.connected && wantArena) {
@@ -338,7 +352,11 @@ export class GameScene extends Phaser.Scene {
     // --- P2: stage overlay, HUD and action keys (all outcomes are decided by the server) ---
     const meNow = this.predictor.render() ?? sampled.get(s.playerId) ?? me ?? null;
     const st = s.stage;
-    const stHere = contentHere ? st : null; // the world art of the stage is only drawn in the room it belongs to
+    const stHere = stateForRoom(contentHere ? st : null, myRoom); // only what lies in the player's room is drawn
+    const uses = myRoom !== undefined ? usablesIn(myRoom, st?.escape, s.layouts.get(myRoom)) : [];
+    this.escapeNearest = meNow ? nearestUse(meNow, uses) : null;
+    this.escapeView.update(myRoom, st?.escape, st?.tick ?? 0, this.escapeNearest, g.phase === 'playing' && !this.pad.isOpen, s.notes);
+    this.pad.update(g.phase === 'playing' ? meNow : null);
     this.stageView.update(stHere ?? EMPTY_STAGE, g.tick, stHere ? meNow : null);
     this.stageHud.update(st, g.tick, s.playerId, s);
     this.abilityHud.update(st, g.tick, s.playerId);
@@ -350,7 +368,9 @@ export class GameScene extends Phaser.Scene {
     if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
     if (contentHere) this.worldView.update(g, delta);
     else { const { world: _unused, ...noWorld } = g; void _unused; this.worldView.update(noWorld, delta); }
-    this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected && contentHere, meNow, me?.facing ?? 1);
+    if (this.pad.isOpen) this.drainKeys(); // typing into the pad must not trigger tools or abilities afterwards
+    // keys act on what lies in the player's own room only (a part in another room has the same coordinates as nothing here)
+    this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
 
     // --- P3D: the camera follows the local player inside the room (a room no bigger than the screen never scrolls) ---
     if (meNow) {
@@ -386,6 +406,19 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** E on a door, keypad, safe, clue or switch (P3D). The server decides; keypads and safes open the typing pad first. */
+  private useEscape(u: EscapeUse, tick: number): void {
+    if ((u.kind === 'keypad' || u.kind === 'safe') && takesCode(u, tick)) { this.pad.open({ id: u.id, kind: u.kind, length: u.length, x: u.x, y: u.y }); return; }
+    const intent = useIntent(u);
+    if (intent) void this.session.escapeAction(intent);
+    else this.session.notice = { text: u.kind === 'keypad' || u.kind === 'safe' ? 'Not now.' : 'Nothing to do.', ok: false, at: performance.now() };
+  }
+
+  /** Read and discard every action key press (a key press is remembered until read). */
+  private drainKeys(): void {
+    for (const k of [...Object.values(this.stageKeys), ...Object.values(this.abilityKeys)]) Phaser.Input.Keyboard.JustDown(k);
+  }
+
   private handleStageKeys(st: import('@wb/shared').StageState | null, canAct: boolean, me: { x: number; y: number } | null, facing: 1 | -1): void {
     const K = this.stageKeys, J = Phaser.Input.Keyboard.JustDown;
     const send = (a: StageAction) => { void this.session.stageAction(a); };
@@ -402,6 +435,7 @@ export class GameScene extends Phaser.Scene {
     if (pressed.E) {
       const mine = pickIntent(st, me);
       if (mine) itemSend(mine);
+      else if (this.escapeNearest) this.useEscape(this.escapeNearest, st.tick);
       else {
         const id = nearestInteractable(st, me);
         if (id) send({ kind: 'interact', targetId: id });

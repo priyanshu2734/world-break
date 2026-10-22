@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { GameSnapshotSchema, RoomLayoutSchema, type RoomLayout } from '@wb/shared';
 import { Room } from '../../src/room';
-import { DEMO_ROOM_IDS } from '../../src/rooms/demoStage';
+import { DEMO_AT, DEMO_ROOM_IDS } from '../../src/rooms/demoStage';
+import { expectOk, fetchItem, itemAct, setup, useDoor } from './flows';
 
 const [R0, R1] = DEMO_ROOM_IDS;
 let seq = 0;
@@ -41,13 +42,18 @@ describe('P3D rooms through the real Room', () => {
     expect(r.drainLayouts()).toEqual([]);
   });
 
-  it('passing a door queues the new room\'s layout for THAT player only', () => {
-    const r = roomsRoom(2);
-    r.drainLayouts();
-    walk(r, 'p0', 1, 400, () => roomIdOf(r, 'p0') === R1);
-    expect(roomIdOf(r, 'p0')).toBe(R1);
-    expect(roomIdOf(r, 'p1')).toBe(R0);
-    const out = r.drainLayouts();
+  it('passing a door (opened with E, with a key) queues the new room\'s layout for THAT player only', () => {
+    const p = setup(true, 2);
+    p.room.drainLayouts();
+    const a = p.bots[0]!;
+    a.goTo(DEMO_AT.locker.x, DEMO_AT.locker.y);
+    expectOk(itemAct(p, { action: 'open', stashId: 'demo_locker' }));
+    expectOk(fetchItem(p, a, 'demo_key'));
+    expectOk(useDoor(p, a, DEMO_AT.doorA.id));
+    p.team.waitForRoom('p0', R1);
+    expect(p.team.roomOf('p0')).toBe(R1);
+    expect(p.team.roomOf('p1')).toBe(R0);
+    const out = p.room.drainLayouts();
     expect(out).toHaveLength(1);
     expect(out[0]!.playerId).toBe('p0');
     const layout: RoomLayout = out[0]!.layout;

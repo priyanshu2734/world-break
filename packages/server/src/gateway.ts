@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result } from './room';
@@ -53,7 +53,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
       // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
       if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, rooms: wantRooms === true });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}) });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);
@@ -107,6 +107,15 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
     // P3C: salvage (pick up, drop, swap, hand over, install). Zod here, rules in the item system.
+    socket.on('escape:action', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = EscapeActionSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid escape request' });
+      const r = rooms.get(s.roomCode)?.escapeAction(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message, ...(r.note ? { note: r.note } : {}) } : { ok: false, error: r.error });
+    });
     socket.on('item:action', (payload, ack) => {
       const s = sessions.get(socket.id);
       if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
