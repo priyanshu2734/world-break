@@ -83,6 +83,11 @@ export const GameSnapshotSchema = z.object({
   players: z.array(GamePlayerSchema).max(MAX_PLAYERS),
   /** P3B (additive, optional): gravity zones, impulse events and physical props. Absent = none (and always absent before P3B). */
   world: WorldPublicSchema.optional(),
+  /**
+   * P3D step 4 (additive, optional): on an escape stage `players` holds only the viewer and the teammates the viewer can see, so the
+   * team panel reads this instead: every teammate's name, slot and connection, never a position or an inventory. Absent on other stages.
+   */
+  team: z.array(z.object({ id: z.string(), name: z.string(), slot: z.number().int().min(0), connected: z.boolean() })).max(MAX_PLAYERS).optional(),
 });
 export type GameSnapshot = z.infer<typeof GameSnapshotSchema>;
 

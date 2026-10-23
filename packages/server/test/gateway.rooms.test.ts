@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { io as connect, type Socket } from 'socket.io-client';
-import { GameSnapshotSchema, RoomLayoutSchema, type Ack, type RoomLayout } from '@wb/shared';
+import { GameSnapshotSchema, RoomLayoutSchema, StageStateSchema, type Ack, type GameSnapshot, type RoomLayout, type StageState } from '@wb/shared';
 import { createGameServer, type GameServer } from '../src/gateway';
 import { DEMO_AT, DEMO_ROOM_IDS } from '../src/rooms/demoStage';
 
@@ -17,10 +17,12 @@ const emit = <T extends object = object>(s: Socket, ev: string, p: unknown = {})
 function client(port: number) {
   const s = connect(`http://localhost:${port}`, { transports: ['websocket'], forceNew: true });
   clients.push(s);
-  const c = { s, id: '', layouts: [] as RoomLayout[], roomId: undefined as string | undefined, x: undefined as number | undefined, raw: [] as string[] };
+  const c = { s, id: '', layouts: [] as RoomLayout[], roomId: undefined as string | undefined, x: undefined as number | undefined, raw: [] as string[], stages: [] as StageState[], snaps: [] as GameSnapshot[] };
   s.on('room:layout', (l: unknown) => { c.raw.push(JSON.stringify(l)); c.layouts.push(RoomLayoutSchema.parse(l)); });
+  s.on('stage:state', (st: unknown) => { c.stages.push(StageStateSchema.parse(st)); });
   s.on('game:snapshot', (g: unknown) => {
     const snap = GameSnapshotSchema.parse(g);
+    c.snaps.push(snap);
     const me = snap.players.find((p) => p.id === c.id);
     c.roomId = me?.roomId; c.x = me?.x;
   });
@@ -47,6 +49,30 @@ describe('P3D rooms through the gateway', () => {
     expect(a.layouts[0]!.roomId).toBe('sampler.r0');
     expect(await emit(b.s, 'room:join', { name: 'B', rooms: 3 })).toEqual({ ok: false, error: 'Invalid join request' });
     expect(await emit(c.s, 'room:join', { name: 'C', rooms: false })).toMatchObject({ ok: true });
+  });
+
+  it('on an escape stage each socket gets its own restricted view, with a rising revision, and an idle client is not flooded', async () => {
+    const port = await boot(true);
+    const a = client(port), b = client(port);
+    const ja = await emit<{ roomCode: string; playerId: string }>(a.s, 'room:join', { name: 'A', rooms: 2 });
+    a.id = (ja as { playerId: string }).playerId;
+    const jb = await emit<{ playerId: string }>(b.s, 'room:join', { name: 'B', roomCode: (ja as { roomCode: string }).roomCode });
+    b.id = (jb as { playerId: string }).playerId;
+    await emit(b.s, 'room:ready', { ready: true });
+    expect((await emit(a.s, 'room:start')).ok).toBe(true);
+    await until(() => a.snaps.length > 5 && b.snaps.length > 5 && a.stages.length > 0 && b.stages.length > 0);
+    await new Promise((r) => setTimeout(r, 1200)); // idle for ~24 ticks
+    for (const c of [a, b]) {
+      const last = c.stages.at(-1)!;
+      expect(last.items?.players.map((x) => x.id)).toEqual([c.id]); // only your own hands
+      expect(last.players.map((x) => x.id)).toEqual([c.id]);
+      expect(c.stages.length).toBeLessThanOrEqual(4); // sent when YOUR view changed, not every tick
+      for (let i = 1; i < c.stages.length; i++) expect(c.stages[i]!.rev).toBeGreaterThan(c.stages[i - 1]!.rev);
+      const snap = c.snaps.at(-1)!;
+      expect(snap.team?.map((t) => t.id).sort()).toEqual([a.id, b.id].sort()); // the team list is always whole
+      expect(snap.players.some((p) => p.id === c.id)).toBe(true);
+    }
+    expect(JSON.stringify(a.stages.at(-1)!.items?.players)).not.toBe(JSON.stringify(b.stages.at(-1)!.items?.players));
   });
 
   it('rejects a malformed flag', async () => {

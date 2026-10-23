@@ -81,7 +81,9 @@ export const StageStateSchema = z.object({
     })),
   })),
   clues: z.array(z.object({ id: z.string(), text: z.string(), tick: z.number().int() })),
-  feed: z.array(z.object({ tick: z.number().int(), text: z.string(), tone: z.enum(['info', 'good', 'warn', 'bad', 'clue']) })),
+  feed: z.array(z.object({ tick: z.number().int(), text: z.string(), tone: z.enum(['info', 'good', 'warn', 'bad', 'clue']),
+    /** P3D step 4 (additive, optional): the room the event happened in; players elsewhere are not told. */
+    room: z.string().optional() })),
   /** P3A (additive, optional): the running disaster's public warning/phase/schedule. Absent for hand-authored stages. */
   disaster: DisasterPublicSchema.optional(),
   /** P3B (additive, optional): Reality Energy and ability cooldowns. Absent for stages without abilities. */

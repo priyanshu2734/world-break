@@ -95,3 +95,26 @@ export function addNote(notes: { id: string; text: string }[], note: { id: strin
   notes.push(note);
   while (notes.length > max) notes.shift();
 }
+
+/** The keys of an escape stage (GAMEPLAY.md section 11). Q (ping) and Tab (team panel) are placeholders until their phases. */
+export const ESCAPE_KEYS_HINT = 'A/D move   W/Space jump   E interact   G drop/swap   F use   Q ping (soon)   Tab team (soon)   Mouse: aim your light';
+
+/**
+ * The ONE goal line of an escape stage, from what this player's view contains (the server sends only what they can see, so this
+ * never gives away what is hidden). `carried` = the kinds of parts in their hands.
+ */
+export function goalLine(es: EscapePublic | undefined, room: string | undefined, carried: readonly string[], notesRead: number): string {
+  if (!es) return '';
+  if (es.exit && es.exit.room === room) return 'Reach the exit.';
+  const here = es.doors.filter((d) => d.room === room);
+  const locked = here.find((d) => !d.open && d.need !== null);
+  if (locked) {
+    const need = locked.need!.toLowerCase();
+    if (need.includes('key')) return carried.includes('access_key') ? 'Try the key on the locked door.' : 'Find a key for the locked door.';
+    if (need.includes('code')) return notesRead > 0 ? 'Enter the code at a keypad.' : 'Find the code, and a keypad to enter it.';
+    if (need.includes('power')) return carried.includes('battery') ? 'Use the battery on the door.' : 'Find a battery for the door.';
+    if (need.includes('switches')) return 'Light both switches within a few seconds.';
+  }
+  if (here.some((d) => d.open)) return 'Go through the open door.';
+  return 'Find a way out.';
+}

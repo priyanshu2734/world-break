@@ -18,17 +18,24 @@ export class EscapeView {
   private notesBg: Phaser.GameObjects.Rectangle;
   private notesText: Phaser.GameObjects.Text;
   private notesShown = '';
+  private goal: Phaser.GameObjects.Text;
+  /** Redrawn every frame: the soft pulse on containers that still hold something. */
+  private glow: Phaser.GameObjects.Graphics;
 
   constructor(private scene: Phaser.Scene) {
     this.prompt = scene.add.text(W / 2, H - 150, '', { ...FONT, fontSize: '20px', color: COLOR.text, backgroundColor: '#04101acc' })
       .setOrigin(0.5).setPadding(12, 6).setDepth(101).setScrollFactor(0).setVisible(false);
+    this.goal = scene.add.text(W / 2, 76, '', { ...FONT, fontSize: '18px', color: '#ffd9a0' }).setOrigin(0.5, 0).setDepth(100).setScrollFactor(0).setVisible(false);
+    this.glow = scene.add.graphics().setDepth(6);
     this.notesBg = scene.add.rectangle(16, 160, 300, 40, 0x04101a, 0.85).setOrigin(0).setStrokeStyle(1, COLOR.amberDim).setDepth(100).setScrollFactor(0).setVisible(false);
     this.notesText = scene.add.text(26, 168, '', { ...FONT, fontSize: '14px', color: '#ffd9a0', wordWrap: { width: 282 } }).setDepth(101).setScrollFactor(0).setVisible(false);
   }
 
   /** `es` undefined = not an escape stage: everything hidden. */
-  update(room: string | undefined, es: EscapePublic | undefined, tick: number, nearest: EscapeUse | null, canUse: boolean, notes: readonly { id: string; text: string }[]): void {
+  update(room: string | undefined, es: EscapePublic | undefined, tick: number, nearest: EscapeUse | null, canUse: boolean, notes: readonly { id: string; text: string }[], goal = ''): void {
     this.drawWorld(room, es, tick);
+    this.goal.setVisible(goal !== '').setText(goal ? `GOAL  ${goal}` : '');
+    this.drawGlow(room, es);
     const p = es && canUse && nearest ? usePrompt(nearest, tick) : null;
     this.prompt.setVisible(p !== null).setText(p ?? '');
     this.drawNotes(es !== undefined ? notes : []);
@@ -38,7 +45,7 @@ export class EscapeView {
     const mine = es && room !== undefined ? {
       keypads: es.keypads.filter((k) => k.room === room), safes: es.safes.filter((s) => s.room === room),
       clues: es.clues.filter((c) => c.room === room), switches: es.switches.filter((s) => s.room === room),
-      exit: es.exit.room === room ? es.exit : null,
+      exit: es.exit && es.exit.room === room ? es.exit : null,
     } : null;
     const lockedOut = (t: number | null) => t !== null && t > tick;
     const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.exit?.x ?? null]) : '';
@@ -84,6 +91,18 @@ export class EscapeView {
     }
   }
 
+  /** A faint amber pulse on every closed safe in view: it says "this holds something" before anyone reads a word. Clipped to the light like all world art. */
+  private drawGlow(room: string | undefined, es: EscapePublic | undefined): void {
+    this.glow.clear();
+    if (!es || room === undefined) return;
+    const pulse = 0.5 + 0.5 * Math.sin(this.scene.time.now / 240);
+    for (const s of es.safes) {
+      if (s.room !== room || s.opened) continue;
+      this.glow.fillStyle(COLOR.amber, 0.06 + 0.08 * pulse).fillCircle(s.x, s.y - 26, 40);
+      this.glow.fillStyle(COLOR.amber, 0.08 + 0.1 * pulse).fillCircle(s.x, s.y - 26, 26);
+    }
+  }
+
   private drawNotes(notes: readonly { id: string; text: string }[]): void {
     const text = notes.map((n) => `- ${n.text}`).join('\n');
     if (text === this.notesShown) return;
@@ -96,6 +115,6 @@ export class EscapeView {
   destroy(): void {
     for (const o of this.art) o.destroy();
     this.art = [];
-    this.prompt.destroy(); this.notesBg.destroy(); this.notesText.destroy();
+    this.prompt.destroy(); this.notesBg.destroy(); this.notesText.destroy(); this.goal.destroy(); this.glow.destroy();
   }
 }

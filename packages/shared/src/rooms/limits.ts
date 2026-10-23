@@ -25,3 +25,6 @@ export const ROOM_LIMITS = {
 /** The reference screen the camera shows (the Phaser game is 1280x720). */
 export const VIEW_WIDTH = 1280;
 export const VIEW_HEIGHT = 720;
+
+/** The flashlight reach the client draws at stage 1 on Easy (px). Vision reach (`visionRadius`) scales the light from this reference. */
+export const LIGHT_REFERENCE_REACH = 460;

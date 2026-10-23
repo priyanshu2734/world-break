@@ -52,7 +52,8 @@ export const EscapeActionSchema = z.discriminatedUnion('action', [
 export type EscapeAction = z.infer<typeof EscapeActionSchema>;
 
 /**
- * Public escape state (optional `StageState.escape`). Nothing here is a secret: no codes, no clue text, no lock type before somebody
+ * Public escape state (optional `StageState.escape`), then restricted per player to what is in their view (server/src/rooms/view.ts).
+ * Nothing here is a secret: no codes, no clue text, no lock type before somebody
  * tried the door (`need` is null until then), no door destination. Positions of doors come from the room layout.
  */
 export const EscapePublicSchema = z.object({
@@ -68,7 +69,8 @@ export const EscapePublicSchema = z.object({
   })),
   clues: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), label: z.string() })),
   switches: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), active: z.boolean() })),
-  exit: z.object({ room: EscapeIdSchema, x: z.number(), y: z.number() }),
+  /** Present only while the exit is in the viewer's view (a hidden exit is not in the snapshot). */
+  exit: z.object({ room: EscapeIdSchema, x: z.number(), y: z.number() }).optional(),
 });
 export type EscapePublic = z.infer<typeof EscapePublicSchema>;
 

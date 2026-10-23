@@ -95,7 +95,11 @@ export class StageEngine {
     opts: {
       revBase?: number; arena?: Arena; difficulty?: Difficulty; stage?: number;
       /** P3D: how the escape mechanics reach the rooms (who is where, carrying a player through a door). Omitted = everyone in the start room. */
-      rooms?: { roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean };
+      rooms?: {
+        roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean;
+        /** Is (x, y) in `playerId`'s own room in that player's view (radius, line of sight, closed doors)? */
+        canSee(playerId: string, x: number, y: number): boolean;
+      };
     } = {},
   ) {
     const errors = validateStageDef(def, opts.arena ?? ARENA);
@@ -177,6 +181,7 @@ export class StageEngine {
       },
       busy: (playerId: string) => self.channels.has(playerId),
       roomOf: (playerId: string) => self.escapeRooms?.roomOf(playerId) ?? (self.def.rooms ? self.def.rooms.start : undefined),
+      canSee: (playerId: string, _room: string | null, x: number, y: number) => self.escapeRooms?.canSee(playerId, x, y) ?? true,
       unsafeAt: (x: number, y: number) => self.def.hazards.some((h) =>
         h.kind === 'arc_discharge' && self.hazardArmed(h) && dist(h.x, h.y, x, y - 20) <= (self.disaster?.hazardMod(h.id)?.r ?? h.r)),
     };
@@ -192,21 +197,25 @@ export class StageEngine {
   }
 
   // ------------------------------------------------------------------ P3D: escape (doors, locks, exit)
-  private escapeRooms: { roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean } | undefined;
+  private escapeRooms: { roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean; canSee(playerId: string, x: number, y: number): boolean } | undefined;
   private escapeHost(rooms: typeof this.escapeRooms, start: string): EscapeHost {
     const self = this;
     this.escapeRooms = rooms;
     return {
       get tick() { return self.tick; },
-      say: (text, tone) => self.say(text, tone),
+      say: (text, tone, room) => self.say(text, tone, room),
       markDirty: () => { self.dirty = true; },
       award: (category, points) => self.award(category, points),
       wrongPartCost: () => self.def.scoring.wrongTargetPenalty,
       roomOf: (id) => rooms?.roomOf(id) ?? start,
       sendThrough: (id, doorId) => rooms?.sendThrough(id, doorId) ?? false,
+      canSee: (id, x, y) => rooms?.canSee(id, x, y) ?? true,
       clear: () => self.clearStage('Someone reached the way out. Stage cleared.'),
     };
   }
+
+  /** P3D step 4: ids of the doors that are open (they no longer block sight). Empty on stages without an escape spec. */
+  openDoorIds(): ReadonlySet<string> { return this.escape?.openDoorIds() ?? new Set<string>(); }
 
   /** A player's escape intent (use a door, enter a code, press a switch, read a clue). */
   escapeAction(playerId: string, a: EscapeAction, pos: PosFn): EscapeResult {
@@ -299,8 +308,8 @@ export class StageEngine {
   }
 
   // ------------------------------------------------------------------ bookkeeping helpers
-  private say(text: string, tone: Tone) {
-    this.feed.push({ tick: this.tick, text, tone });
+  private say(text: string, tone: Tone, room?: string) {
+    this.feed.push({ tick: this.tick, text, tone, ...(room !== undefined ? { room } : {}) });
     if (this.feed.length > MAX_FEED) this.feed.shift();
     this.dirty = true;
   }

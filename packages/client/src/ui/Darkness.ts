@@ -22,6 +22,8 @@ export interface DarkFrame {
   ambient: number;
   /** Camera scroll (world pixels at the screen's top-left). The dark layer is screen-fixed; lights are placed in screen space. Default 0,0. */
   scroll?: { x: number; y: number };
+  /** The stage's vision radius in px (shared `visionRadius`); the flashlight reaches exactly this far. Default: the reference reach. */
+  reach?: number;
 }
 
 /**
@@ -128,16 +130,17 @@ export class Darkness {
     const sc = f.scroll ?? { x: 0, y: 0 };
     if (f.me) {
       const ang = aimAngle(f.me, f.pointer, f.facing);
-      const g = lightGeometry(f.me, ang, this.assistOn);
+      const reachK = (f.reach ?? LIGHT.coneLength) / LIGHT.coneLength;
+      const g = lightGeometry(f.me, ang, this.assistOn, f.reach);
       this.geometry = g;
-      const k = this.assistOn ? ASSIST.lightScale : 1;
-      this.radiusImg.setScale(k); this.coneImg.setScale(k).setRotation(ang);
+      const k = (this.assistOn ? ASSIST.lightScale : 1) * reachK;
+      this.radiusImg.setScale(k); this.coneImg.setScale(f.reach !== undefined ? Math.min(k, reachK) : k).setRotation(ang);
       const sx = g.cx - sc.x, sy = g.cy - sc.y; // screen space (the layer does not scroll)
       this.rt.erase(this.radiusImg, sx, sy);
       this.rt.erase(this.coneImg, sx, sy);
       const a = this.assistOn ? ASSIST.glowAlpha : ASSIST.baseGlowAlpha;
       this.radiusGlow.setPosition(sx, sy).setScale(k).setAlpha(a).setVisible(true);
-      this.coneGlow.setPosition(sx, sy).setScale(k).setRotation(ang).setAlpha(a).setVisible(true);
+      this.coneGlow.setPosition(sx, sy).setScale(f.reach !== undefined ? Math.min(k, reachK) : k).setRotation(ang).setAlpha(a).setVisible(true);
       this.maskGfx.fillStyle(0xffffff, 1).fillCircle(g.cx, g.cy, g.radius * 0.88).fillPoints(conePolygon(g), true);
     }
     this.drawOutlines();

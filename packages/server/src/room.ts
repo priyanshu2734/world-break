@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, getArena, layoutOf, roomById, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, getArena, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -13,6 +13,7 @@ import { withDefaultAbilities } from './abilities/defaults';
 import { ABILITY_LAB_STAGE } from './systems/stages/abilityLab';
 import { LOCK_SAMPLER_STAGE, ROOMS_DEMO_STAGE } from './rooms/demoStage';
 import type { EscapeResult } from './rooms/escape';
+import { restrictedView, type RestrictedView } from './rooms/view';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
 
@@ -77,7 +78,7 @@ export class Room {
       : this.opts.rooms === 2 && stage === 1 ? LOCK_SAMPLER_STAGE
       : getStageDef(stage, seed, { hunt: this.opts.hunt === true });
     try {
-      engine = new StageEngine(withDefaultAbilities(base, stage), ids, { ...opts, arena: this.stageArena(base), difficulty: this.difficulty, stage, rooms: this.roomsHost });
+      engine = new StageEngine(base.escape ? base : withDefaultAbilities(base, stage), ids, { ...opts, arena: this.stageArena(base), difficulty: this.difficulty, stage, rooms: this.roomsHost });
     } catch (err) {
       if (stage === 1) throw err;
       fallback = true;
@@ -104,7 +105,23 @@ export class Room {
   private readonly roomsHost = {
     roomOf: (id: string): string | undefined => this.sim?.roomOf(id),
     sendThrough: (id: string, doorId: string): boolean => this.sim?.sendThrough(id, doorId) ?? false,
+    /** P3D step 4: is (x, y) of the player's own room in that player's view (radius, line of sight, closed doors)? */
+    canSee: (id: string, x: number, y: number): boolean => {
+      const g = this.engine?.def.rooms, p = this.sim?.positionOf(id), rid = this.sim?.roomOf(id);
+      const room = g && rid ? roomById(g, rid) : undefined;
+      if (!p || !room || !this.engine) return false;
+      return pointVisible(room, { x: p.x, y: p.y - EYE_HEIGHT }, { x, y }, this.engine.openDoorIds(), visionRadius(this.difficulty, this.stage));
+    },
   };
+
+  /** P3D step 4: on an escape stage each player is sent their own restricted view (never a broadcast). Other stages broadcast as before. */
+  get restrictsViews(): boolean { return !!this.engine?.def.escape && !!this.engine.def.rooms; }
+  /** The restricted snapshot and stage state for one player (null when no escape stage is running). Spectators reuse `restrictedView`. */
+  viewFor(playerId: string): RestrictedView | null {
+    const e = this.engine, snapshot = this.gameSnapshot();
+    if (!e || !snapshot || !e.def.escape || !e.def.rooms) return null;
+    return restrictedView({ snapshot, stage: e.state(), graph: e.def.rooms, radius: visionRadius(this.difficulty, this.stage) }, { eyes: playerId, self: playerId });
+  }
 
   /** P3D: layouts waiting to be sent, each to ONE player. */
   private layoutQueue: { playerId: string; layout: RoomLayout }[] = [];

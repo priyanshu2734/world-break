@@ -96,9 +96,13 @@ export const ASSIST = { lightScale: 1.15, glowAlpha: 0.3, baseGlowAlpha: 0.16, l
 export interface LightGeometry { cx: number; cy: number; radius: number; coneLength: number; half: number; angle: number }
 
 /** Where the light is. `scale` > 1 is the assist. The radius sits at chest height. */
-export function lightGeometry(me: { x: number; y: number }, angle: number, assist: boolean): LightGeometry {
-  const k = assist ? ASSIST.lightScale : 1;
-  return { cx: me.x, cy: me.y - 28, radius: LIGHT.radius * k, coneLength: LIGHT.coneLength * k, half: LIGHT.coneAngle / 2, angle };
+export function lightGeometry(me: { x: number; y: number }, angle: number, assist: boolean, reach?: number): LightGeometry {
+  // `reach` is the stage's vision radius (shared `visionRadius`): the light is drawn no further than the server publishes things,
+  // even with the assist (which then brightens and enlarges the near light, not the beam).
+  const r = reach ?? LIGHT.coneLength;
+  const k = (assist ? ASSIST.lightScale : 1) * (r / LIGHT.coneLength);
+  const cone = LIGHT.coneLength * k;
+  return { cx: me.x, cy: me.y - 28, radius: LIGHT.radius * k, coneLength: reach !== undefined ? Math.min(cone, reach) : cone, half: LIGHT.coneAngle / 2, angle };
 }
 
 /** Fraction of the drawn reach inside which things are treated as lit (the light texture fades to nothing at its very edge). */

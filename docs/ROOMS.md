@@ -64,3 +64,15 @@ Reaching the exit alive clears the stage for the whole team (the others come bac
 ## Try it
 
 `/?rooms=1`: key from the locker (the cracked key lying about is a decoy), then a 4-digit code (the note is on a high platform; the keypad is by the door). `/?rooms=2`: all five lock types in six rooms.
+
+## Vision (step 4)
+
+| Stage | Easy: ambient / reach | Intermediate | Hardcore |
+|---|---|---|---|
+| 1 | 30 % / 460 px | 20 % / 430 px | 10 % / 400 px |
+| 10 | 21 % / 451 px | 11 % / 421 px | 2 % (floor) / 391 px |
+| 100 | 10 % (floor) / 361 px | 5 % (floor) / 331 px | 2 % / 301 px |
+| 1,000,000 | 10 % / 340 px (floor) | 5 % / 320 px (floor) | 2 % / 300 px (floor) |
+
+Reach drops 1 px per stage to its floor. A thing is in view in the viewer's own room, inside the reach, with a clear line from the eye past every solid and every closed door. Everything not in view is not in the message the player receives
+(`server/src/rooms/view.ts`). A teammate is on the team list always (name, slot, connection) but is in the snapshot only when in view, and nobody ever receives another player's hands. Refusals for things out of view equal refusals for nonexistent things.

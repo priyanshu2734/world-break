@@ -1,5 +1,5 @@
 import {
-  ESCAPE_LIMITS, ESCAPE_NOTHING, RANGE_DY, bodyInDoor, needText,
+  ESCAPE_LIMITS, ESCAPE_NOTHING, POINT_HEIGHT, RANGE_DY, bodyInDoor, needText,
   type EscapeAck, type EscapeAction, type EscapePublic, type RoomDef, type RoomGraph,
 } from '@wb/shared';
 import type { ItemSystem } from '../salvage/system';
@@ -14,13 +14,15 @@ export interface EscapePos { x: number; y: number; connected: boolean }
 /** What the escape mechanics may ask of their host (the stage engine, itself fed by the Room). A narrow seam, so it is unit-testable. */
 export interface EscapeHost {
   readonly tick: number;
-  say(text: string, tone: 'info' | 'good' | 'warn' | 'bad'): void;
+  say(text: string, tone: 'info' | 'good' | 'warn' | 'bad', room?: string): void;
   markDirty(): void;
   award(category: string, points: number): void;
   /** Penalty (positive) for forcing a cracked part into a lock. */
   wrongPartCost(): number;
   /** The room a player is in. */
   roomOf(playerId: string): string | undefined;
+  /** Is the point (x, y) of the player's own room in that player's view? Anything out of view is "nothing there". */
+  canSee(playerId: string, x: number, y: number): boolean;
   /** Carry the player through a door (the door's own room). Returns false if that was not possible. */
   sendThrough(playerId: string, doorId: string): boolean;
   /** The exit was reached alive: clear the stage (the existing STAGE_CLEAR transition does the rest). */
@@ -109,11 +111,11 @@ export class EscapeRuntime {
         if (used === 'none') return fail(needText(lock.type));
         if (used === 'decoy') {
           this.host.award('wrong_part', -this.host.wrongPartCost());
-          this.host.say(lock.type === 'power' ? 'The cracked battery sparks and dies in the socket.' : 'The cracked key snaps in the lock.', 'bad');
+          this.host.say(lock.type === 'power' ? 'The cracked battery sparks and dies in the socket.' : 'The cracked key snaps in the lock.', 'bad', d.room.id);
           return fail(lock.type === 'power' ? 'The battery was cracked and died.' : 'The key was cracked and snapped.');
         }
         link.open = true;
-        this.host.say(lock.type === 'power' ? 'The battery powers the door. It unlocks.' : 'The key turns. The door unlocks.', 'good');
+        this.host.say(lock.type === 'power' ? 'The battery powers the door. It unlocks.' : 'The key turns. The door unlocks.', 'good', d.room.id);
       } else {
         return fail(needText(lock.type));
       }
@@ -126,7 +128,7 @@ export class EscapeRuntime {
   private enterCode(pid: string, targetId: string, code: string, me: EscapePos): EscapeResult {
     const k = this.keypads.get(targetId), s = this.safes.get(targetId);
     const target = k ?? s;
-    if (!target || !this.inRoom(pid, target.room)) return fail(ESCAPE_NOTHING);
+    if (!target || !this.inRoom(pid, target.room) || !this.host.canSee(pid, target.x, target.y - (k ? POINT_HEIGHT.keypad : POINT_HEIGHT.safe))) return fail(ESCAPE_NOTHING);
     if (!this.reach(me, target.x, target.y)) return fail('Too far away.');
     const length = k ? ESCAPE_LIMITS.codeLength : ESCAPE_LIMITS.comboLength;
     const done = k ? k.solved : s!.opened;
@@ -151,19 +153,19 @@ export class EscapeRuntime {
     if (k) {
       k.solved = true;
       if (k.link) k.link.open = true;
-      this.host.say('The keypad accepts the code. A door unlocks somewhere.', 'good');
+      this.host.say('The keypad accepts the code. A door unlocks somewhere.', 'good', k.room);
       return ok('Accepted. A door unlocked somewhere.');
     }
     const safe = s!;
     safe.opened = true;
     const revealed = safe.contains !== undefined && (this.items?.reveal(safe.contains) ?? false);
-    this.host.say(revealed ? 'The safe opens. There is something inside.' : 'The safe opens. It is empty.', revealed ? 'good' : 'info');
+    this.host.say(revealed ? 'The safe opens. There is something inside.' : 'The safe opens. It is empty.', revealed ? 'good' : 'info', safe.room);
     return ok(revealed ? 'The safe opens. Something is inside.' : 'The safe is empty.');
   }
 
   private press(pid: string, switchId: string, me: EscapePos): EscapeResult {
     const sw = this.switches.get(switchId);
-    if (!sw || !this.inRoom(pid, sw.room)) return fail(ESCAPE_NOTHING);
+    if (!sw || !this.inRoom(pid, sw.room) || !this.host.canSee(pid, sw.x, sw.y - POINT_HEIGHT.switch)) return fail(ESCAPE_NOTHING);
     if (!this.reach(me, sw.x, sw.y)) return fail('Too far away.');
     sw.litUntil = this.host.tick + ESCAPE_LIMITS.switchHoldTicks;
     sw.wasLit = true;
@@ -174,7 +176,7 @@ export class EscapeRuntime {
       const a = this.switches.get(lock.switchA), b = this.switches.get(lock.switchB);
       if (a && b && a.litUntil > this.host.tick && b.litUntil > this.host.tick) {
         l.open = true;
-        this.host.say('Both switches hold. A door unlocks.', 'good');
+        this.host.say('Both switches hold. A door unlocks.', 'good', sw.room);
       }
     }
     return ok('The switch lights. It holds for a few seconds.');
@@ -182,7 +184,7 @@ export class EscapeRuntime {
 
   private read(pid: string, clueId: string, me: EscapePos): EscapeResult {
     const c = this.clues.get(clueId);
-    if (!c || !this.inRoom(pid, c.room)) return fail(ESCAPE_NOTHING);
+    if (!c || !this.inRoom(pid, c.room) || !this.host.canSee(pid, c.x, c.y - POINT_HEIGHT.clue)) return fail(ESCAPE_NOTHING);
     if (!this.reach(me, c.x, c.y)) return fail('Too far away.');
     return ok(c.text, { id: c.id, text: c.text });
   }
@@ -211,6 +213,12 @@ export class EscapeRuntime {
   }
 
   // ------------------------------------------------------------------ queries and projection
+  /** Ids of the open doors (an open door no longer blocks sight). */
+  openDoorIds(): Set<string> {
+    const out = new Set<string>();
+    for (const [id, l] of this.linkOfDoor) if (l.open) out.add(id);
+    return out;
+  }
   isOpen(doorId: string): boolean { return this.linkOfDoor.get(doorId)?.open ?? false; }
   get reached(): boolean { return this.cleared; }
 

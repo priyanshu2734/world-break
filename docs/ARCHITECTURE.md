@@ -212,7 +212,7 @@ Not implemented: generator items (item 7 of the P3C prompt): no generated stage 
 Not covered by automation: the Phaser drawing and key wiring (`ItemHud`, `ItemMarkers`, `itemDraw`, `GameScene`); only the pure view-model `itemView.ts` is unit-tested.
 Ownership: `server/src/salvage/**`, `shared/src/salvage/**` and `client/src/ui/{itemView,itemDraw,ItemHud,ItemMarkers}.ts` belong to P3C; later phases extend them additively.
 
-## P3D rooms (steps 1, 1B, 2 and 3 done; steps 4 and 5 pending, see docs/handoffs/P3D.md when written)
+## P3D rooms (steps 1, 1B, 2, 3 and 4 done; step 5 pending, see docs/handoffs/P3D.md when written)
 
 * **Darkness (steps 1, 1B).** `shared/src/rooms/ambient.ts` is the ambient table (a stage and mode value, never a player setting). A stage def with `dark: true` publishes `StageState.darkness.ambient`
   (optional, additive). The client (`ui/Darkness.ts`, `ui/darkParam.ts`) draws a screen-fixed dark layer with a radius light and a flashlight cone, clips depth 5 to 9 world objects to the light with a geometry
@@ -271,3 +271,21 @@ Parity is proven by `server/test/rooms/sim.test.ts` (server step equals `stepBod
 * **Public state** (`StageState.escape`, optional): doors (open, and the requirement only after somebody tried), keypads, safes, clues (position and label only), switches, exit. Step 4 filters this per player by vision;
   until then a modified client can see where everything is (not any code or clue text).
 * **Dev stages.** `/?rooms=1`: 3 rooms, key then code. `/?rooms=2`: 6 rooms, key, code, power, two-person, safe (`server/src/rooms/demoStage.ts`). Both need ESCAPE_STAGES not `0`.
+
+### P3D step 4: server-side visibility and the minimal HUD
+
+* **One rule of "in view"** (`shared/src/rooms/vision.ts`): a point is in view when it is in the viewer's own room, within `visionRadius(difficulty, stage)` of their eye (feet + 28 px), and the straight line from the eye crosses no solid and no CLOSED door
+  (`segmentHitsBox`, `occluders`, `pointVisible`). Rooms never see into each other. `POINT_HEIGHT` fixes the height each kind of thing is seen at. The radius is a stage and mode parameter like the ambient: Easy 460 px at stage 1,
+  Intermediate 430, Hardcore 400, minus 1 px per stage, floors 340/320/300. The client draws its flashlight exactly that far (`lightGeometry(..., reach)`), capped at the radius even with the accessibility assist.
+* **What is sent** (`server/src/rooms/view.ts`, `restrictedView(source, viewer)`). On an escape stage nothing is broadcast any more: the gateway sends each socket its own `game:snapshot` and `stage:state`
+  (`Room.restrictsViews`, `Room.viewFor`). A view contains: the players in view (positions only), `GameSnapshot.team` (every teammate's name, slot and connection, for the team panel), the parts and containers in view, the player's OWN hands
+  (`items.players` and carried parts: a teammate's inventory is never sent), the keypads, safes, notes, switches, doors and exit in view, and feed messages from the player's own room. Everything else is not in the message at all, so a modified client has nothing to read.
+  The stage state is re-sent to a player whenever THEIR view changes (they moved and something came into or left view), compared without `tick`/`rev`; `rev` is kept strictly rising per player. Non-escape stages broadcast exactly as before.
+* **Spectator-ready.** `Viewer = { eyes, self }`: `eyes` is whose position and line of sight the view is cut from, `self` whose hands are shown (null = nobody's). P4 spectating a teammate is `restrictedView(src, { eyes: teammateId, self: null })`; unknown eyes see no objects at all.
+* **Refusals.** A part, container, keypad, safe, note or switch that is out of view (hidden, in another room, or just beyond the radius or behind a platform) is refused with the SAME words as one that does not exist (`Nothing there.`);
+  only a visible thing out of reach says `Too far away.` (`ItemHost.canSee`, `EscapeHost.canSee`; doors are always known from the room layout, so they are exempt). Probing ids therefore teaches nothing.
+* **Feed.** `FeedEntry.room` (optional) tags events that happened in one room; players elsewhere are not told ("The key turns..." is only for the room where it turned).
+* **Minimal HUD (client).** On an escape stage `StageHud` hides the objectives/symptoms panel and the tool bar, the ability bar is not updated, the keys line is `ESCAPE_KEYS_HINT` (GAMEPLAY.md section 11, Q and Tab marked soon), `EscapeView` shows ONE goal line (`goalLine`, derived only from what the
+  player's own view contains), the 2 hand slots stay, the NOTES panel stays. Doors you cannot see are drawn neutral (cyan): the server only tells you a door's state while you can see it. Safes pulse faintly (lockers already did) and "E open" prompts appear within reach;
+  items win the single prompt slot over doors, keypads, notes and switches. Escape stages never get the default reality abilities (`Room.buildEngine`).
+* **Known limit.** The server does not know where the flashlight points (aim is client-side), so it publishes everything within the vision radius and line of sight, not only the cone. Sending the aim angle with input would let it publish the cone only; not done here.

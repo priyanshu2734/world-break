@@ -5,7 +5,7 @@ import {
   AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
-import { RoomManager, type Result } from './room';
+import { RoomManager, type Result, type Room } from './room';
 import { startFixedLoop } from './loop';
 
 export interface GameServer {
@@ -147,12 +147,15 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
 
   // Fixed-rate authoritative simulation for every room with an active run.
   let stopLoop: (() => void) | null = null;
+  /** P3D step 4: the last stage state each player of a restricted room was sent (cleared with the room). */
+  const views = new WeakMap<Room, Map<string, { key: string; rev: number }>>();
   const onTick = () => {
     rooms.forEach((room) => {
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
       const { phaseChanged } = room.tick();
       if (phaseChanged) broadcast(room.code);
-      const snap = room.gameSnapshot();
+      const restricted = room.restrictsViews; // P3D: an escape stage sends every player their own view
+      const snap = restricted ? null : room.gameSnapshot();
       // Steady-state snapshots are volatile (a stale one is worthless). A snapshot that carries a phase change is
       // sent reliably: after stage completion the sim stops, so a dropped one would leave clients on a stale phase.
       if (snap) (phaseChanged ? io.to(room.code) : io.to(room.code).volatile).emit('game:snapshot', snap);
@@ -164,7 +167,26 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
         for (const { playerId, layout } of layouts) { const sid = socketOf.get(playerId); if (sid) io.to(sid).emit('room:layout', layout); }
       }
       const stage = room.consumeStageState();
-      if (stage) io.to(room.code).emit('stage:state', stage); // reliable: full, idempotent state
+      if (!restricted) {
+        if (stage) io.to(room.code).emit('stage:state', stage); // reliable: full, idempotent state
+        return;
+      }
+      // P3D step 4: per player, only what that player can see. The stage state changes when the player MOVES (things come into view),
+      // not only when the stage does, so it is sent whenever this player's own view differs from the last one they were sent.
+      let sent = views.get(room);
+      if (!sent) views.set(room, (sent = new Map()));
+      for (const [sid, sess] of sessions) {
+        if (sess.roomCode !== room.code) continue;
+        const v = room.viewFor(sess.playerId);
+        if (!v) continue;
+        (phaseChanged ? io.to(sid) : io.to(sid).volatile).emit('game:snapshot', v.snapshot);
+        const key = JSON.stringify({ ...v.stage, rev: 0, tick: 0 }); // `tick` moves every tick; clients take the time from the snapshot
+        const last = sent.get(sess.playerId);
+        if (last?.key === key) continue;
+        const rev = Math.max(v.stage.rev, (last?.rev ?? 0) + 1); // the client ignores an older revision: keep this player's strictly rising
+        sent.set(sess.playerId, { key, rev });
+        io.to(sid).emit('stage:state', { ...v.stage, rev });
+      }
     });
   };
 

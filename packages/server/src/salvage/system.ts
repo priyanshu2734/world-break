@@ -1,5 +1,5 @@
 import {
-  ITEM_KIND_SPECS, ITEM_LIMITS, RANGE_DY, itemShape,
+  ITEM_KIND_SPECS, ITEM_LIMITS, POINT_HEIGHT, RANGE_DY, itemShape,
   type Arena, type Difficulty, type ItemAction, type ItemKind, type ItemLifeState, type ItemsPublic, type ToolId,
 } from '@wb/shared';
 import type { ItemDef, NeedDef, StashDef } from '../systems/stageDef';
@@ -37,6 +37,8 @@ export interface ItemHost {
   unsafeAt(x: number, y: number): boolean;
   /** P3D (optional): the room a player is in. Absent on single-arena stages. Items and containers are only reachable from their own room. */
   roomOf?(playerId: string): string | undefined;
+  /** P3D step 4 (optional): is a point of `room` in the player's view? A part or container out of view is "nothing there" (same words as a part that does not exist). */
+  canSee?(playerId: string, room: string | null, x: number, y: number): boolean;
 }
 
 interface ItemRt {
@@ -283,6 +285,8 @@ export class ItemSystem {
   private playerRoom(id: string): string | null { return this.host.roomOf?.(id) ?? null; }
   /** P3D: the arena of a room (the stage arena for null or an unknown room). */
   private arenaFor(room: string | null): Arena { return (room !== null ? this.arenaOfRoom?.(room) : undefined) ?? this.arena; }
+  /** P3D step 4: can the player see a thing standing at (x, y) in `room`? Always true without a view rule. */
+  private sees(playerId: string, room: string | null, x: number, y: number): boolean { return this.host.canSee ? this.host.canSee(playerId, room, x, y) : true; }
   /** P3D: is the player in the room of this thing? Always true on single-arena stages. */
   private here(playerId: string, room: string | null): boolean { return !this.host.roomOf || this.playerRoom(playerId) === room; }
   /** Releases an item at (x, y) in `room`: it falls to the first platform at or below that point. */
@@ -333,7 +337,7 @@ export class ItemSystem {
     const why = this.groundError(pid, it);
     if (why) return fail(why);
     const item = it!;
-    if (!this.here(pid, item.room)) return fail(NOTHING_THERE); // another room: indistinguishable from nothing
+    if (!this.here(pid, item.room) || !this.sees(pid, item.room, item.x, item.y - POINT_HEIGHT.item)) return fail(NOTHING_THERE); // another room or out of view: indistinguishable from nothing
     const locked = this.pickLocked(p);
     if (locked) return fail(locked);
     if (!this.reachOf(me, item.x, item.y, ITEM_LIMITS.pickupRange)) return fail('Too far away.');
@@ -363,7 +367,7 @@ export class ItemSystem {
     const why = this.groundError(pid, inn);
     if (why) return fail(why);
     const incoming = inn!;
-    if (!this.here(pid, incoming.room)) return fail(NOTHING_THERE);
+    if (!this.here(pid, incoming.room) || !this.sees(pid, incoming.room, incoming.x, incoming.y - POINT_HEIGHT.item)) return fail(NOTHING_THERE);
     const locked = this.pickLocked(p);
     if (locked) return fail(locked);
     if (!this.reachOf(me, incoming.x, incoming.y, ITEM_LIMITS.pickupRange)) return fail('Too far away.');
@@ -395,7 +399,7 @@ export class ItemSystem {
 
   private open(pid: string, stashId: string, me: PlayerPosLike): ItemResult {
     const st = this.stashes.get(stashId);
-    if (!st || !this.here(pid, st.room)) return fail(NOTHING_THERE);
+    if (!st || !this.here(pid, st.room) || !this.sees(pid, st.room, st.def.x, st.def.y - POINT_HEIGHT.stash)) return fail(NOTHING_THERE);
     if (!this.reachOf(me, st.def.x, st.def.y, ITEM_LIMITS.openRange)) return fail('Too far away.');
     if (st.opened) return fail('That is already open.');
     st.opened = true;
