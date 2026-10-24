@@ -1,6 +1,6 @@
 import {
-  ACTION_MIN_GAP_TICKS, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type AbilityAction, type Arena, type Difficulty, type ItemAction, type StageAction, type StageState, type ToolId,
+  ACTION_MIN_GAP_TICKS, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
+  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type ItemAction, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
@@ -10,6 +10,7 @@ import { DisasterRuntime } from '../disasters/runtime';
 import { AbilitySystem, type AbilityHazard, type AbilityResult } from '../abilities/system';
 import type { PhysicsWorld } from '../abilities/world';
 import { ItemSystem, type ItemResult } from '../salvage/system';
+import { EscapeRuntime, type EscapeHost, type EscapeResult } from '../rooms/escape';
 
 export interface PlayerPos { x: number; y: number; connected: boolean }
 export type PosFn = (playerId: string) => PlayerPos | undefined;
@@ -82,16 +83,29 @@ export class StageEngine {
   private readonly arena: Arena;
   private dirty = true;
   private revCounter = 0;
+  /** P3D: doors, locks, keypads, safes, clues, switches and the exit (null on every other stage). */
+  private readonly escape: EscapeRuntime | null;
+  /** P3D: ambient brightness published for a dark stage (null = lit). */
+  private readonly darkAmbient: number | null;
 
   constructor(
     readonly def: StageDef,
     playerIds: readonly string[],
     /** `difficulty` sets the clue clarity of requirements (easy: names + hint, intermediate: silhouettes, hardcore: nothing until tried). */
-    opts: { revBase?: number; arena?: Arena; difficulty?: Difficulty } = {},
+    opts: {
+      revBase?: number; arena?: Arena; difficulty?: Difficulty; stage?: number;
+      /** P3D: how the escape mechanics reach the rooms (who is where, carrying a player through a door). Omitted = everyone in the start room. */
+      rooms?: {
+        roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean;
+        /** Is (x, y) in `playerId`'s own room in that player's view (radius, line of sight, closed doors)? */
+        canSee(playerId: string, x: number, y: number): boolean;
+      };
+    } = {},
   ) {
     const errors = validateStageDef(def, opts.arena ?? ARENA);
     if (errors.length) throw new Error(`Invalid stage "${def.id}":\n - ${errors.join('\n - ')}`);
     this.revBase = opts.revBase ?? 0;
+    this.darkAmbient = def.dark === true ? Math.max(ambientFor(opts.difficulty ?? 'easy', opts.stage ?? 1), def.ambientMin ?? 0) : null;
     this.arena = opts.arena ?? ARENA;
     this.abilities = def.abilities ? new AbilitySystem(def.abilities, this.abilityHost()) : null;
     this.order = topoOrder(def.failures, def.edges)!;
@@ -101,13 +115,17 @@ export class StageEngine {
     this.conduits = new Map(def.power.conduits.map((c) => [c.id, c]));
     this.objectives = new Map(def.objectives.map((o) => [o.id, o]));
     this.disaster = def.disaster ? new DisasterRuntime(def.disaster) : null;
-    this.items = def.items && def.items.length > 0 ? new ItemSystem(def.items, def.needs ?? [], this.arena, this.itemHost(), { stashes: def.stashes ?? [], clarity: opts.difficulty ?? 'easy' }) : null;
+    this.items = def.items && def.items.length > 0 ? new ItemSystem(def.items, def.needs ?? [], this.arena, this.itemHost(), {
+      stashes: def.stashes ?? [], clarity: opts.difficulty ?? 'easy',
+      ...(def.rooms ? { arenaOf: (room: string) => def.rooms!.rooms.find((r) => r.id === room)?.arena, defaultRoom: def.rooms.start } : {}),
+    }) : null;
+    this.escape = def.escape && def.rooms ? new EscapeRuntime(def.escape, def.rooms, this.escapeHost(opts.rooms, def.rooms.start), this.items) : null;
 
     for (const b of def.breakpoints) this.bpRt.set(b.id, { revealed: false, repaired: false });
     for (const e of def.entities) if (e.kind === 'power_switch') this.switchClosed.set(e.id, e.initiallyClosed);
     for (const o of def.objectives) this.objRt.set(o.id, { status: 'locked', hold: 0 });
     for (const id of playerIds) this.addPlayer(id);
-    this.say('The relay has gone cold. Find out why.', 'info');
+    if (!def.escape) this.say('The relay has gone cold. Find out why.', 'info'); // an escape stage has its own story: the goal line
     if (this.disaster) this.say(this.disaster.message(), 'warn');
     this.refreshObjectiveLocks();
   }
@@ -162,6 +180,8 @@ export class StageEngine {
         return e ? { x: e.x, y: e.y, label: e.label } : null;
       },
       busy: (playerId: string) => self.channels.has(playerId),
+      roomOf: (playerId: string) => self.escapeRooms?.roomOf(playerId) ?? (self.def.rooms ? self.def.rooms.start : undefined),
+      canSee: (playerId: string, _room: string | null, x: number, y: number) => self.escapeRooms?.canSee(playerId, x, y) ?? true,
       unsafeAt: (x: number, y: number) => self.def.hazards.some((h) =>
         h.kind === 'arc_discharge' && self.hazardArmed(h) && dist(h.x, h.y, x, y - 20) <= (self.disaster?.hazardMod(h.id)?.r ?? h.r)),
     };
@@ -174,6 +194,51 @@ export class StageEngine {
     if (this.status !== 'running') return fail('This stage is already stabilised.');
     if (!this.items) return fail('There is nothing to carry in this stage.');
     return this.items.use(playerId, a, me, pos);
+  }
+
+  // ------------------------------------------------------------------ P3D: escape (doors, locks, exit)
+  private escapeRooms: { roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean; canSee(playerId: string, x: number, y: number): boolean } | undefined;
+  private escapeHost(rooms: typeof this.escapeRooms, start: string): EscapeHost {
+    const self = this;
+    this.escapeRooms = rooms;
+    return {
+      get tick() { return self.tick; },
+      say: (text, tone, room) => self.say(text, tone, room),
+      markDirty: () => { self.dirty = true; },
+      award: (category, points) => self.award(category, points),
+      wrongPartCost: () => self.def.scoring.wrongTargetPenalty,
+      roomOf: (id) => rooms?.roomOf(id) ?? start,
+      sendThrough: (id, doorId) => rooms?.sendThrough(id, doorId) ?? false,
+      canSee: (id, x, y) => rooms?.canSee(id, x, y) ?? true,
+      clear: () => self.clearStage('Someone reached the way out. Stage cleared.'),
+    };
+  }
+
+  /** P3D step 4: ids of the doors that are open (they no longer block sight). Empty on stages without an escape spec. */
+  openDoorIds(): ReadonlySet<string> { return this.escape?.openDoorIds() ?? new Set<string>(); }
+
+  /** A player's escape intent (use a door, enter a code, press a switch, read a clue). */
+  escapeAction(playerId: string, a: EscapeAction, pos: PosFn): EscapeResult {
+    const me = pos(playerId);
+    if (!this.players.has(playerId) || !me || !me.connected) return fail('You are not part of this run.');
+    if (this.status !== 'running') return fail('This stage is already stabilised.');
+    if (!this.escape) return fail('There is nothing to open in this stage.');
+    return this.escape.act(playerId, a, me);
+  }
+
+  /**
+   * The stage is cleared by a rule other than its objectives (an escape stage: someone reached the exit alive). This is the same end
+   * state objective completion reaches: `status` becomes 'stabilized', the time bonus is paid, and `Room.tick` then makes the
+   * existing STAGE_CLEAR transition. phases.ts is not involved and not changed.
+   */
+  clearStage(message: string): void {
+    if (this.status !== 'running') return;
+    this.status = 'stabilized';
+    const secondsLeft = Math.max(0, Math.floor((this.def.deadlineTicks - this.tick) / TICKS_PER_SECOND));
+    this.award('time', secondsLeft * this.def.scoring.timeBonusPerSecond);
+    this.channels.clear();
+    this.say(message, 'good');
+    this.dirty = true;
   }
 
   /** Placement rules for the Gravity Anchor tool (P3B). Returns the reason it cannot be planted, or null. */
@@ -191,13 +256,14 @@ export class StageEngine {
   // ------------------------------------------------------------------ roster
   addPlayer(id: string): void {
     this.abilities?.addPlayer(id);
+    this.escape?.addPlayer(id);
     this.items?.addPlayer(id);
     const tools = new Map<ToolId, { charges: number; cooldownUntil: number }>();
     for (const t of this.def.loadout) tools.set(t, { charges: TOOL_SPECS[t].maxCharges, cooldownUntil: 0 });
     this.players.set(id, { tools, lastActionTick: -100, cacheReadyAt: 0 });
     this.dirty = true;
   }
-  removePlayer(id: string): void { this.items?.removePlayer(id); this.players.delete(id); this.channels.delete(id); this.abilities?.removePlayer(id); this.dirty = true; }
+  removePlayer(id: string): void { this.escape?.removePlayer(id); this.items?.removePlayer(id); this.players.delete(id); this.channels.delete(id); this.abilities?.removePlayer(id); this.dirty = true; }
   onDisconnect(id: string): void { this.items?.onDisconnect(id); if (this.channels.delete(id)) this.dirty = true; }
 
   // ------------------------------------------------------------------ derived world state
@@ -242,8 +308,8 @@ export class StageEngine {
   }
 
   // ------------------------------------------------------------------ bookkeeping helpers
-  private say(text: string, tone: Tone) {
-    this.feed.push({ tick: this.tick, text, tone });
+  private say(text: string, tone: Tone, room?: string) {
+    this.feed.push({ tick: this.tick, text, tone, ...(room !== undefined ? { room } : {}) });
     if (this.feed.length > MAX_FEED) this.feed.shift();
     this.dirty = true;
   }
@@ -300,6 +366,7 @@ export class StageEngine {
     for (const [id, until] of [...this.frozenHazards]) if (until <= t) { this.frozenHazards.delete(id); this.say('The hazard thaws and resumes its cycle.', 'warn'); this.dirty = true; }
     this.abilities?.step();
     this.items?.step(pos);
+    this.escape?.step(pos);
 
     this.stepHazards(pos);
     this.stepChannels(pos);
@@ -787,6 +854,8 @@ export class StageEngine {
       ...(this.disaster ? { disaster: this.disaster.publicState() } : {}),
       ...(this.abilities ? { abilities: this.abilities.publicState() } : {}),
       ...(this.items ? { items: this.items.publicState() } : {}),
+      ...(this.escape ? { escape: this.escape.publicState() } : {}),
+      ...(this.darkAmbient !== null ? { darkness: { ambient: this.darkAmbient } } : {}),
     };
   }
 

@@ -1,10 +1,11 @@
-import { ABILITY_SPECS, ITEM_LIMITS, MOVE_SPEED, TICK_DT, TOOL_SPECS, type Arena, type ItemKind } from '@wb/shared';
+import { ABILITY_SPECS, ITEM_LIMITS, MOVE_SPEED, TICK_DT, TOOL_SPECS, validateRoomGraph, type Arena, type ItemKind } from '@wb/shared';
 import type { StageDef } from './stageDef';
 import { topoOrder } from './failures';
 import { evaluatePower } from './power';
 import { validateDisasterMeta } from '../disasters/validate';
 import { surfaceBelow } from '../salvage/rest';
 import { validateSalvage } from '../salvage/validate';
+import { validateEscape } from '../rooms/escapeValidate';
 
 /**
  * Deterministic structural validation. A stage that returns any error must not launch.
@@ -186,6 +187,7 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
     ...def.power.nodes.map((n) => n.id), ...def.power.conduits.map((c) => c.id), ...(def.props ?? []).map((p) => p.id)]);
   for (const i of items) {
     if (targetIds.has(i.id)) err(`item ${i.id} shares an id with a target`);
+    if (def.escape) continue; // P3D: parts of an escape stage are placed per room and checked by `validateEscape`
     if (i.x < 0 || i.x > arena.width) { err(`item ${i.id} is outside the arena`); continue; }
     const surf = surfaceBelow(arena, i.x, i.y);
     if (!surf) err(`item ${i.id} (${i.x},${i.y}) has no platform under it`);
@@ -202,7 +204,16 @@ export function validateStageDef(def: StageDef, arena: Arena): string[] {
       if (have < c) err(`target ${n.targetId} needs ${c} x ${k} but the stage provides ${have} genuine one(s)`);
     }
   }
-  errs.push(...validateSalvage(def, arena)); // P3C: hiding rules, reachability, solo-safe supply (no-op without items/needs/stashes)
+  if (def.objectives.length === 0 && !def.escape) err('a stage needs at least one objective');
+  if (def.escape && !def.rooms) err('escape: a stage with an escape spec needs rooms');
+  if (def.escape && def.rooms) errs.push(...validateEscape(def.escape, def.rooms, def));
+  if (def.rooms) {
+    errs.push(...validateRoomGraph(def.rooms)); // P3D: structure of the room chain
+    const start = def.rooms.rooms.find((r) => r.id === def.rooms!.start);
+    if (start && start.arena.id !== def.arenaId) err(`rooms: arenaId ${def.arenaId} must be the start room's arena ${start.arena.id}`);
+  }
+  // An escape stage's parts live in different rooms: `validateEscape` checks them per room, the single-arena salvage rules would not apply.
+  if (!def.escape) errs.push(...validateSalvage(def, arena)); // P3C: hiding rules, reachability, solo-safe supply (no-op without items/needs/stashes)
   errs.push(...validateDisasterMeta(def)); // P3A: lifecycle, bounds, threats (no-op without def.disaster)
   return errs;
 }

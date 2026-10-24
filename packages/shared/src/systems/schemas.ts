@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { HazardKindSchema, ToolIdSchema } from './tools';
 import { DisasterPublicSchema } from '../disasters/public';
 import { AbilitiesPublicSchema } from '../abilities/public';
+import { EscapePublicSchema } from '../rooms/escape';
 import { ItemsPublicSchema } from '../salvage/public';
 
 /** Ids are server-authored slugs. */
@@ -80,12 +81,18 @@ export const StageStateSchema = z.object({
     })),
   })),
   clues: z.array(z.object({ id: z.string(), text: z.string(), tick: z.number().int() })),
-  feed: z.array(z.object({ tick: z.number().int(), text: z.string(), tone: z.enum(['info', 'good', 'warn', 'bad', 'clue']) })),
+  feed: z.array(z.object({ tick: z.number().int(), text: z.string(), tone: z.enum(['info', 'good', 'warn', 'bad', 'clue']),
+    /** P3D step 4 (additive, optional): the room the event happened in; players elsewhere are not told. */
+    room: z.string().optional() })),
   /** P3A (additive, optional): the running disaster's public warning/phase/schedule. Absent for hand-authored stages. */
   disaster: DisasterPublicSchema.optional(),
   /** P3B (additive, optional): Reality Energy and ability cooldowns. Absent for stages without abilities. */
   abilities: AbilitiesPublicSchema.optional(),
   /** P3C (additive, optional): parts lying in the world, carried and installed. Hidden parts are never listed. Absent for stages without items. */
   items: ItemsPublicSchema.optional(),
+  /** P3D (additive, optional): the stage is dark. `ambient` is the 0..1 brightness outside every player's own light, set by stage and mode. Absent = a lit stage. */
+  darkness: z.object({ ambient: z.number().min(0).max(1) }).optional(),
+  /** P3D (additive, optional): doors, keypads, safes, clues, switches and the exit of an escape stage. Absent on every other stage. */
+  escape: EscapePublicSchema.optional(),
 });
 export type StageState = z.infer<typeof StageStateSchema>;

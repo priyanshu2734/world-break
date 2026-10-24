@@ -1,5 +1,5 @@
 import {
-  ITEM_KIND_SPECS, ITEM_LIMITS, RANGE_DY, itemShape,
+  ITEM_KIND_SPECS, ITEM_LIMITS, POINT_HEIGHT, RANGE_DY, itemShape,
   type Arena, type Difficulty, type ItemAction, type ItemKind, type ItemLifeState, type ItemsPublic, type ToolId,
 } from '@wb/shared';
 import type { ItemDef, NeedDef, StashDef } from '../systems/stageDef';
@@ -35,6 +35,10 @@ export interface ItemHost {
   busy(playerId: string): boolean;
   /** True if standing here would be dangerous right now (inside an armed hazard). Used for "last safe position". */
   unsafeAt(x: number, y: number): boolean;
+  /** P3D (optional): the room a player is in. Absent on single-arena stages. Items and containers are only reachable from their own room. */
+  roomOf?(playerId: string): string | undefined;
+  /** P3D step 4 (optional): is a point of `room` in the player's view? A part or container out of view is "nothing there" (same words as a part that does not exist). */
+  canSee?(playerId: string, room: string | null, x: number, y: number): boolean;
 }
 
 interface ItemRt {
@@ -45,6 +49,8 @@ interface ItemRt {
   y: number;
   carrierId: string | null;
   targetId: string | null;
+  /** P3D: the room the part is in (null on single-arena stages). */
+  room: string | null;
 }
 interface PlayerIt {
   carried: string[];
@@ -53,10 +59,10 @@ interface PlayerIt {
   nextHazardTick: number;
   nextPickupTick: number;
   nextHandoverTick: number;
-  lastSafe: { x: number; y: number } | null;
+  lastSafe: { x: number; y: number; room: string | null } | null;
 }
 
-interface StashRt { def: StashDef; opened: boolean }
+interface StashRt { def: StashDef; opened: boolean; room: string | null }
 
 /** States a client is allowed to know about. Everything else behaves exactly like "does not exist". */
 const isVisible = (s: ItemLifeState): s is 'in_world' | 'carried' | 'installed' => s === 'in_world' || s === 'carried' || s === 'installed';
@@ -77,21 +83,25 @@ export class ItemSystem {
   /** Targets where a repair or install was attempted: this is what unlocks the hardcore listing. */
   private readonly tried = new Set<string>();
   private readonly clarity: Difficulty;
+  private readonly arenaOfRoom: ((room: string) => Arena | undefined) | null;
 
   constructor(
     defs: readonly ItemDef[], needs: readonly NeedDef[], private readonly arena: Arena, private readonly host: ItemHost,
-    opts: { stashes?: readonly StashDef[]; clarity?: Difficulty } = {},
+    opts: { stashes?: readonly StashDef[]; clarity?: Difficulty; arenaOf?: (room: string) => Arena | undefined; defaultRoom?: string } = {},
   ) {
     this.clarity = opts.clarity ?? 'easy';
-    for (const st of opts.stashes ?? []) this.stashes.set(st.id, { def: st, opened: false });
+    this.arenaOfRoom = opts.arenaOf ?? null;
+    for (const st of opts.stashes ?? []) this.stashes.set(st.id, { def: st, opened: false, room: st.room ?? opts.defaultRoom ?? null });
     for (const d of defs) {
-      const x = clampX(arena, d.x);
+      const room = d.room ?? opts.defaultRoom ?? null;
+      const a = this.arenaFor(room);
+      const x = clampX(a, d.x);
       this.items.set(d.id, {
         def: d,
         slots: d.slots ?? ITEM_KIND_SPECS[d.kind].defaultSlots,
         state: d.hidden ? 'hidden' : 'in_world',
-        x, y: restY(arena, x, d.y),
-        carrierId: null, targetId: null,
+        x, y: restY(a, x, d.y),
+        carrierId: null, targetId: null, room,
       });
     }
     this.order = defs.map((d) => d.id);
@@ -115,9 +125,9 @@ export class ItemSystem {
   private dropAll(id: string): void {
     const p = this.players.get(id);
     if (!p || p.carried.length === 0) return;
-    const spot = p.lastSafe ?? this.arena.spawns[0] ?? { x: this.arena.width / 2, y: this.arena.height };
+    const spot = p.lastSafe ?? { ...(this.arena.spawns[0] ?? { x: this.arena.width / 2, y: this.arena.height }), room: this.playerRoom(id) };
     const n = p.carried.length;
-    for (const itemId of [...p.carried]) this.place(itemId, spot.x, spot.y);
+    for (const itemId of [...p.carried]) this.place(itemId, spot.x, spot.y, spot.room);
     p.carried = [];
     this.host.say(n === 1 ? 'A teammate lost their link and dropped a part.' : `A teammate lost their link and dropped ${n} parts.`, 'warn');
     this.host.markDirty();
@@ -129,7 +139,8 @@ export class ItemSystem {
     for (const [id, p] of this.players) {
       const at = pos(id);
       if (!at || !at.connected) continue;
-      if (hasFooting(this.arena, at.x, at.y) && !this.host.unsafeAt(at.x, at.y)) p.lastSafe = { x: at.x, y: at.y };
+      const room = this.playerRoom(id);
+      if (hasFooting(this.arenaFor(room), at.x, at.y) && !this.host.unsafeAt(at.x, at.y)) p.lastSafe = { x: at.x, y: at.y, room };
     }
     // Discovery: the team learns what a (visible) target needs once somebody stands near it. Unrevealed targets have no spot, so never qualify.
     for (const targetId of this.needs.keys()) {
@@ -229,6 +240,23 @@ export class ItemSystem {
     this.host.markDirty();
     return true;
   }
+  /**
+   * P3D: a lock takes a carried part. The first carried part of `kind` is used. A genuine part is consumed (it leaves the hands and
+   * the public state for good). A decoy is destroyed instead and does not satisfy the lock (same rule as installing one).
+   */
+  consumeCarried(playerId: string, kind: ItemKind): 'ok' | 'decoy' | 'none' {
+    const p = this.players.get(playerId);
+    const id = p?.carried.find((i) => this.items.get(i)?.def.kind === kind);
+    if (!p || id === undefined) return 'none';
+    const it = this.items.get(id)!;
+    this.detach(it);
+    it.state = it.def.decoy === true ? 'destroyed' : 'consumed';
+    this.host.markDirty();
+    return it.def.decoy === true ? 'decoy' : 'ok';
+  }
+  /** P3D: the kinds a player carries (for prompts and tests). */
+  carriedKinds(playerId: string): ItemKind[] { return this.carriedBy(playerId).map((i) => this.items.get(i)!.def.kind); }
+
   /** Destroys an item wherever it is (a hazard, a failed install). Carried items leave their carrier's hands. */
   destroy(itemId: string): boolean {
     const it = this.items.get(itemId);
@@ -253,12 +281,22 @@ export class ItemSystem {
     }
     it.carrierId = null;
   }
-  /** Releases an item at (x, y): it falls to the first platform at or below that point. */
-  private place(itemId: string, x: number, y: number): void {
+  /** P3D: the room a player is in (null on single-arena stages). */
+  private playerRoom(id: string): string | null { return this.host.roomOf?.(id) ?? null; }
+  /** P3D: the arena of a room (the stage arena for null or an unknown room). */
+  private arenaFor(room: string | null): Arena { return (room !== null ? this.arenaOfRoom?.(room) : undefined) ?? this.arena; }
+  /** P3D step 4: can the player see a thing standing at (x, y) in `room`? Always true without a view rule. */
+  private sees(playerId: string, room: string | null, x: number, y: number): boolean { return this.host.canSee ? this.host.canSee(playerId, room, x, y) : true; }
+  /** P3D: is the player in the room of this thing? Always true on single-arena stages. */
+  private here(playerId: string, room: string | null): boolean { return !this.host.roomOf || this.playerRoom(playerId) === room; }
+  /** Releases an item at (x, y) in `room`: it falls to the first platform at or below that point. */
+  private place(itemId: string, x: number, y: number, room: string | null): void {
     const it = this.items.get(itemId)!;
     this.detach(it);
-    const cx = clampX(this.arena, x);
-    it.x = cx; it.y = restY(this.arena, cx, y);
+    const a = this.arenaFor(room);
+    const cx = clampX(a, x);
+    it.x = cx; it.y = restY(a, cx, y);
+    it.room = room;
     it.state = 'in_world';
     it.targetId = null;
   }
@@ -290,7 +328,7 @@ export class ItemSystem {
       case 'swap': return this.swap(playerId, p, a.dropId, a.pickId, me);
       case 'handover': return this.handover(playerId, p, a.itemId, a.toPlayerId, me, posOf);
       case 'install': return this.install(playerId, p, a.itemId, a.targetId, me);
-      case 'open': return this.open(a.stashId, me);
+      case 'open': return this.open(playerId, a.stashId, me);
     }
   }
 
@@ -299,6 +337,7 @@ export class ItemSystem {
     const why = this.groundError(pid, it);
     if (why) return fail(why);
     const item = it!;
+    if (!this.here(pid, item.room) || !this.sees(pid, item.room, item.x, item.y - POINT_HEIGHT.item)) return fail(NOTHING_THERE); // another room or out of view: indistinguishable from nothing
     const locked = this.pickLocked(p);
     if (locked) return fail(locked);
     if (!this.reachOf(me, item.x, item.y, ITEM_LIMITS.pickupRange)) return fail('Too far away.');
@@ -315,7 +354,7 @@ export class ItemSystem {
   private drop(pid: string, p: PlayerIt, itemId: string, me: PlayerPosLike): ItemResult {
     const it = this.items.get(itemId);
     if (!it || it.state !== 'carried' || it.carrierId !== pid) return fail(NOT_CARRYING);
-    this.place(itemId, me.x, me.y);
+    this.place(itemId, me.x, me.y, this.playerRoom(pid));
     p.nextPickupTick = this.host.tick + ITEM_LIMITS.dropCooldownTicks;
     this.host.markDirty();
     return ok(`Dropped the ${ITEM_KIND_SPECS[it.def.kind].label}.`);
@@ -328,11 +367,12 @@ export class ItemSystem {
     const why = this.groundError(pid, inn);
     if (why) return fail(why);
     const incoming = inn!;
+    if (!this.here(pid, incoming.room) || !this.sees(pid, incoming.room, incoming.x, incoming.y - POINT_HEIGHT.item)) return fail(NOTHING_THERE);
     const locked = this.pickLocked(p);
     if (locked) return fail(locked);
     if (!this.reachOf(me, incoming.x, incoming.y, ITEM_LIMITS.pickupRange)) return fail('Too far away.');
     if (this.usedSlots(p) - out.slots + incoming.slots > ITEM_LIMITS.carrySlots) return fail('That will not fit in your hands, even after dropping that.');
-    this.place(dropId, me.x, me.y);
+    this.place(dropId, me.x, me.y, this.playerRoom(pid));
     incoming.state = 'carried'; incoming.carrierId = pid; incoming.targetId = null;
     p.carried.push(pickId);
     p.nextPickupTick = this.host.tick + ITEM_LIMITS.dropCooldownTicks;
@@ -345,7 +385,7 @@ export class ItemSystem {
     if (!it || it.state !== 'carried' || it.carrierId !== pid) return fail(NOT_CARRYING);
     const to = toId === pid ? undefined : this.players.get(toId);
     const toPos = to ? posOf(toId) : undefined;
-    if (!to || !toPos || !toPos.connected) return fail(NO_RECEIVER);
+    if (!to || !toPos || !toPos.connected || !this.here(pid, this.playerRoom(toId))) return fail(NO_RECEIVER);
     if (this.host.tick < p.nextHandoverTick) return fail('You just handed something over. Wait a moment.');
     if (!this.reachOf(me, toPos.x, toPos.y, ITEM_LIMITS.handoverRange)) return fail('Too far away.');
     if (this.usedSlots(to) + it.slots > ITEM_LIMITS.carrySlots) return fail('Their hands are full.');
@@ -357,9 +397,9 @@ export class ItemSystem {
     return ok(`Handed over the ${ITEM_KIND_SPECS[it.def.kind].label}.`);
   }
 
-  private open(stashId: string, me: PlayerPosLike): ItemResult {
+  private open(pid: string, stashId: string, me: PlayerPosLike): ItemResult {
     const st = this.stashes.get(stashId);
-    if (!st) return fail(NOTHING_THERE);
+    if (!st || !this.here(pid, st.room) || !this.sees(pid, st.room, st.def.x, st.def.y - POINT_HEIGHT.stash)) return fail(NOTHING_THERE);
     if (!this.reachOf(me, st.def.x, st.def.y, ITEM_LIMITS.openRange)) return fail('Too far away.');
     if (st.opened) return fail('That is already open.');
     st.opened = true;
@@ -411,11 +451,13 @@ export class ItemSystem {
         id: i.def.id, kind: i.def.kind, label: ITEM_KIND_SPECS[i.def.kind].label, slots: i.slots,
         state: i.state as 'in_world' | 'carried' | 'installed',
         x: i.x, y: i.y, carrierId: i.carrierId, targetId: i.targetId,
+        ...(i.room !== null ? { roomId: i.room } : {}),
         ...(i.def.decoy === true && i.def.tell === true && this.clarity !== 'hardcore' ? { cracked: true } : {}),
       })),
       players: [...this.players].map(([id, p]) => ({ id, slotsUsed: this.usedSlots(p), carried: [...p.carried] })),
       ...(this.stashes.size > 0 ? { stashes: [...this.stashes.values()].map((s) => ({
         id: s.def.id, kind: s.def.kind, label: s.def.label, x: s.def.x, y: s.def.y, opened: s.opened,
+        ...(s.room !== null ? { roomId: s.room } : {}),
       })) } : {}),
       ...(this.needs.size > 0 ? { needs: this.publicNeeds() } : {}),
     };

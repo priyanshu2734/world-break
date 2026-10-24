@@ -2,10 +2,10 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
-import { RoomManager, type Result } from './room';
+import { RoomManager, type Result, type Room } from './room';
 import { startFixedLoop } from './loop';
 
 export interface GameServer {
@@ -16,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -48,10 +48,12 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
       if (sessions.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
-      const { roomCode, name, lab } = parsed.data;
+      const { roomCode, name, lab, rooms: wantRooms } = parsed.data;
       // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true });
+      // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
+      if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);
@@ -105,6 +107,15 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
     // P3C: salvage (pick up, drop, swap, hand over, install). Zod here, rules in the item system.
+    socket.on('escape:action', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = EscapeActionSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid escape request' });
+      const r = rooms.get(s.roomCode)?.escapeAction(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message, ...(r.note ? { note: r.note } : {}) } : { ok: false, error: r.error });
+    });
     socket.on('item:action', (payload, ack) => {
       const s = sessions.get(socket.id);
       if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
@@ -136,17 +147,46 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
 
   // Fixed-rate authoritative simulation for every room with an active run.
   let stopLoop: (() => void) | null = null;
+  /** P3D step 4: the last stage state each player of a restricted room was sent (cleared with the room). */
+  const views = new WeakMap<Room, Map<string, { key: string; rev: number }>>();
   const onTick = () => {
     rooms.forEach((room) => {
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
       const { phaseChanged } = room.tick();
       if (phaseChanged) broadcast(room.code);
-      const snap = room.gameSnapshot();
+      const restricted = room.restrictsViews; // P3D: an escape stage sends every player their own view
+      const snap = restricted ? null : room.gameSnapshot();
       // Steady-state snapshots are volatile (a stale one is worthless). A snapshot that carries a phase change is
       // sent reliably: after stage completion the sim stops, so a dropped one would leave clients on a stale phase.
       if (snap) (phaseChanged ? io.to(room.code) : io.to(room.code).volatile).emit('game:snapshot', snap);
+      // P3D: each player is told the layout of the room they begin in or enter: to that player's socket only, never broadcast.
+      const layouts = room.drainLayouts();
+      if (layouts.length > 0) {
+        const socketOf = new Map<string, string>();
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code) socketOf.set(sess.playerId, sid);
+        for (const { playerId, layout } of layouts) { const sid = socketOf.get(playerId); if (sid) io.to(sid).emit('room:layout', layout); }
+      }
       const stage = room.consumeStageState();
-      if (stage) io.to(room.code).emit('stage:state', stage); // reliable: full, idempotent state
+      if (!restricted) {
+        if (stage) io.to(room.code).emit('stage:state', stage); // reliable: full, idempotent state
+        return;
+      }
+      // P3D step 4: per player, only what that player can see. The stage state changes when the player MOVES (things come into view),
+      // not only when the stage does, so it is sent whenever this player's own view differs from the last one they were sent.
+      let sent = views.get(room);
+      if (!sent) views.set(room, (sent = new Map()));
+      for (const [sid, sess] of sessions) {
+        if (sess.roomCode !== room.code) continue;
+        const v = room.viewFor(sess.playerId);
+        if (!v) continue;
+        (phaseChanged ? io.to(sid) : io.to(sid).volatile).emit('game:snapshot', v.snapshot);
+        const key = JSON.stringify({ ...v.stage, rev: 0, tick: 0 }); // `tick` moves every tick; clients take the time from the snapshot
+        const last = sent.get(sess.playerId);
+        if (last?.key === key) continue;
+        const rev = Math.max(v.stage.rev, (last?.rev ?? 0) + 1); // the client ignores an older revision: keep this player's strictly rising
+        sent.set(sess.playerId, { key, rev });
+        io.to(sid).emit('stage:state', { ...v.stage, rev });
+      }
     });
   };
 

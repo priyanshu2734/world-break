@@ -36,6 +36,8 @@ export const ItemsPublicSchema = z.object({
     targetId: z.string().nullable(),
     /** Present (true) only when the stage lets a cracked part show it and the mode is not hardcore. Never says "decoy" about an unmarked part. */
     cracked: z.boolean().optional(),
+    /** P3D (additive, optional): the room the part is in. Absent on single-arena stages. */
+    roomId: z.string().optional(),
   })),
   players: z.array(z.object({
     id: z.string(),
@@ -45,6 +47,8 @@ export const ItemsPublicSchema = z.object({
   /** Visible containers (some are empty). `opened` flips when a player opens one. Absent when the stage has none. */
   stashes: z.array(z.object({
     id: z.string(), kind: z.enum(['crate', 'panel', 'locker', 'ceiling']), label: z.string(), x: z.number(), y: z.number(), opened: z.boolean(),
+    /** P3D (additive, optional): the room the container is in. */
+    roomId: z.string().optional(),
   })).optional(),
   /**
    * Requirements of targets the team has DISCOVERED (stood near), by clue clarity: easy = names + hint, intermediate = silhouettes,

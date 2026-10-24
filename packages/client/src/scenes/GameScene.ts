@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, type ActiveAbilityId, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
+import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, visionRadius, type ActiveAbilityId, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
 import type { Session } from '../net/session';
 import { INTERP_DELAY_MS } from '../net/interpolation';
 import { LocalPredictor } from '../sim/prediction';
@@ -12,7 +12,14 @@ import { buildAbilityAction } from '../ui/abilityView';
 import { TOOL_KEYS, nearestInteractable, targetForTool } from '../ui/targeting';
 import { ItemHud } from '../ui/ItemHud';
 import { ItemMarkers } from '../ui/ItemMarkers';
-import { carryChanges, dropIntent, handoverIntent, installIntent, pickIntent, type ItemIntent } from '../ui/itemView';
+import { Darkness } from '../ui/Darkness';
+import { DoorView } from '../ui/DoorView';
+import { EscapeView } from '../ui/EscapeView';
+import { CodePad } from '../ui/CodePad';
+import { ESCAPE_KEYS_HINT, goalLine, nearestUse, stateForRoom, takesCode, useIntent, usablesIn, type EscapeUse } from '../ui/escapeUse';
+import { cameraScroll, pickArena } from '../ui/roomMath';
+import { darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
+import { carriedItems, carryChanges, dropIntent, handoverIntent, installIntent, itemPrompt, pickIntent, type ItemIntent } from '../ui/itemView';
 
 const W = ARENA.width, H = ARENA.height;
 const RESET_HOLD_MS = 1000;
@@ -47,6 +54,22 @@ export class GameScene extends Phaser.Scene {
   private abilityHud!: AbilityHud;
   private itemHud!: ItemHud;
   private itemMarkers!: ItemMarkers;
+  /** P3D: the dark view. Created when the URL has ?dark=1 or the stage publishes `darkness`; removed when neither holds. */
+  private darkness: Darkness | null = null;
+  private darkCfg: DarkSettings = darkSettings('');
+  /** Backdrop decorations (shards, the amber fracture). Hidden while the view is dark. */
+  private decor: Phaser.GameObjects.GameObject[] = [];
+  private solidsDark = false;
+  /** P3D rooms: doorways of the current room. */
+  private doors!: DoorView;
+  /** P3D escape stages: keypads, safes, clues, switches, the exit, the E prompt and the player's notes. */
+  private escapeView!: EscapeView;
+  private pad!: CodePad;
+  /** What E would act on this frame (null = nothing in reach). */
+  private escapeNearest: EscapeUse | null = null;
+  private notesStage = -1;
+  private layoutSeenSeq = 0;
+  private readonly defaultHint = 'A/D move  W/Space jump  E use/pick up  1-5 tools  6-9 abilities (mouse aims, Shift = alt)  Q cancel  hold R reset (host)';
   private prevItems: import('@wb/shared').ItemsPublic | undefined;
   /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
   private where = new Map<string, { x: number; y: number }>();
@@ -96,6 +119,13 @@ export class GameScene extends Phaser.Scene {
     this.itemHud = new ItemHud(this);
     this.itemMarkers = new ItemMarkers(this);
     this.worldView = new WorldView(this);
+    this.darkCfg = darkSettings(window.location.search);
+    this.doors = new DoorView(this);
+    this.escapeView = new EscapeView(this);
+    this.events.once('shutdown', () => this.escapeView.destroy());
+    this.pad = new CodePad(this, (t, code) => { void this.session.escapeAction({ action: 'enter_code', targetId: t.id, code }); });
+    this.events.once('shutdown', () => this.doors.destroy());
+    this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
     this.input.on('pointermove', () => { this.pointerSeen = true; });
     const onBlur = () => kb.resetKeys(); // never leave a key "stuck down" after alt-tab
@@ -116,6 +146,7 @@ export class GameScene extends Phaser.Scene {
       const s = this.add.image(Math.random() * W, Math.random() * H, 'shard').setDepth(-9)
         .setScale(0.5 + Math.random() * 2).setAlpha(0.04 + Math.random() * 0.1)
         .setTint(Math.random() < 0.25 ? COLOR.amber : COLOR.cyan).setAngle(Math.random() * 360);
+      this.decor.push(s);
       this.tweens.add({ targets: s, y: s.y + 40, angle: s.angle + 25, duration: 6000 + Math.random() * 5000,
         yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     }
@@ -129,21 +160,24 @@ export class GameScene extends Phaser.Scene {
       for (const [x, y] of crack.slice(1)) g.lineTo(x!, y!);
       g.strokePath();
     };
+    this.decor.push(glow, core);
     path(glow, 22, COLOR.amber, 0.12); path(glow, 8, COLOR.amber, 0.25); path(core, 2, 0xfff1c9, 0.9);
     this.tweens.add({ targets: glow, alpha: 0.45, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
     this.drawSolids();
   }
 
-  /** Platforms of the current arena. Redrawn when the server switches arena. */
+  /** Platforms of the current arena. Redrawn when the server switches arena or the view turns dark. */
   private drawSolids(): void {
     for (const o of this.solidsArt) o.destroy();
     this.solidsArt = [];
     const arena = this.arena;
+    const dark = this.solidsDark;
     const g = this.add.graphics().setDepth(-5);
     this.solidsArt.push(g);
     for (const r of arena.solids) {
       g.fillStyle(0x0a1822, 1).fillRect(r.x, r.y, r.w, r.h);
+      if (dark) continue; // dark view: plain slabs, no grid lines or warning strip (nothing decorative outside the light)
       g.lineStyle(1, COLOR.cyanDim, 0.55);
       for (let x = r.x + 40; x < r.x + r.w; x += 40) g.lineBetween(x, r.y + 4, x, r.y + r.h);
       g.fillStyle(COLOR.amberDim, 0.9).fillRect(r.x, r.y + r.h - 2, r.w, 2); // underside warning strip
@@ -151,10 +185,26 @@ export class GameScene extends Phaser.Scene {
     const edge = this.add.graphics().setDepth(-4).setBlendMode(Phaser.BlendModes.ADD);
     this.solidsArt.push(edge);
     for (const r of arena.solids) {
+      if (dark) { edge.lineStyle(2, COLOR.cyan, 0.5).lineBetween(r.x, r.y, r.x + r.w, r.y); continue; } // steady, no glow, no pulse
       edge.lineStyle(8, COLOR.cyan, 0.12).lineBetween(r.x, r.y, r.x + r.w, r.y);
       edge.lineStyle(2, COLOR.cyan, 0.95).lineBetween(r.x, r.y, r.x + r.w, r.y);
     }
-    this.tweens.add({ targets: edge, alpha: 0.6, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    if (!dark) this.tweens.add({ targets: edge, alpha: 0.6, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  }
+
+  /** P3D: switch the dark view on or off as the URL flag and the stage's published `darkness` dictate. */
+  private syncDarkness(wantDark: boolean): void {
+    if (wantDark === (this.darkness !== null)) return;
+    if (wantDark) {
+      this.darkness = new Darkness(this, this.darkCfg);
+      this.darkness.setArena(this.arena);
+    } else {
+      this.darkness?.destroy();
+      this.darkness = null;
+    }
+    for (const d of this.decor) (d as unknown as { setVisible(v: boolean): void }).setVisible(!wantDark);
+    this.solidsDark = wantDark;
+    this.drawSolids();
   }
 
   // ---------------------------------------------------------------- HUD
@@ -172,7 +222,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.hudStage = this.add.text(W / 2, 22, '', { ...FONT, fontSize: '22px', color: '#ffb02e' }).setOrigin(0.5, 0).setDepth(D);
     this.hudRoom = this.add.text(W - 16, 18, '', { ...FONT, fontSize: '15px', color: COLOR.text }).setOrigin(1, 0).setDepth(D);
-    this.hint = this.add.text(W / 2, H - 14, 'A/D move  W/Space jump  E use/pick up  1-5 tools  6-9 abilities (mouse aims, Shift = alt)  Q cancel  hold R reset (host)',
+    this.hint = this.add.text(W / 2, H - 14, this.defaultHint,
       { ...FONT, fontSize: '14px', color: '#5f8da0' }).setOrigin(0.5, 1).setDepth(D);
 
     this.bannerBg = this.add.rectangle(W / 2, H / 2 - 40, W, 170, 0x020509, 0.78).setDepth(D + 1);
@@ -226,17 +276,31 @@ export class GameScene extends Phaser.Scene {
 
     const me = g.players.find((p) => p.id === s.playerId);
 
-    // --- P3B: the server may switch arena between stages (the Ability Lab). Redraw platforms and predict against the new one. ---
-    if (g.arenaId !== this.arenaId) {
-      this.arenaId = g.arenaId;
-      this.arena = getArena(g.arenaId) ?? ARENA;
-      this.predictor.setArena(this.arena);
-      this.drawSolids();
+    // --- P3B/P3D: the arena the local player is simulated in. The server may switch arena between stages (the Ability Lab), and on a
+    //     multi-room stage each player is in one room, whose layout the server sent to this player only. Unknown yet = wait, do not guess. ---
+    const myRoom = me?.roomId;
+    if (this.layoutSeenSeq !== s.layoutSeq) { // a door just moved the player (a gate moves them within one room): predict afresh from the server's position
+      this.layoutSeenSeq = s.layoutSeq;
+      if (myRoom !== undefined) this.predictor.stop();
     }
+    const wantArena = pickArena(myRoom, g.arenaId, s.layouts);
+    if (wantArena && wantArena.id !== this.arenaId) {
+      this.arenaId = wantArena.id;
+      this.arena = wantArena;
+      this.predictor.setArena(this.arena);
+      if (myRoom !== undefined) this.predictor.stop(); // a door moved the body: start prediction afresh from the server's position
+      this.drawSolids();
+      this.darkness?.setArena(this.arena);
+    }
+    const es = s.stage?.escape;
+    this.doors.set(myRoom !== undefined ? s.layouts.get(myRoom)?.doors ?? [] : [], es ? new Map(es.doors.map((d) => [d.id, d.open])) : undefined);
+    // Stage content lives in the start room on a plain multi-room stage; on an escape stage every room has its own (filtered by room below).
+    const contentHere = myRoom === undefined || myRoom === g.arenaId || es !== undefined;
+    if (this.notesStage !== g.stage) { this.notesStage = g.stage; s.notes.length = 0; } // clues are per stage
 
     // --- local prediction ---
-    if (g.phase === 'playing' && me && me.connected) {
-      const ctx = { tick: g.tick, playerId: s.playerId, world: g.world }; // P3B: the same zones/impulses the server steps with
+    if (g.phase === 'playing' && me && me.connected && wantArena) {
+      const ctx = { tick: g.tick, playerId: s.playerId, world: contentHere ? g.world : undefined }; // P3B: the same zones/impulses the server steps with
       if (!this.predictor.active) { this.predictor.start(me, g.epoch, ctx); this.lastSerial = s.gameSerial; }
       if (s.gameSerial !== this.lastSerial) { this.lastSerial = s.gameSerial; this.predictor.reconcile(me, g.epoch, ctx); }
       this.predictor.advance(delta, this.readInput());
@@ -264,9 +328,11 @@ export class GameScene extends Phaser.Scene {
       live.add(p.id);
       const v = this.ensureView(p);
       const isMe = p.id === s.playerId;
+      const sameRoom = !p.roomId || !myRoom || p.roomId === myRoom; // a player in another room is not drawn here (different coordinates)
+      v.box.setVisible(sameRoom);
       const pred = isMe ? this.predictor.render() : null;
       const pos = pred ?? sampled.get(p.id) ?? p;
-      this.where.set(p.id, { x: pos.x, y: pos.y });
+      if (sameRoom) this.where.set(p.id, { x: pos.x, y: pos.y });
       v.box.setPosition(pos.x, pos.y - PLAYER_HEIGHT / 2);
       v.visor.setX(pos.facing * 6);
       v.box.setAlpha(p.connected ? 1 : 0.35);
@@ -277,8 +343,10 @@ export class GameScene extends Phaser.Scene {
     for (const [id, v] of this.views) if (!live.has(id)) { v.box.destroy(); this.views.delete(id); }
 
     // --- HUD ---
+    // the team panel reads the team list (every teammate, no positions); `players` is only who the server lets you see
+    const roster: readonly { id: string; name: string; slot: number; connected: boolean }[] = g.team ?? g.players;
     this.hudRows.forEach((row, i) => {
-      const p = g.players.find((x) => x.slot === i);
+      const p = roster.find((x) => x.slot === i);
       row.swatch.setVisible(!!p); row.dot.setVisible(!!p); row.text.setVisible(!!p);
       if (!p) return;
       const tag = p.id === s.playerId ? ' (you)' : '';
@@ -292,17 +360,51 @@ export class GameScene extends Phaser.Scene {
     // --- P2: stage overlay, HUD and action keys (all outcomes are decided by the server) ---
     const meNow = this.predictor.render() ?? sampled.get(s.playerId) ?? me ?? null;
     const st = s.stage;
-    this.stageView.update(st ?? EMPTY_STAGE, g.tick, st ? meNow : null);
+    const stHere = stateForRoom(contentHere ? st : null, myRoom); // only what lies in the player's room is drawn
+    const uses = myRoom !== undefined ? usablesIn(myRoom, st?.escape, s.layouts.get(myRoom)) : [];
+    this.escapeNearest = meNow ? nearestUse(meNow, uses) : null;
+    // one prompt at a time: what E picks up or opens (items first) wins over doors, keypads, notes and switches
+    const itemLine = stHere && meNow ? itemPrompt(stHere, s.playerId, meNow) : null;
+    const goal = goalLine(st?.escape, myRoom, carriedItems(st, s.playerId).map((i) => i.kind), s.notes.length);
+    this.escapeView.update(myRoom, st?.escape, st?.tick ?? 0, this.escapeNearest, g.phase === 'playing' && !this.pad.isOpen && !itemLine, s.notes, goal);
+    const keysText = st?.escape ? ESCAPE_KEYS_HINT : this.defaultHint;
+    if (this.hint.text !== keysText) this.hint.setText(keysText);
+    this.pad.update(g.phase === 'playing' ? meNow : null);
+    this.stageView.update(stHere ?? EMPTY_STAGE, g.tick, stHere ? meNow : null);
     this.stageHud.update(st, g.tick, s.playerId, s);
-    this.abilityHud.update(st, g.tick, s.playerId);
+    this.abilityHud.update(st?.escape ? null : st, g.tick, s.playerId); // no ability bar on an escape stage
     this.itemHud.update(st, s.playerId);
-    this.itemMarkers.update(st, s.playerId, st ? meNow : null, this.where);
+    this.itemMarkers.update(stHere, s.playerId, stHere ? meNow : null, this.where);
     // P3C hand-over and loss feedback: said to both people involved, from the public state alone
     const heard = carryChanges(this.prevItems, st?.items, s.playerId, (id) => g.players.find((x) => x.id === id)?.name ?? 'A teammate');
     this.prevItems = st?.items;
-    if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
-    this.worldView.update(g, delta);
-    this.handleStageKeys(st, g.phase === 'playing' && !!me?.connected, meNow, me?.facing ?? 1);
+    // on an escape stage a part only leaves your hands when a lock takes it, and the lock says so itself: no generic "is gone"
+    const lines = st?.escape ? heard.filter((h) => !h.endsWith(' is gone.')) : heard;
+    if (lines.length) s.notice = { text: lines.join(' '), ok: true, at: performance.now() };
+    if (contentHere) this.worldView.update(g, delta);
+    else { const { world: _unused, ...noWorld } = g; void _unused; this.worldView.update(noWorld, delta); }
+    if (this.pad.isOpen) this.drainKeys(); // typing into the pad must not trigger tools or abilities afterwards
+    // keys act on what lies in the player's own room only (a part in another room has the same coordinates as nothing here)
+    this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
+
+    // --- P3D: the camera follows the local player inside the room (a room no bigger than the screen never scrolls) ---
+    if (meNow) {
+      const sc = cameraScroll({ x: meNow.x, y: meNow.y - PLAYER_HEIGHT / 2 }, this.arena);
+      this.cameras.main.setScroll(sc.x, sc.y);
+    }
+    this.pinHud();
+    this.syncDarkness(this.darkCfg.enabled || !!st?.darkness);
+    if (this.darkness) {
+      const ptr = this.input.activePointer;
+      this.darkness.update({
+        me: g.phase === 'playing' ? meNow : null,
+        pointer: this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null,
+        facing: me?.facing ?? 1,
+        ambient: resolveAmbient(st?.darkness?.ambient, room.difficulty, g.stage),
+        scroll: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY },
+        reach: visionRadius(room.difficulty, g.stage), // the light reaches exactly as far as the server publishes
+      });
+    }
 
     const briefing = g.phase === 'briefing';
     this.bannerBg.setVisible(briefing); this.banner.setVisible(briefing); this.bannerSub.setVisible(briefing);
@@ -310,6 +412,27 @@ export class GameScene extends Phaser.Scene {
       this.banner.setText(`Stage ${g.stage}`);
       this.bannerSub.setText(`${this.arena.name}  deploying in ${Math.max(1, Math.ceil(g.briefingMs / 1000))}`);
     }
+  }
+
+  /** HUD objects are drawn in screen space: they must not scroll with the camera. Depth 90+ is the HUD; objects appear lazily, so check every frame. */
+  private pinHud(): void {
+    for (const o of this.children.list) {
+      const h = o as Phaser.GameObjects.GameObject & { depth: number; scrollFactorX?: number; setScrollFactor?: (x: number, y?: number) => unknown };
+      if (h.depth >= 90 && h.scrollFactorX !== undefined && h.scrollFactorX !== 0) h.setScrollFactor?.(0);
+    }
+  }
+
+  /** E on a door, keypad, safe, clue or switch (P3D). The server decides; keypads and safes open the typing pad first. */
+  private useEscape(u: EscapeUse, tick: number): void {
+    if ((u.kind === 'keypad' || u.kind === 'safe') && takesCode(u, tick)) { this.pad.open({ id: u.id, kind: u.kind, length: u.length, x: u.x, y: u.y }); return; }
+    const intent = useIntent(u);
+    if (intent) void this.session.escapeAction(intent);
+    else this.session.notice = { text: u.kind === 'keypad' || u.kind === 'safe' ? 'Not now.' : 'Nothing to do.', ok: false, at: performance.now() };
+  }
+
+  /** Read and discard every action key press (a key press is remembered until read). */
+  private drainKeys(): void {
+    for (const k of [...Object.values(this.stageKeys), ...Object.values(this.abilityKeys)]) Phaser.Input.Keyboard.JustDown(k);
   }
 
   private handleStageKeys(st: import('@wb/shared').StageState | null, canAct: boolean, me: { x: number; y: number } | null, facing: 1 | -1): void {
@@ -328,6 +451,7 @@ export class GameScene extends Phaser.Scene {
     if (pressed.E) {
       const mine = pickIntent(st, me);
       if (mine) itemSend(mine);
+      else if (this.escapeNearest) this.useEscape(this.escapeNearest, st.tick);
       else {
         const id = nearestInteractable(st, me);
         if (id) send({ kind: 'interact', targetId: id });
@@ -379,6 +503,8 @@ export class GameScene extends Phaser.Scene {
         const g = this.session.game;
         return {
           fps: Math.round(this.game.loop.actualFps), predActive: this.predictor.active, sent: this.predictor.sentCount, pending: this.predictor.pendingCount,
+          dark: this.darkness ? { ambient: this.darkness.drawnAmbient, assist: this.darkness.assist } : null,
+          view: { roomId: g?.players.find((p) => p.id === this.session.playerId)?.roomId ?? null, arena: this.arena.id, scroll: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY }, layouts: [...this.session.layouts.keys()] },
           stage: this.session.stage, notice: this.session.notice?.text ?? null,
           phase: g?.phase ?? null, tick: g?.tick ?? null, epoch: g?.epoch ?? null, localId: this.session.playerId,
           hostId: this.session.snapshot?.hostId ?? null,
@@ -386,7 +512,7 @@ export class GameScene extends Phaser.Scene {
             const v = this.views.get(p.id);
             return {
               id: p.id, name: p.name, slot: p.slot, connected: p.connected, grounded: p.grounded, isLocal: p.id === this.session.playerId,
-              serverX: p.x, serverY: p.y, renderX: v?.box.x ?? null, renderY: v ? v.box.y + PLAYER_HEIGHT / 2 : null,
+              roomId: p.roomId ?? null, hidden: v ? !v.box.visible : null, serverX: p.x, serverY: p.y, renderX: v?.box.x ?? null, renderY: v ? v.box.y + PLAYER_HEIGHT / 2 : null,
             };
           }),
         };

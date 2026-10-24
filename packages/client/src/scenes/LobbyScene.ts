@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { labRequested } from '../net/labParam';
+import { roomsFlag } from '../ui/roomMath';
 import { MAX_PLAYERS, DIFFICULTIES, isDifficultyUnlocked } from '@wb/shared';
 import { Session } from '../net/session';
 import { COLOR, FONT } from '../palette';
@@ -64,7 +65,7 @@ export class LobbyScene extends Phaser.Scene {
 
     const hash = window.location.hash.replace('#', '').toUpperCase();
     this.joining = true;
-    void this.session.join(`Operator-${Math.floor(Math.random() * 900 + 100)}`, hash || undefined, labRequested(window.location.search))
+    void this.session.join(`Operator-${Math.floor(Math.random() * 900 + 100)}`, hash || undefined, labRequested(window.location.search), roomsFlag(window.location.search))
       .finally(() => { this.joining = false; });
   }
 

@@ -1,6 +1,6 @@
 import {
-  ARENA, NEUTRAL_INPUT, TICK_DT, sanitizeInput, spawnBody, stepBody,
-  type Arena, type GamePlayer, type GameSnapshot, type InputIntent, type PlayerBody, type RoomPhase,
+  ARENA, NEUTRAL_INPUT, ROOM_LIMITS, TICK_DT, doorAt, sanitizeInput, spawnBody, stepBody,
+  type Arena, type RoomDef, type RoomGraph, type GamePlayer, type GameSnapshot, type InputIntent, type PlayerBody, type RoomPhase,
 } from '@wb/shared';
 import { PhysicsWorld, type PropSpawn } from './abilities/world';
 
@@ -23,7 +23,13 @@ interface SimPlayer extends SimPlayerInit {
   lastAppliedSeq: number;
   lastInput: InputIntent;
   staleTicks: number;
+  /** P3D: the room the player is in (null on single-arena stages) and ticks until a door may be used again. */
+  roomId: string | null;
+  doorCooldown: number;
 }
+
+/** P3D: a player passed through a door this tick. */
+export interface RoomTransition { playerId: string; from: string; to: string; doorId: string }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -36,6 +42,14 @@ export class GameSim {
   /** P3B: props, gravity zones and impulses. Stepped once per tick after the bodies. */
   world: PhysicsWorld;
   private propSpawns: PropSpawn[] = [];
+  /** P3D: the room graph of a multi-room stage (null = single arena, exactly the pre-P3D behaviour). */
+  private rooms: Map<string, RoomDef> | null = null;
+  private startRoom: string | null = null;
+  private transitions: RoomTransition[] = [];
+  /** P3D: step 3 plugs door locks in here. Return false to keep the door shut for this player. Default: every door is open. */
+  doorGate: ((doorId: string, playerId: string) => boolean) | null = null;
+  /** P3D: doors open by walking into them (the step 2 behaviour, default). An escape stage turns this off: doors open with E (`sendThrough`). */
+  touchDoors = true;
 
   constructor(inits: SimPlayerInit[], arena: Arena = ARENA) {
     this._arena = arena;
@@ -45,7 +59,7 @@ export class GameSim {
       if (!sp) throw new Error(`No spawn for slot ${p.slot}`);
       this.players.set(p.id, {
         ...p, body: spawnBody(sp.x, sp.y), connected: true, queue: [],
-        lastQueuedSeq: -1, lastAppliedSeq: -1, lastInput: NEUTRAL_INPUT, staleTicks: 0,
+        lastQueuedSeq: -1, lastAppliedSeq: -1, lastInput: NEUTRAL_INPUT, staleTicks: 0, roomId: null, doorCooldown: 0,
       });
     }
   }
@@ -61,6 +75,30 @@ export class GameSim {
     this.world = new PhysicsWorld(arena);
     this.world.reset(this.propSpawns);
   }
+  /**
+   * P3D: play this stage as a chain of rooms (or, with null, as one arena again). Every player is placed in the start room
+   * (the caller `reset()`s afterwards, like `loadArena`). The sim's physical world (props, zones) belongs to the start room.
+   */
+  loadRooms(graph: RoomGraph | null): void {
+    this.transitions = [];
+    if (!graph) {
+      this.rooms = null; this.startRoom = null;
+      for (const p of this.players.values()) { p.roomId = null; p.doorCooldown = 0; }
+      return;
+    }
+    this.rooms = new Map(graph.rooms.map((r) => [r.id, r]));
+    this.startRoom = graph.start;
+    this.loadArena(this.rooms.get(graph.start)!.arena);
+    for (const p of this.players.values()) { p.roomId = graph.start; p.doorCooldown = 0; }
+  }
+  /** P3D: the room a player is in (undefined on single-arena stages or for unknown players). */
+  roomOf(id: string): string | undefined { return this.players.get(id)?.roomId ?? undefined; }
+  /** P3D: the start room id, where stage content lives until step 3 (null on single-arena stages). */
+  get contentRoom(): string | null { return this.startRoom; }
+  /** P3D: door passages since the last call (the caller sends each player the layout of the room they entered). */
+  drainTransitions(): RoomTransition[] { const t = this.transitions; this.transitions = []; return t; }
+  private arenaFor(p: SimPlayer): Arena { return (this.rooms && p.roomId ? this.rooms.get(p.roomId)?.arena : undefined) ?? this._arena; }
+
   /** P3B: set the stage's authored props (resets the physical world to them). */
   configure(spawns: readonly PropSpawn[]): void {
     this.propSpawns = [...spawns];
@@ -107,10 +145,39 @@ export class GameSim {
           if (p.staleTicks <= MAX_REPEAT_TICKS) input = { moveX: p.lastInput.moveX, jump: false };
         }
       }
-      stepBody(p.body, input, this._arena, this.world.forPlayer(p.id)); // P3B: zones/impulses for THIS tick, or undefined
+      // P3B: zones/impulses for THIS tick, or undefined. P3D: each player steps in THEIR room's arena; the physical world is the start room's.
+      const here = !this.rooms || p.roomId === this.startRoom;
+      stepBody(p.body, input, this.arenaFor(p), here ? this.world.forPlayer(p.id) : undefined);
+      if (this.rooms && p.roomId && this.touchDoors) this.passDoors(p);
     }
     this.world.step();
     this.tick++;
+  }
+
+  /**
+   * P3D: carry a player through one of the doors of the room they are in (the escape runtime calls this after E and the opening delay).
+   * Same move as walking into the door: the arrival point of the target room, then the new room's layout is sent to that player.
+   */
+  sendThrough(playerId: string, doorId: string): boolean {
+    const p = this.players.get(playerId);
+    const room = p && this.rooms && p.roomId ? this.rooms.get(p.roomId) : undefined;
+    const door = room?.doors.find((d) => d.id === doorId);
+    if (!p || !room || !door) return false;
+    this.teleport(p, room, door);
+    return true;
+  }
+  private teleport(p: SimPlayer, room: RoomDef, door: RoomDef['doors'][number]): void {
+    p.body = spawnBody(door.arrive.x, door.arrive.y);
+    p.doorCooldown = ROOM_LIMITS.doorCooldownTicks;
+    this.transitions.push({ playerId: p.id, from: room.id, to: door.to, doorId: door.id });
+    p.roomId = door.to;
+  }
+  private passDoors(p: SimPlayer): void {
+    if (p.doorCooldown > 0) { p.doorCooldown--; return; }
+    const room = this.rooms!.get(p.roomId!);
+    const door = room ? doorAt(room, p.body) : null;
+    if (!room || !door || (this.doorGate && !this.doorGate(door.id, p.id))) return;
+    this.teleport(p, room, door);
   }
 
   /** Restore the known initial state: spawn positions, tick 0, empty queues. New epoch tells clients to resync. */
@@ -124,7 +191,10 @@ export class GameSim {
       p.queue.length = 0;
       p.lastInput = NEUTRAL_INPUT;
       p.staleTicks = 0;
+      p.doorCooldown = 0;
+      if (this.rooms) p.roomId = this.startRoom;
     }
+    this.transitions = [];
   }
 
   /** Explicit public projection: no queues, no internals. */
@@ -135,6 +205,7 @@ export class GameSim {
         id: p.id, name: p.name, slot: p.slot,
         x: r2(p.body.x), y: r2(p.body.y), vx: r2(p.body.vx), vy: r2(p.body.vy),
         facing: p.body.facing, grounded: p.body.grounded, connected: p.connected, ack: p.lastAppliedSeq,
+        ...(this.rooms && p.roomId ? { roomId: p.roomId } : {}),
       }));
     const world = this.world.publicState();
     return {

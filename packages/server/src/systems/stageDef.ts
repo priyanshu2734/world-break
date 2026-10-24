@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { AbilityIdSchema, ENERGY_MAX, ENERGY_START, HazardKindSchema, ITEM_GATES, ITEM_LIMITS, ItemKindSchema, MAX_PROPS_PER_STAGE, StageIdSchema, ToolIdSchema } from '@wb/shared';
+import { EscapeSpecSchema } from '../rooms/escapeSpec';
+import { AbilityIdSchema, RoomGraphSchema, ENERGY_MAX, ENERGY_START, HazardKindSchema, ITEM_GATES, ITEM_LIMITS, ItemKindSchema, MAX_PROPS_PER_STAGE, StageIdSchema, ToolIdSchema } from '@wb/shared';
 import { DisasterMetaSchema } from '../disasters/meta';
 
 /**
@@ -116,12 +117,16 @@ export const ItemDefSchema = z.object({
   }).optional(),
   /** The spot is not reachable on foot: it needs this P3B ability (and the stage must enable it). The validator checks both ways. */
   gate: z.enum(ITEM_GATES).optional(),
+  /** P3D (additive, optional): the room the part is in. Omitted = the start room (or the only arena). */
+  room: z.string().optional(),
 });
 
 /** P3C: a visible container players can open. It may be empty (a decoy container); nothing publishes what it holds. */
 export const StashDefSchema = z.object({
   id: Id, kind: z.enum(['crate', 'panel', 'locker', 'ceiling']), label: z.string().min(1).max(40), ...Pt,
   gate: z.enum(ITEM_GATES).optional(),
+  /** P3D (additive, optional): the room the container is in. Omitted = the start room (or the only arena). */
+  room: z.string().optional(),
 });
 
 /**
@@ -156,7 +161,8 @@ export const StageDefSchema = z.object({
     faultBindings: z.array(z.object({ consumerId: Id, failureId: Id })),
   }),
   entities: z.array(EntitySchema),
-  objectives: z.array(ObjectiveSchema).min(1),
+  /** At least one, except on an escape stage (`escape`), which is cleared by reaching its exit; `validateStageDef` enforces that. */
+  objectives: z.array(ObjectiveSchema),
   hazards: z.array(HazardSchema),
   clues: z.array(ClueSchema),
   /** P3A (additive, optional): lifecycle + record of a generated disaster stage. Hand-authored stages omit it. */
@@ -171,6 +177,14 @@ export const StageDefSchema = z.object({
   needs: z.array(NeedDefSchema).max(ITEM_LIMITS.maxNeedsPerStage).optional(),
   /** P3C (additive, optional): visible containers that hide parts. */
   stashes: z.array(StashDefSchema).max(ITEM_LIMITS.maxStashesPerStage).optional(),
+  /** P3D (additive, optional): the stage is played in the dark (published as `StageState.darkness`). Omitted = lit, as before. */
+  dark: z.boolean().optional(),
+  /** P3D step 5 (additive, optional): the published ambient is never below this fraction (the escape tutorial is lit more than the table says). */
+  ambientMin: z.number().min(0).max(1).optional(),
+  /** P3D (additive, optional): the stage is a chain of rooms. `arenaId` must be the start room's arena; stage content (items, entities) lives in the start room until step 3 adds per-room content. */
+  rooms: RoomGraphSchema.optional(),
+  /** P3D (additive, optional): doors with locks, keypads, safes, clues, switches and an exit. Needs `rooms`. Cleared by reaching the exit. */
+  escape: EscapeSpecSchema.optional(),
   scoring: z.object({
     timeBonusPerSecond: z.number().int(),
     expiredPenalty: z.number().int(),

@@ -76,7 +76,10 @@ export class StageHud {
 
   update(st: StageState | null, tick: number, localId: string, session: Session): void {
     const show = !!st;
-    this.panel.setVisible(show);
+    const minimal = !!st?.escape; // an escape stage has no objectives, symptoms or tool bar: one goal line, hands, notes and keys
+    this.panel.setVisible(show && !minimal);
+    this.toolBox.forEach((b) => b.setVisible(!minimal)); this.toolText.forEach((t) => t.setVisible(!minimal));
+    this.notice.setY(minimal ? 112 : 90);
     if (!st) { this.objectives.set([]); this.feed.set([]); this.resultBg.setVisible(false); this.result.setVisible(false); return; }
 
     const obj: { text: string; color?: string }[] = [...disasterLines(st, tick), { text: 'OBJECTIVES', color: '#ffb02e' }];
@@ -91,7 +94,7 @@ export class StageHud {
       obj.push({ text: `${s.label} (${tag})`, color: s.state === 'resolved' ? '#3de8ff' : s.state === 'mitigated' ? '#ffe27a' : '#ff9d6b' });
       if (s.state !== 'resolved') obj.push({ text: `   ${s.hint}`, color: '#7f97a3' });
     }
-    this.panel.setSize(380, this.objectives.set(obj) + 16);
+    if (minimal) { this.objectives.set([]); } else this.panel.setSize(380, this.objectives.set(obj) + 16);
 
     this.feed.set(st.feed.slice(-6).map((f) => ({ text: f.text, color: TONE[f.tone] })));
     this.score.setText(`Score ${st.score.total}    Time left ${mmss(st.deadlineTick - tick)}${st.expired ? '  OVERRUN' : ''}`).setColor(st.expired ? '#ff6b6b' : COLOR.text);
@@ -121,7 +124,7 @@ export class StageHud {
       const rows = Object.entries(st.score.breakdown).filter(([, v]) => v !== 0).map(([k, v]) => `${k.replace('_', ' ')}: ${v > 0 ? '+' : ''}${v}`);
       const isHost = session.snapshot?.hostId === localId;
       const next = isHost ? 'Press N for the next stage' : 'Waiting for the host to start the next stage';
-      this.result.setText(['RELAY CORE STABILISED', '', `Final score ${st.score.total}`, `Cleared in ${mmss(st.tick)}`, '', ...rows, '', next].join('\n'));
+      this.result.setText([minimal ? 'YOU ESCAPED' : 'RELAY CORE STABILISED', '', `Final score ${st.score.total}`, `Cleared in ${mmss(st.tick)}`, '', ...rows, '', next].join('\n'));
       this.resultBg.setSize(620, this.result.height + 64); // the panel always fits its text
     }
   }
