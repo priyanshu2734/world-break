@@ -1,6 +1,7 @@
 import { ARENA, type RoomArena, type RoomDef, type RoomGraph } from '@wb/shared';
-import { StageDefSchema, type StageDef, type StageDefInput } from '../systems/stageDef';
+import { StageDefSchema, type StageDef } from '../systems/stageDef';
 import type { EscapeSpec } from './escapeSpec';
+import { bareEscapeStage } from './stageBase';
 
 /**
  * P3D developer stages. Both are dark, have no objectives and no hazards, and are cleared by reaching the exit.
@@ -59,13 +60,7 @@ export const DEMO_AT = {
 } as const;
 export const DEMO_CODE = '4815';
 
-const SCORING = { timeBonusPerSecond: 1, expiredPenalty: 200, expiredDrainPerSecond: 1, wrongTargetPenalty: 25, overloadPenalty: 100, hazardHitPenalty: 75 };
-/** The skeleton of a stage that has no objectives, failures, power grid or hazards: only rooms, parts and an exit. */
-const bare = (id: string, name: string, graph: RoomGraph): Omit<StageDefInput, 'items' | 'stashes' | 'escape'> => ({
-  id, name, arenaId: graph.start, deadlineTicks: 20 * 60 * 20, loadout: [],
-  failures: [], edges: [], breakpoints: [], power: { capacity: 1, nodes: [], conduits: [], faultBindings: [] },
-  entities: [], objectives: [], hazards: [], clues: [], scoring: SCORING, dark: true, rooms: graph,
-});
+const bare = bareEscapeStage;
 
 const demoEscape: EscapeSpec = {
   exit: DEMO_AT.exit,

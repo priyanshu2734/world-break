@@ -64,7 +64,8 @@ export function validateRoomGraph(g: RoomGraph): string[] {
       if (!stands(a.solids, d.x + d.w / 2, d.y + d.h)) err(`door ${d.id} does not stand on a solid`);
       const target = byId.get(d.to);
       if (!target) { err(`door ${d.id} leads to unknown room ${d.to}`); continue; }
-      if (target.id === r.id) err(`door ${d.id} leads back into its own room`);
+      // a door may lead into its own room only as one side of a GATE: the other side is another door of that room (a wall between them)
+      if (target.id === r.id && r.doors.filter((x) => x.to === r.id).length < 2) err(`door ${d.id} leads back into its own room (a gate needs two doors)`);
       if (!target.doors.some((back) => back.to === r.id)) err(`door ${d.id}: room ${target.id} has no door back to ${r.id}`);
       const t = target.arena;
       if (!stands(t.solids, d.arrive.x, d.arrive.y) || d.arrive.x < HALF_W || d.arrive.x > t.width - HALF_W) err(`door ${d.id}: the arrival point does not stand on a solid in ${target.id}`);

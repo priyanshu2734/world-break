@@ -105,7 +105,7 @@ export class StageEngine {
     const errors = validateStageDef(def, opts.arena ?? ARENA);
     if (errors.length) throw new Error(`Invalid stage "${def.id}":\n - ${errors.join('\n - ')}`);
     this.revBase = opts.revBase ?? 0;
-    this.darkAmbient = def.dark === true ? ambientFor(opts.difficulty ?? 'easy', opts.stage ?? 1) : null;
+    this.darkAmbient = def.dark === true ? Math.max(ambientFor(opts.difficulty ?? 'easy', opts.stage ?? 1), def.ambientMin ?? 0) : null;
     this.arena = opts.arena ?? ARENA;
     this.abilities = def.abilities ? new AbilitySystem(def.abilities, this.abilityHost()) : null;
     this.order = topoOrder(def.failures, def.edges)!;
@@ -125,7 +125,7 @@ export class StageEngine {
     for (const e of def.entities) if (e.kind === 'power_switch') this.switchClosed.set(e.id, e.initiallyClosed);
     for (const o of def.objectives) this.objRt.set(o.id, { status: 'locked', hold: 0 });
     for (const id of playerIds) this.addPlayer(id);
-    this.say('The relay has gone cold. Find out why.', 'info');
+    if (!def.escape) this.say('The relay has gone cold. Find out why.', 'info'); // an escape stage has its own story: the goal line
     if (this.disaster) this.say(this.disaster.message(), 'warn');
     this.refreshObjectiveLocks();
   }

@@ -179,6 +179,8 @@ export const StageDefSchema = z.object({
   stashes: z.array(StashDefSchema).max(ITEM_LIMITS.maxStashesPerStage).optional(),
   /** P3D (additive, optional): the stage is played in the dark (published as `StageState.darkness`). Omitted = lit, as before. */
   dark: z.boolean().optional(),
+  /** P3D step 5 (additive, optional): the published ambient is never below this fraction (the escape tutorial is lit more than the table says). */
+  ambientMin: z.number().min(0).max(1).optional(),
   /** P3D (additive, optional): the stage is a chain of rooms. `arenaId` must be the start room's arena; stage content (items, entities) lives in the start room until step 3 adds per-room content. */
   rooms: RoomGraphSchema.optional(),
   /** P3D (additive, optional): doors with locks, keypads, safes, clues, switches and an exit. Needs `rooms`. Cleared by reaching the exit. */

@@ -21,6 +21,8 @@ export class Session {
   stage: StageState | null = null;
   /** P3D: the layout of every room this player has been told about, by room id (= arena id). Only rooms the server sent are known. */
   readonly layouts = new Map<string, RoomLayout>();
+  /** Counts every layout received: the server re-sends the layout of the room you are in whenever a door moves you, even within one room (a gate). */
+  layoutSeq = 0;
   /** P3D: clue text this player has read (it is never in the public state; only the reader gets it). */
   readonly notes: { id: string; text: string }[] = [];
   /** Result of the most recent action, for HUD feedback. */
@@ -39,7 +41,7 @@ export class Session {
     });
     this.socket.on('room:layout', (raw) => {
       const parsed = RoomLayoutSchema.safeParse(raw);
-      if (parsed.success) this.layouts.set(parsed.data.roomId, parsed.data);
+      if (parsed.success) { this.layouts.set(parsed.data.roomId, parsed.data); this.layoutSeq++; }
     });
     this.socket.on('stage:state', (raw) => {
       const parsed = StageStateSchema.safeParse(raw);

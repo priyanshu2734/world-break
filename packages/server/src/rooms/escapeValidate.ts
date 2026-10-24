@@ -93,6 +93,14 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
     return side;
   };
   const sides = spec.links.map((_, n) => nearSide(n));
+  // A GATE is a door whose two sides are in the same room (a wall between them): there, near side also means "left of the gate".
+  const gateLimit = spec.links.map((l) => {
+    const a = doors.get(l.doors[0]), b = doors.get(l.doors[1]);
+    if (!a || !b || a.room !== b.room) return null;
+    const room = rooms.get(a.room)!;
+    const xs = l.doors.map((id) => room.doors.find((d) => d.id === id)!.x);
+    return { room: a.room, x: Math.min(...xs) };
+  });
 
   // ---- never the same lock type twice in a row (two links that meet in a room)
   for (const r of graph.rooms) {
@@ -111,33 +119,35 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
   const digitsOf = (ids: readonly string[]): string => ids.map((id) => (clueById.get(id)?.text.match(/[0-9]/g) ?? []).join('')).join('');
   const genuine = (i: Item) => i.decoy !== true;
   const safeKeys = new Set(spec.safes.map((s) => s.contains).filter((x): x is string => x !== undefined));
-  const free = (kind: string, side: Set<string>) => items.filter((i) => i.kind === kind && genuine(i) && !safeKeys.has(i.id) && side.has(itemRoom(i)));
+  const free = (kind: string, side: Set<string>, gate: { room: string; x: number } | null = null) =>
+    items.filter((i) => i.kind === kind && genuine(i) && !safeKeys.has(i.id) && side.has(itemRoom(i)) && !(gate && itemRoom(i) === gate.room && i.x >= gate.x));
   const needsKind = (l: Lock): 'access_key' | 'battery' | null => (l.type === 'key_item' ? 'access_key' : l.type === 'power' ? 'battery' : null);
 
   spec.links.forEach((l, n) => {
     const side = sides[n]!, lock = l.lock, tag = `link ${n} (${lock.type})`;
-    const inSide = (room: string) => side.has(room);
+    const gate = gateLimit[n];
+    const inSide = (room: string, x?: number) => side.has(room) && !(gate && room === gate.room && x !== undefined && x >= gate.x);
     const needClues = (ids: readonly string[], code: string) => {
       for (const id of ids) {
         const c = clueById.get(id);
         if (!c) err(`${tag}: unknown clue ${id}`);
-        else if (!inSide(c.room)) err(`${tag}: clue ${id} is beyond the door it is meant to open`);
+        else if (!inSide(c.room, c.x)) err(`${tag}: clue ${id} is beyond the door it is meant to open`);
       }
       if (digitsOf(ids) !== code) err(`${tag}: the digits in its clues (${digitsOf(ids)}) do not spell the code ${code}`);
     };
     if (lock.type === 'key_item' || lock.type === 'power') {
       const kind = needsKind(lock)!;
       const needed = spec.links.filter((m, k) => needsKind(m.lock) === kind && [...sides[k]!].every((r) => side.has(r))).length;
-      if (free(kind, side).length < needed) err(`${tag}: only ${free(kind, side).length} ${kind} on its near side for ${needed} lock(s) that need one`);
+      if (free(kind, side, gate ?? null).length < needed) err(`${tag}: only ${free(kind, side, gate ?? null).length} ${kind} on its near side for ${needed} lock(s) that need one`);
     } else if (lock.type === 'code') {
       const k = spec.keypads.find((x) => x.id === lock.keypadId);
       if (!k) err(`${tag}: unknown keypad ${lock.keypadId}`);
-      else if (!inSide(k.room)) err(`${tag}: its keypad is beyond the door`);
+      else if (!inSide(k.room, k.x)) err(`${tag}: its keypad is beyond the door`);
       needClues(lock.clueIds, lock.code);
     } else if (lock.type === 'two_person') {
       const a = spec.switches.find((x) => x.id === lock.switchA), b = spec.switches.find((x) => x.id === lock.switchB);
       if (!a || !b || a.id === b.id) { err(`${tag}: needs two different known switches`); return; }
-      if (!inSide(a.room) || !inSide(b.room)) err(`${tag}: a switch is beyond the door`);
+      if (!inSide(a.room, a.x) || !inSide(b.room, b.x)) err(`${tag}: a switch is beyond the door`);
       if (a.room !== b.room) err(`${tag}: both switches must be in one room (a lone player runs between them)`);
       // one person must reach the second switch before the first one goes dark: a conservative walking-time bound
       const ticks = Math.abs(a.x - b.x) / (MOVE_SPEED * TICK_DT) + (Math.abs(a.y - b.y) / 100) * 20;
@@ -145,7 +155,7 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
     } else {
       const s = spec.safes.find((x) => x.id === lock.safeId);
       if (!s) { err(`${tag}: unknown safe ${lock.safeId}`); return; }
-      if (!inSide(s.room)) err(`${tag}: its safe is beyond the door`);
+      if (!inSide(s.room, s.x)) err(`${tag}: its safe is beyond the door`);
       needClues(s.clueIds, s.code);
       const key = items.find((i) => i.id === s.contains);
       if (!key || key.kind !== 'access_key' || !genuine(key)) err(`${tag}: its safe must hold a genuine access_key`);
@@ -165,6 +175,7 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
   for (const i of items) {
     if (i.hidden && !i.hidden.stashId && !safeKeys.has(i.id)) err(`item ${i.id} is hidden but nothing reveals it`);
   }
+  for (const h of spec.hidingSpots ?? []) { claim(h.id, 'hiding spot'); standing(h.id, 'hiding spot', h.room, h.x, h.y); }
   if (!rooms.has(spec.exit.room)) err(`exit room ${spec.exit.room} does not exist`);
   return errs;
 }

@@ -1,6 +1,6 @@
 # Rooms (P3D)
 
-Status: steps 2 and 3 (room graph, per-room arenas, camera, doors with locks, keypads, safes, clues, switches, exit). Server-side vision and the seeded generator arrive in steps 4 and 5; this file is extended then.
+Status: P3D complete (rooms, camera, doors with locks, keypads, safes, clues, switches, exit, server-side vision, minimal HUD, and the seeded generator that builds every stage). Everything in the tables below is enforced in code and covered by tests; the source of each number is named.
 
 ## Limits (`shared/src/rooms/limits.ts`)
 
@@ -50,7 +50,7 @@ Never the same lock type on two neighbouring doors. Decoys (a cracked key or bat
 | Switch hold | 120 ticks (6 s) |
 | Escape intents per player | at least 4 ticks apart (refused ones count) |
 | Exit zone | 60 x 100 px; the first connected player inside clears the stage |
-| Authoring bounds | at most 5 doors, 12 clues, 5 keypads, 5 safes, 10 switches per stage |
+| Authoring bounds | at most 5 doors, 20 clues, 5 keypads, 5 safes, 10 switches, 12 hiding spots per stage (`ESCAPE_LIMITS`); at most 12 parts per stage (P3C `ITEM_LIMITS`) |
 
 ## What a refusal reveals
 
@@ -76,3 +76,40 @@ Reaching the exit alive clears the stage for the whole team (the others come bac
 
 Reach drops 1 px per stage to its floor. A thing is in view in the viewer's own room, inside the reach, with a clear line from the eye past every solid and every closed door. Everything not in view is not in the message the player receives
 (`server/src/rooms/view.ts`). A teammate is on the team list always (name, slot, connection) but is in the snapshot only when in view, and nobody ever receives another player's hands. Refusals for things out of view equal refusals for nonexistent things.
+
+## The generator (step 5)
+
+`generateEscapeStage(stage, seed)` (`server/src/rooms/generate.ts`) builds EVERY stage of an escape run. It is deterministic in `(stage, seed)` (the run seed is derived per stage), so a stage can be replayed and the loop is endless: only the room count grows, and it is capped at 6.
+With `ESCAPE_STAGES` on (the dev server default) `Room.buildEngine` uses it for stage 1 and for every stage after a cleared one; with `ESCAPE_STAGES=0` the previous stage 1 and generators are used and none of this code runs.
+
+| Stage | Rooms | Doors | Lock types that may appear | Decoys | Ghost hiding spots (P3E placeholders) |
+|---|---|---|---|---|---|
+| 1 | 1 | 1 (a gate in a wall) | key | none | none |
+| 2 | 1 | 1 (a gate) | key, code | 1 per key/battery lock, 1 decoy note per code lock | 1 per room |
+| 3-5 | 2 | 1 | key, code, power | 1 | 1 per room |
+| 6 | 2 | 1 | + two-person | 1 | 1 per room |
+| 7-9 | 3 | 2 | key, code, power, two-person | 2 (within the 12-part cap) | 1 per room |
+| 10-14 | 3 | 2 | + safe (all five) | 2 | 1 per room |
+| 15-24 | 4 | 3 | all five | 2 | 2 per room |
+| 25-39 | 5 | 4 | all five | 2 | 2 per room |
+| 40 and up | 6 | 5 | all five | 2 | 2 per room |
+
+(`roomCountForStage`, `locksForStage`, `decoysForStage`, `hidingSpotsForStage` in `shared/src/rooms/tables.ts`.) Never the same lock type on two neighbouring doors; stage 1 is always a key.
+
+**Stage 1, the tutorial.** One 1920 px room, no platforms. A wall runs floor to ceiling at x 1380 with a gate set into it (two doors of the same room, one on each side). The only lock is a key. The key is hidden in a locker that is always within sight of every spawn slot (x at most 700); the exit is in the alcove behind the wall. The ambient is never below 45 percent (`TUTORIAL_AMBIENT_MIN`, `StageDef.ambientMin`), brighter than any stage 1 of the ambient table. No decoys, clues, switches or hiding spots: one thing at a time.
+
+**Every other stage.** Rooms 1920, 2240 or 2560 px wide and 720 px high, a floor and 0 to 3 platforms in an ascending staircase (each step 90 px higher, 60 to 95 px gap: every platform is one jump from the one before). A door pair joins each pair of rooms at the floor ends. Everything a lock needs lies on its near side: keys, batteries, keypads, safes and switches in the door's own room, clue notes in that room or the one before (a short walk back), a safe's key inside the safe, switches 260 to 800 px apart so one player can run between them inside the 6 s hold. Clue digits spell the code exactly (`validateEscape` checks it).
+
+| Tuning knob | Where | Value |
+|---|---|---|
+| Ambient | `shared/src/rooms/ambient.ts` | 30/20/10 percent at stage 1 (Easy/Intermediate/Hardcore), minus 1 point per stage, floors 10/5/2 |
+| Vision and flashlight reach | `shared/src/rooms/vision.ts` | 460/430/400 px at stage 1, minus 1 px per stage, floors 340/320/300 |
+| Rooms, locks, decoys, hiding spots by stage | `shared/src/rooms/tables.ts` | table above |
+| Room size and doors | `shared/src/rooms/limits.ts` | see the limits table |
+| Lockout, hold times, reach, delays | `shared/src/rooms/escape.ts` (`ESCAPE_LIMITS`) | see the interaction table |
+| Stage time | `generate.ts` | (5 + 3 x rooms) minutes |
+
+## How solvability is shown
+
+1. By construction (above), then `validateStageDef` (which runs `validateRoomGraph` and `validateEscape`) must pass before a stage is returned; an attempt that fails is replaced by the next derived attempt, and the tests assert the first attempt is always valid (840 stage and seed pairs over 21 stage numbers, 5,700 in a wider scan during development).
+2. By play: `server/test/rooms/solver.ts` reads the private definition and plays the stage through the public Room API with the REAL movement function (walking, falling, hopping platform to platform by look-ahead, lockers, notes, codes, switches, E on doors), asserting at most 2 hand slots. `solve.test.ts` plays 240 early stages (40 run seeds x stages 1 to 6), 96 stages across the table up to stage 1,000,000, and 81 co-op stages with 2, 3 and 4 players, and requires all five lock types to be solved alone and the two-person lock to be lit by two different players.

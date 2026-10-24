@@ -68,6 +68,7 @@ export class GameScene extends Phaser.Scene {
   /** What E would act on this frame (null = nothing in reach). */
   private escapeNearest: EscapeUse | null = null;
   private notesStage = -1;
+  private layoutSeenSeq = 0;
   private readonly defaultHint = 'A/D move  W/Space jump  E use/pick up  1-5 tools  6-9 abilities (mouse aims, Shift = alt)  Q cancel  hold R reset (host)';
   private prevItems: import('@wb/shared').ItemsPublic | undefined;
   /** Rendered feet position of every player this frame (parts hover above their carrier; hand-overs pick the nearest teammate). */
@@ -278,6 +279,10 @@ export class GameScene extends Phaser.Scene {
     // --- P3B/P3D: the arena the local player is simulated in. The server may switch arena between stages (the Ability Lab), and on a
     //     multi-room stage each player is in one room, whose layout the server sent to this player only. Unknown yet = wait, do not guess. ---
     const myRoom = me?.roomId;
+    if (this.layoutSeenSeq !== s.layoutSeq) { // a door just moved the player (a gate moves them within one room): predict afresh from the server's position
+      this.layoutSeenSeq = s.layoutSeq;
+      if (myRoom !== undefined) this.predictor.stop();
+    }
     const wantArena = pickArena(myRoom, g.arenaId, s.layouts);
     if (wantArena && wantArena.id !== this.arenaId) {
       this.arenaId = wantArena.id;
@@ -373,7 +378,9 @@ export class GameScene extends Phaser.Scene {
     // P3C hand-over and loss feedback: said to both people involved, from the public state alone
     const heard = carryChanges(this.prevItems, st?.items, s.playerId, (id) => g.players.find((x) => x.id === id)?.name ?? 'A teammate');
     this.prevItems = st?.items;
-    if (heard.length) s.notice = { text: heard.join(' '), ok: true, at: performance.now() };
+    // on an escape stage a part only leaves your hands when a lock takes it, and the lock says so itself: no generic "is gone"
+    const lines = st?.escape ? heard.filter((h) => !h.endsWith(' is gone.')) : heard;
+    if (lines.length) s.notice = { text: lines.join(' '), ok: true, at: performance.now() };
     if (contentHere) this.worldView.update(g, delta);
     else { const { world: _unused, ...noWorld } = g; void _unused; this.worldView.update(noWorld, delta); }
     if (this.pad.isOpen) this.drainKeys(); // typing into the pad must not trigger tools or abilities afterwards

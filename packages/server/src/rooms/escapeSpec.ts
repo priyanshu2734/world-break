@@ -34,5 +34,10 @@ export const EscapeSpecSchema = z.object({
   })).max(ESCAPE_LIMITS.maxSafes),
   clues: z.array(z.object({ id: Id, room: Id, ...Pt, label: z.string().max(24).default('Note'), text: z.string().min(1).max(200) })).max(ESCAPE_LIMITS.maxClues),
   switches: z.array(z.object({ id: Id, room: Id, ...Pt })).max(ESCAPE_LIMITS.maxSwitches),
+  /**
+   * Placeholder hiding spots for the ghost (P3E). Server-private and inert in P3D: nothing reads them yet except the validator
+   * (they must stand on a solid). They are never published.
+   */
+  hidingSpots: z.array(z.object({ id: Id, room: Id, ...Pt, kind: z.enum(['closet', 'vent']) })).max(ESCAPE_LIMITS.maxHidingSpots).optional(),
 });
 export type EscapeSpec = z.infer<typeof EscapeSpecSchema>;

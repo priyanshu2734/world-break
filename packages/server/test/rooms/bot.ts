@@ -41,7 +41,8 @@ export class Team {
   }
 }
 
-const surfaceUnder = (a: Arena, b: PlayerBody): Rect | undefined => a.solids.find((s) => Math.abs(s.y - b.y) < 1.5 && b.x >= s.x && b.x <= s.x + s.w);
+/** The surface the body stands on. The body is 28 px wide and is supported while ANY part of it overlaps the surface, like the sim. */
+const surfaceUnder = (a: Arena, b: PlayerBody): Rect | undefined => a.solids.find((s) => Math.abs(s.y - b.y) < 1.5 && b.x + 14 > s.x && b.x - 14 < s.x + s.w);
 
 /**
  * Looks ahead with the REAL movement function (`stepBody`) for a jump from this exact body state that lands on `target`.
@@ -95,7 +96,14 @@ export class Bot {
       if (b.grounded && here === goal && Math.abs(b.x - x) <= tol) { this.act(NEUTRAL); return; }
       if (!b.grounded || !here || here === goal || goal.y >= here.y) {
         // same surface, or the goal is level or below: walk toward it (walking off an edge is a fall)
-        this.act({ moveX: Math.abs(b.x - x) <= 4 ? 0 : Math.sign(x - b.x), jump: false });
+        let aimX = x;
+        // the goal is right under the platform we stand on: walk off its nearer edge first
+        if (b.grounded && here && here !== goal && goal.y > here.y && x >= here.x && x <= here.x + here.w) {
+          aimX = Math.abs(b.x - (here.x - 20)) <= Math.abs(b.x - (here.x + here.w + 20)) ? here.x - 20 : here.x + here.w + 20;
+        }
+        // in the air keep going the way we were going (turning back in mid-fall can land us right back where we left)
+        const dir = !b.grounded && b.vx !== 0 ? Math.sign(b.vx) : Math.abs(b.x - aimX) <= 4 ? 0 : Math.sign(aimX - b.x);
+        this.act({ moveX: dir, jump: false });
         continue;
       }
       // the goal is higher: hop to the surface that gets closest to it
@@ -104,9 +112,12 @@ export class Bot {
       let found: InputIntent[] | null = null;
       for (const s of options) { found = planHop(b, arena, s); if (found) { tried.clear(); break; } tried.add(s); }
       if (!found) {
-        // step sideways toward the nearest option to find a better take-off point
+        // no hop from here (typically: standing right under the platform). Step out to the nearer side of the nearest option and try again.
         const aim = options[0] ?? goal;
-        this.act({ moveX: Math.sign(aim.x + aim.w / 2 - b.x) || 1, jump: false });
+        const left = aim.x - 30, right = aim.x + aim.w + 30;
+        const aimX = Math.abs(b.x - left) <= Math.abs(b.x - right) ? left : right;
+        tried.clear();
+        this.act({ moveX: Math.abs(aimX - b.x) < 4 ? 0 : Math.sign(aimX - b.x), jump: false });
         if (n > maxTicks - 5) throw new Error(`cannot reach (${x}, ${y})`);
         continue;
       }

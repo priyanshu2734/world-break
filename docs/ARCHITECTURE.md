@@ -212,7 +212,7 @@ Not implemented: generator items (item 7 of the P3C prompt): no generated stage 
 Not covered by automation: the Phaser drawing and key wiring (`ItemHud`, `ItemMarkers`, `itemDraw`, `GameScene`); only the pure view-model `itemView.ts` is unit-tested.
 Ownership: `server/src/salvage/**`, `shared/src/salvage/**` and `client/src/ui/{itemView,itemDraw,ItemHud,ItemMarkers}.ts` belong to P3C; later phases extend them additively.
 
-## P3D rooms (steps 1, 1B, 2, 3 and 4 done; step 5 pending, see docs/handoffs/P3D.md when written)
+## P3D rooms (steps 1, 1B, 2, 3, 4 and 5 done: see docs/handoffs/P3D.md when written)
 
 * **Darkness (steps 1, 1B).** `shared/src/rooms/ambient.ts` is the ambient table (a stage and mode value, never a player setting). A stage def with `dark: true` publishes `StageState.darkness.ambient`
   (optional, additive). The client (`ui/Darkness.ts`, `ui/darkParam.ts`) draws a screen-fixed dark layer with a radius light and a flashlight cone, clips depth 5 to 9 world objects to the light with a geometry
@@ -289,3 +289,14 @@ Parity is proven by `server/test/rooms/sim.test.ts` (server step equals `stepBod
   player's own view contains), the 2 hand slots stay, the NOTES panel stays. Doors you cannot see are drawn neutral (cyan): the server only tells you a door's state while you can see it. Safes pulse faintly (lockers already did) and "E open" prompts appear within reach;
   items win the single prompt slot over doors, keypads, notes and switches. Escape stages never get the default reality abilities (`Room.buildEngine`).
 * **Known limit.** The server does not know where the flashlight points (aim is client-side), so it publishes everything within the vision radius and line of sight, not only the cone. Sending the aim angle with input would let it publish the cone only; not done here.
+
+### P3D step 5: the generator, the endless loop, validation
+
+* **Every stage is generated** (`server/src/rooms/generate.ts`, tables in `shared/src/rooms/tables.ts`). With `ESCAPE_STAGES` on, `Room.buildEngine` calls `generateEscapeStage(stage, seed)` for stage 1 and for every stage after a cleared one (`room.nextStage` is unchanged: it increments the
+  stage number and builds the next engine). The dev stages (`/?rooms=1`, `/?rooms=2`, `/?lab=1`) still replace stage 1 only. If a generated stage ever failed validation or engine construction, `Room` recovers with a generated stage 1 (never "no stage"); the tests show it does not happen.
+  `ESCAPE_STAGES=0` (or `createGameServer` without `escapeStages`, the default for every existing test) skips all of this and plays the previous stage 1 and generators.
+* **Gates.** A single-room stage needs a "door" and an exit in one room: a wall from floor to ceiling with two doors of the SAME room on either side. `validateRoomGraph` allows a door into its own room only when the room has two such doors; `GameSim.sendThrough` then moves the player within the room and the client
+  restarts prediction (`Session.layoutSeq`). `validateEscape` treats everything left of the gate as the near side.
+* **Stage state additions.** `StageDef.ambientMin` (the tutorial's brightness floor, applied where the engine publishes `darkness`), `EscapeSpec.hidingSpots` (server-private, inert, never published, for the ghost), `ESCAPE_LIMITS.maxClues` is 20 (a 6-room stage can hold 13 real notes).
+* **Validation.** `validateEscape` now also checks gate near sides and hiding spots; the generator calls the full `validateStageDef` on every attempt. The real-physics solver is `server/test/rooms/solver.ts` (test code, not shipped): it plays any generated stage with real input.
+* **Not generated here.** Breather and Major Breach stages (GAMEPLAY.md section 4) are not implemented; escape stages have no disasters, abilities or tools; the ghost and death are P3E and later.
