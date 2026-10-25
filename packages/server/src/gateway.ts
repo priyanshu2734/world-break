@@ -16,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean; ghostStages?: boolean } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -24,6 +24,8 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(http, {
     cors: { origin: opts.corsOrigin ?? 'http://localhost:5173' },
   });
+  // P3E: the ghost. Off unless the caller says so or the server is started with GHOST_STAGES=1 (config.ts and main.ts are outside this phase's file list, so the variable is read here).
+  const ghostOn = opts.ghostStages ?? process.env.GHOST_STAGES === '1';
   const rooms = new RoomManager({ briefingTicks: opts.briefingTicks, huntStage: opts.huntStage });
   // socket.id -> membership. playerId is a server-issued opaque id, never client-chosen.
   const sessions = new Map<string, { playerId: string; roomCode: string }>();
@@ -53,7 +55,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
       // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
       if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true, ghost: opts.escapeStages === true && ghostOn });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);
@@ -84,7 +86,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!s) return;
       const p = GameInputSchema.safeParse(payload);
       if (!p.success) return;
-      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump });
+      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump }, { ...(p.data.aim !== undefined ? { aim: p.data.aim } : {}), ...(p.data.sneak !== undefined ? { sneak: p.data.sneak } : {}) });
     });
     // P2: stage actions (interact / tool use / cancel). Validated by Zod here, by the engine for rules.
     socket.on('stage:action', (payload, ack) => {

@@ -5,6 +5,7 @@ import { WorldPublicSchema } from './abilities/world';
 import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
+import { AimSchema, GhostPublicSchema } from './ghost';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -48,6 +49,10 @@ export const GameInputSchema = z.object({
   seq: z.number().int().min(0).max(2_000_000_000),
   moveX: z.number().min(-1).max(1),
   jump: z.boolean(),
+  /** P3E (additive, optional): where the player aims the flashlight and the Pulse Gun, quantised to 0..255 (see `quantiseAim`). Absent = unknown. */
+  aim: AimSchema.optional(),
+  /** P3E (additive, optional): Shift held. The server trusts it only for crouching in place; how loud a move is comes from the move axis it applied. */
+  sneak: z.boolean().optional(),
 });
 export type GameInput = z.infer<typeof GameInputSchema>;
 
@@ -88,6 +93,8 @@ export const GameSnapshotSchema = z.object({
    * team panel reads this instead: every teammate's name, slot and connection, never a position or an inventory. Absent on other stages.
    */
   team: z.array(z.object({ id: z.string(), name: z.string(), slot: z.number().int().min(0), connected: z.boolean() })).max(MAX_PLAYERS).optional(),
+  /** P3E (additive, optional): the ghosts THIS player can see (at most 2). Absent = none in view (a ghost out of view is never in the message). */
+  ghosts: z.array(GhostPublicSchema).max(2).optional(),
 });
 export type GameSnapshot = z.infer<typeof GameSnapshotSchema>;
 

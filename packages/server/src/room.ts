@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, getArena, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, getArena, ghostPresentOnStage, ghostTypesForStage, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -15,6 +15,8 @@ import { LOCK_SAMPLER_STAGE, ROOMS_DEMO_STAGE } from './rooms/demoStage';
 import { generateEscapeStage } from './rooms/generate';
 import type { EscapeResult } from './rooms/escape';
 import { restrictedView, type RestrictedView } from './rooms/view';
+import { GhostSystem, type GhostEvent, type GhostPlayer } from './ghost';
+import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
 
@@ -42,6 +44,8 @@ export class Room {
   private engine: StageEngine | null = null;
   private briefingTicksLeft = 0;
   private stageRec: StageRecord | null = null;
+  /** P3E: the ghost of the current stage (null when the option is off, on stage 1, or on a stage that is not an escape stage). */
+  private ghost: GhostSystem | null = null;
 
   /**
    * `runSeed` is the root of every stage seed of this run (server-side only). It defaults to a pure function of the
@@ -55,8 +59,12 @@ export class Room {
      * P3B dev option `lab`: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation).
      * P3C option `hunt`: stage 1 is the salvage hunt instead of the tutorial. `lab` wins when both are set.
      */
-    private readonly opts: { lab?: boolean; hunt?: boolean; rooms?: boolean | 2; escape?: boolean } = {},
-  ) {}
+    private readonly opts: { lab?: boolean; hunt?: boolean; rooms?: boolean | 2; escape?: boolean; ghost?: boolean; startStage?: number } = {},
+  ) {
+    // P3E dev/test option: begin the run at this stage (so the ghost can be met without playing the stages before it)
+    const s0 = opts.startStage;
+    if (s0 !== undefined && Number.isSafeInteger(s0) && s0 >= 1) { this.stage = s0; this.highestStage = s0; }
+  }
 
   /** True for a room created as an Ability Lab room. Only stage 1 is the Lab; stage 2+ are the normal endless stages. */
   get isLab(): boolean { return this.opts.lab === true; }
@@ -115,17 +123,26 @@ export class Room {
       const g = this.engine?.def.rooms, p = this.sim?.positionOf(id), rid = this.sim?.roomOf(id);
       const room = g && rid ? roomById(g, rid) : undefined;
       if (!p || !room || !this.engine) return false;
-      return pointVisible(room, { x: p.x, y: p.y - EYE_HEIGHT }, { x, y }, this.engine.openDoorIds(), visionRadius(this.difficulty, this.stage));
+      const eye = { x: p.x, y: p.y - EYE_HEIGHT }, radius = visionRadius(this.difficulty, this.stage);
+      if (!pointVisible(room, eye, { x, y }, this.engine.openDoorIds(), radius)) return false;
+      const aim = this.coneVision ? this.sim?.aimOf(id) ?? null : null; // P3E: with the ghost option the view is the lit region; the same rule cuts refusals
+      return aim === null || inLitRegion(eye, aim, { x, y }, radius);
     },
   };
 
   /** P3D step 4: on an escape stage each player is sent their own restricted view (never a broadcast). Other stages broadcast as before. */
   get restrictsViews(): boolean { return !!this.engine?.def.escape && !!this.engine.def.rooms; }
+  /** P3E: with the ghost option on, what a player sees is cut to their lit region once their aim is known (otherwise the P3D radius). */
+  private get coneVision(): boolean { return this.opts.ghost === true; }
   /** The restricted snapshot and stage state for one player (null when no escape stage is running). Spectators reuse `restrictedView`. */
   viewFor(playerId: string): RestrictedView | null {
     const e = this.engine, snapshot = this.gameSnapshot();
     if (!e || !snapshot || !e.def.escape || !e.def.rooms) return null;
-    return restrictedView({ snapshot, stage: e.state(), graph: e.def.rooms, radius: visionRadius(this.difficulty, this.stage) }, { eyes: playerId, self: playerId });
+    const ghosts = this.ghost?.publicGhosts();
+    return restrictedView(
+      { snapshot, stage: e.state(), graph: e.def.rooms, radius: visionRadius(this.difficulty, this.stage), ...(ghosts ? { ghosts } : {}) },
+      { eyes: playerId, self: playerId, ...(this.coneVision ? { aim: this.sim?.aimOf(playerId) ?? null } : {}) },
+    );
   }
 
   /** P3D: layouts waiting to be sent, each to ONE player. */
@@ -143,7 +160,32 @@ export class Room {
     if (this.sim) this.sim.touchDoors = !engine.def.escape; // an escape stage opens doors with E, not by touch
     const g = engine.def.rooms;
     if (g) for (const m of this.members.values()) this.layoutQueue.push({ playerId: m.id, layout: layoutOf(roomById(g, g.start)!) });
+    this.bindGhost(engine);
   }
+
+  /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
+  private bindGhost(engine: StageEngine): void {
+    this.ghost = null;
+    const graph = engine.def.rooms;
+    if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
+    const seed = deriveSeed(this.stageRec?.seed ?? this.runSeed, 'ghost', this.stage);
+    const sim = this.sim;
+    this.ghost = new GhostSystem(
+      { stage: this.stage, seed, difficulty: this.difficulty, graph, visionRadius: visionRadius(this.difficulty, this.stage), types: ghostTypesForStage(this.stage, seed & 1) },
+      {
+        get tick() { return sim.tick; },
+        players: (): GhostPlayer[] => sim.senses().filter((s) => s.roomId !== null).map((s) => ({
+          id: s.id, name: s.name, roomId: s.roomId!, x: s.x, y: s.y, connected: s.connected, moveX: s.moveX,
+          crouch: s.sneak && Math.abs(s.moveX) <= 0.4, aim: s.aim, facing: s.facing, hidden: false, captured: false,
+        })),
+        openDoorIds: () => engine.openDoorIds(),
+      },
+    );
+  }
+  /** P3E: the ghost of the current stage (server side only), for tests and the next steps. */
+  get ghostSystem(): GhostSystem | null { return this.ghost; }
+  /** P3E: ghost events logged since the last call. */
+  drainGhostEvents(): GhostEvent[] { return this.ghost?.drainEvents() ?? []; }
   /** P3D: layouts to deliver (each to its player only). Empty on single-arena stages. */
   drainLayouts(): { playerId: string; layout: RoomLayout }[] { const q = this.layoutQueue; this.layoutQueue = []; return q; }
 
@@ -256,6 +298,7 @@ export class Room {
     } else if (this.phase === 'playing') {
       this.sim.step();
       this.engine?.step(this.pos);
+      this.ghost?.step();
       for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       if (this.engine?.status === 'stabilized') {
         this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
@@ -266,11 +309,11 @@ export class Room {
   }
 
   /** Movement intent from a player. Accepted only while playing. */
-  submitInput(id: string, seq: number, input: InputIntent): boolean {
+  submitInput(id: string, seq: number, input: InputIntent, extra?: InputExtra): boolean {
     if (this.phase !== 'playing' || !this.sim) return false;
     const m = this.members.get(id);
     if (!m || !m.connected) return false;
-    return this.sim.queueInput(id, seq, input);
+    return this.sim.queueInput(id, seq, input, extra);
   }
 
   /**
@@ -375,7 +418,7 @@ export class RoomManager {
 
   constructor(private readonly opts: { briefingTicks?: number; huntStage?: boolean } = {}) {}
 
-  create(opts: { lab?: boolean; hunt?: boolean; rooms?: boolean | 2; escape?: boolean } = {}): Room {
+  create(opts: { lab?: boolean; hunt?: boolean; rooms?: boolean | 2; escape?: boolean; ghost?: boolean; startStage?: number } = {}): Room {
     let code: string;
     do {
       code = Array.from({ length: ROOM_CODE_LENGTH }, () => ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)]).join('');

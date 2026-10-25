@@ -1,5 +1,5 @@
 import {
-  ARENA, NEUTRAL_INPUT, ROOM_LIMITS, TICK_DT, doorAt, sanitizeInput, spawnBody, stepBody,
+  ARENA, NEUTRAL_INPUT, ROOM_LIMITS, aimAngle, TICK_DT, doorAt, sanitizeInput, spawnBody, stepBody,
   type Arena, type RoomDef, type RoomGraph, type GamePlayer, type GameSnapshot, type InputIntent, type PlayerBody, type RoomPhase,
 } from '@wb/shared';
 import { PhysicsWorld, type PropSpawn } from './abilities/world';
@@ -18,7 +18,7 @@ export interface SimPlayerInit { id: string; name: string; slot: number }
 interface SimPlayer extends SimPlayerInit {
   body: PlayerBody;
   connected: boolean;
-  queue: { seq: number; input: InputIntent }[];
+  queue: { seq: number; input: InputIntent; extra?: InputExtra }[];
   lastQueuedSeq: number;
   lastAppliedSeq: number;
   lastInput: InputIntent;
@@ -26,6 +26,22 @@ interface SimPlayer extends SimPlayerInit {
   /** P3D: the room the player is in (null on single-arena stages) and ticks until a door may be used again. */
   roomId: string | null;
   doorCooldown: number;
+  /** P3E: the last aim angle (radians) the player sent (null = never sent one), whether Shift is held, and the move axis applied this tick. */
+  aim: number | null;
+  sneak: boolean;
+  appliedMoveX: number;
+}
+
+/** P3E: optional extra input fields (aim step 0..255, Shift). `stepBody` and `InputIntent` are untouched: these never reach the movement code. */
+export interface InputExtra { aim?: number; sneak?: boolean }
+
+/** P3E: what the ghost may know about a player. Read-only; built from the authoritative state. */
+export interface SimSense {
+  id: string; name: string; slot: number; roomId: string | null; x: number; y: number; connected: boolean;
+  /** The move axis the server APPLIED this tick (never the client's claim about its own gait). */
+  moveX: number; sneak: boolean; grounded: boolean;
+  /** Radians, or null if the client never sent one. */
+  aim: number | null; facing: 1 | -1;
 }
 
 /** P3D: a player passed through a door this tick. */
@@ -60,6 +76,7 @@ export class GameSim {
       this.players.set(p.id, {
         ...p, body: spawnBody(sp.x, sp.y), connected: true, queue: [],
         lastQueuedSeq: -1, lastAppliedSeq: -1, lastInput: NEUTRAL_INPUT, staleTicks: 0, roomId: null, doorCooldown: 0,
+        aim: null, sneak: false, appliedMoveX: 0,
       });
     }
   }
@@ -114,11 +131,11 @@ export class GameSim {
   }
 
   /** Queue an intent. Returns false if rejected (unknown/disconnected player, or non-increasing seq). */
-  queueInput(id: string, seq: number, input: InputIntent): boolean {
+  queueInput(id: string, seq: number, input: InputIntent, extra?: InputExtra): boolean {
     const p = this.players.get(id);
     if (!p || !p.connected || seq <= p.lastQueuedSeq) return false;
     p.lastQueuedSeq = seq;
-    p.queue.push({ seq, input: sanitizeInput(input) });
+    p.queue.push({ seq, input: sanitizeInput(input), ...(extra ? { extra } : {}) });
     if (p.queue.length > MAX_INPUT_BACKLOG) p.queue.splice(0, p.queue.length - BACKLOG_TRIM_TO);
     return true;
   }
@@ -140,11 +157,16 @@ export class GameSim {
         const q = p.queue.shift();
         if (q) {
           input = q.input; p.lastInput = q.input; p.lastAppliedSeq = q.seq; p.staleTicks = 0;
+          if (q.extra) {
+            if (q.extra.aim !== undefined && Number.isInteger(q.extra.aim) && q.extra.aim >= 0 && q.extra.aim <= 255) p.aim = aimAngle(q.extra.aim);
+            p.sneak = q.extra.sneak === true;
+          }
         } else {
           p.staleTicks++;
           if (p.staleTicks <= MAX_REPEAT_TICKS) input = { moveX: p.lastInput.moveX, jump: false };
         }
       }
+      p.appliedMoveX = input.moveX;
       // P3B: zones/impulses for THIS tick, or undefined. P3D: each player steps in THEIR room's arena; the physical world is the start room's.
       const here = !this.rooms || p.roomId === this.startRoom;
       stepBody(p.body, input, this.arenaFor(p), here ? this.world.forPlayer(p.id) : undefined);
@@ -192,9 +214,21 @@ export class GameSim {
       p.lastInput = NEUTRAL_INPUT;
       p.staleTicks = 0;
       p.doorCooldown = 0;
+      p.aim = null; p.sneak = false; p.appliedMoveX = 0;
       if (this.rooms) p.roomId = this.startRoom;
     }
     this.transitions = [];
+  }
+
+  /** P3E: where a player aims (radians), or null if they never sent an aim. */
+  aimOf(id: string): number | null { return this.players.get(id)?.aim ?? null; }
+
+  /** P3E: the authoritative facts the ghost senses, in slot order (so every consumer iterates deterministically). */
+  senses(): SimSense[] {
+    return [...this.players.values()].sort((a, b) => a.slot - b.slot).map((p) => ({
+      id: p.id, name: p.name, slot: p.slot, roomId: p.roomId, x: p.body.x, y: p.body.y, connected: p.connected,
+      moveX: p.appliedMoveX, sneak: p.sneak, grounded: p.body.grounded, aim: p.aim, facing: p.body.facing,
+    }));
   }
 
   /** Explicit public projection: no queues, no internals. */
