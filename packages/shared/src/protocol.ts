@@ -5,7 +5,7 @@ import { WorldPublicSchema } from './abilities/world';
 import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
-import { AimSchema, GhostPublicSchema } from './ghost';
+import { AimSchema, GhostPublicSchema, type GhostCue } from './ghost';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -17,6 +17,8 @@ export const JoinPayloadSchema = z.object({
   lab: z.boolean().optional(),
   /** P3D dev flag: create the room with the multi-room demo stage as stage 1. Honoured only when the server runs with ESCAPE_STAGES on, and only on creation. */
   rooms: z.union([z.boolean(), z.literal(2)]).optional(),
+  /** P3E dev flag: create the room with the ghost on, beginning at this stage (1 means 2, the first stage with a ghost). Honoured only on creation and only when escape stages are enabled. */
+  ghost: z.number().int().min(1).max(1_000_000).optional(),
 });
 export const ReadyPayloadSchema = z.object({ ready: z.boolean() });
 export const DifficultyPayloadSchema = z.object({ difficulty: DifficultySchema });
@@ -128,4 +130,9 @@ export interface ServerToClientEvents {
   'stage:state': (state: StageState) => void;
   /** P3D. Sent to ONE player (never broadcast) when they begin a stage or enter a room: the walls and doorways of that room. */
   'room:layout': (layout: RoomLayout) => void;
+  /**
+   * P3E. Sent to ONE player: what they can HEAR of the ghost (a distance bucket and a direction, through walls: the documented exception to the
+   * vision invariant) and whether a warning is on. Sent when it changes (at most every 4 ticks) and at least once a second while a ghost exists.
+   */
+  'ghost:cue': (cue: GhostCue) => void;
 }

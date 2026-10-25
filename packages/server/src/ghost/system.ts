@@ -1,7 +1,7 @@
 import {
-  EYE_HEIGHT, GHOST_LIMITS, GHOST_TRANSITIONS, MAX_GHOSTS, NOISE_KIND_LOUDNESS, NOISE_LOUDNESS, NOISE_MUFFLE,
+  EYE_HEIGHT, GHOST_LIMITS, cueBand, cueDir, GHOST_TRANSITIONS, MAX_GHOSTS, NOISE_KIND_LOUDNESS, NOISE_LOUDNESS, NOISE_MUFFLE,
   angleDiff, createRng, deriveSeed, gaitOf, ghostTuning, hasLineOfSight, occluders, pointVisible,
-  type Box, type Difficulty, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type RoomDef, type RoomGraph, type Rng,
+  type Box, type Difficulty, type GhostCueSound, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type RoomDef, type RoomGraph, type Rng,
 } from '@wb/shared';
 import { NavGrid, type Pt } from './nav';
 import type { GhostCatchEvent, GhostEvent, GhostHost, GhostPlayer } from './types';
@@ -64,6 +64,8 @@ interface Actor {
   lastSeen: Seen | null;
   chain: string[];
   lastHeardLog: number;
+  /** Moved during the last tick (for the footsteps a listener hears). */
+  moving: boolean;
 }
 
 const DOOR_REACH = 80;
@@ -114,7 +116,7 @@ export class GhostSystem {
       this.actors.push({
         id: `g${index}`, kind, rng, state: 'dormant', since: 0, until: first, warnedAt: -1, blockedLogged: false, present: false,
         room: cfg.graph.start, x: 0, y: 0, angle: 0, path: [], pathGoal: -1, lastPlan: -100, goal: null, patrol: null,
-        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000,
+        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false,
       });
     });
   }
@@ -138,6 +140,23 @@ export class GhostSystem {
       out.push({ id: a.id, kind: a.kind, x: r2(a.x), y: r2(a.y), angle: r2(a.angle), state: a.state, room: a.room });
     }
     return out;
+  }
+
+  /**
+   * What a listener at (x, y) in `roomId` can HEAR (the documented exception to the visibility invariant, see shared `GHOST_CUE`): the ghosts of that
+   * room within earshot as a distance bucket and a direction, and whether any ghost is in its warning. No coordinates leave this function.
+   */
+  cueFor(roomId: string | null, x: number, y: number): { warning: boolean; sounds: GhostCueSound[] } {
+    const sounds: GhostCueSound[] = [];
+    if (roomId !== null) {
+      for (const a of this.actors) {
+        if (!a.present || a.room !== roomId || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
+        const band = cueBand(Math.hypot(a.x - x, a.y - (y - BODY_CENTRE)));
+        if (band === 0) continue;
+        sounds.push({ id: a.id, kind: a.kind, band, dir: cueDir(a.x - x), state: a.state, moving: a.moving });
+      }
+    }
+    return { warning: this.warning, sounds };
   }
 
   // ------------------------------------------------------------------------------------------------------- inputs from the world
@@ -188,8 +207,9 @@ export class GhostSystem {
       case 'respawn': if (t >= a.until) this.go(a, 'warning', 'the interval elapsed'); break;
       case 'stunned': if (t >= a.until) this.go(a, 'respawn', 'the stun wore off'); break;
       case 'warning': if (t >= a.until) this.tryAppear(a, players, open, t); break;
-      case 'roaming': case 'hunting': this.act(a, players, open, t); break;
+      case 'roaming': case 'hunting': { const px = a.x, py = a.y; this.act(a, players, open, t); a.moving = Math.hypot(a.x - px, a.y - py) > 0.01 && !a.opening; break; }
     }
+    if (a.state !== 'roaming' && a.state !== 'hunting') a.moving = false;
   }
 
   // ------------------------------------------------------------------------------------------------------- the state machine

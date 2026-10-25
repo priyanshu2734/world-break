@@ -142,3 +142,47 @@ export const GhostPublicSchema = z.object({
   room: z.string().max(48),
 });
 export type GhostPublic = z.infer<typeof GhostPublicSchema>;
+
+// ------------------------------------------------------------------------------------------------ sound cues (P3E step 2)
+/**
+ * THE DOCUMENTED EXCEPTION TO THE VISIBILITY INVARIANT. Everything else a player is told is cut to what they can see; the ghost's SOUND is
+ * not, on purpose: "you can HEAR it before you see it" (GAMEPLAY.md section 6). What leaks is bounded and coarse: for a ghost in the SAME room
+ * and within `GHOST_CUE.bands[2]` px (through walls and closed doors), a distance BUCKET (1 near, 2 middle, 3 far) and a direction
+ * (-1 left, 0 ahead or above, +1 right), plus its type, state and whether it is moving. Never a coordinate, never a room it is in when it is
+ * not the listener's, never anything about a ghost out of range. A ghost in WARNING (not there yet) is audible to everyone as `warning`.
+ */
+export const GHOST_CUE = {
+  /** Upper edge (px) of bucket 1, 2 and 3. Beyond the last, the ghost is not audible. */
+  bands: [250, 500, 800],
+  /** Horizontal distance (px) under which a ghost counts as straight ahead (direction 0). */
+  deadzone: 60,
+  /** The server re-sends an unchanged cue at least this often (ticks) and never faster than `minGapTicks` for changes. */
+  keepaliveTicks: 20, minGapTicks: 4,
+} as const;
+/** 0 = out of earshot, else 1 (near) to 3 (far). */
+export function cueBand(distance: number): 0 | 1 | 2 | 3 {
+  if (!Number.isFinite(distance) || distance > GHOST_CUE.bands[2]) return 0;
+  return distance <= GHOST_CUE.bands[0] ? 1 : distance <= GHOST_CUE.bands[1] ? 2 : 3;
+}
+export function cueDir(dx: number): -1 | 0 | 1 {
+  if (!Number.isFinite(dx) || Math.abs(dx) <= GHOST_CUE.deadzone) return 0;
+  return dx < 0 ? -1 : 1;
+}
+
+export const GhostCueSoundSchema = z.object({
+  id: z.string().max(24),
+  kind: z.enum(GHOST_TYPES),
+  band: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  dir: z.union([z.literal(-1), z.literal(0), z.literal(1)]),
+  state: z.enum(['roaming', 'hunting', 'stunned']),
+  /** Walking right now (a stunned or searching ghost makes no footsteps). */
+  moving: z.boolean(),
+});
+export const GhostCueSchema = z.object({
+  tick: z.number().int().min(0),
+  /** Some ghost is in its WARNING: the lights flicker and a whisper is heard (everyone, wherever they are). */
+  warning: z.boolean(),
+  sounds: z.array(GhostCueSoundSchema).max(MAX_GHOSTS),
+});
+export type GhostCueSound = z.infer<typeof GhostCueSoundSchema>;
+export type GhostCue = z.infer<typeof GhostCueSchema>;

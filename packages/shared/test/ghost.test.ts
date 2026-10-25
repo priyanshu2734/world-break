@@ -160,3 +160,30 @@ describe('P3E protocol additions are additive', () => {
     expect(GhostPublicSchema.safeParse({ ...g, state: 'warning' }).success).toBe(false); // an absent ghost has no public state
   });
 });
+
+import { GHOST_CUE, GhostCueSchema, cueBand, cueDir } from '../src';
+
+describe('P3E ghost cue buckets (the documented sound exception is coarse and bounded)', () => {
+  it('distance buckets: 1 near, 2 middle, 3 far, 0 out of earshot', () => {
+    const [a, b, c] = GHOST_CUE.bands;
+    expect([0, a, a + 1, b, b + 1, c, c + 1, 5000, NaN, Infinity].map(cueBand)).toEqual([1, 1, 2, 2, 3, 3, 0, 0, 0, 0]);
+  });
+  it('direction: left, ahead inside the deadzone, right', () => {
+    expect(cueDir(-200)).toBe(-1);
+    expect(cueDir(200)).toBe(1);
+    expect(cueDir(GHOST_CUE.deadzone)).toBe(0);
+    expect(cueDir(-GHOST_CUE.deadzone)).toBe(0);
+    expect(cueDir(NaN)).toBe(0);
+  });
+  it('a cue carries no position: only buckets, a direction, the type, the state and whether it moves; at most 2 sounds', () => {
+    const sound = { id: 'g0', kind: 'wisp', band: 2, dir: -1, state: 'hunting', moving: true };
+    expect(GhostCueSchema.safeParse({ tick: 3, warning: false, sounds: [sound] }).success).toBe(true);
+    expect(GhostCueSchema.safeParse({ tick: 3, warning: true, sounds: [] }).success).toBe(true);
+    expect(GhostCueSchema.safeParse({ tick: 3, warning: false, sounds: [sound, sound, sound] }).success).toBe(false);
+    expect(GhostCueSchema.safeParse({ tick: 3, warning: false, sounds: [{ ...sound, band: 0 }] }).success).toBe(false);
+    expect(GhostCueSchema.safeParse({ tick: 3, warning: false, sounds: [{ ...sound, state: 'warning' }] }).success).toBe(false);
+    // an extra x or y is stripped by the schema (and the server never builds one)
+    const parsed = GhostCueSchema.parse({ tick: 3, warning: false, sounds: [{ ...sound, x: 10, y: 20 }] });
+    expect(JSON.stringify(parsed)).not.toContain('"x"');
+  });
+});

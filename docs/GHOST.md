@@ -98,3 +98,24 @@ Wisp from stage 2, Shade ALONE at stage 7, Howler ALONE at stage 12; stages 8 to
 ## The interim catch rule (step 3, P4 replaces it)
 
 A caught player is CAPTURED where they stand, drops carried items and cannot move; a teammate frees them by holding E next to them for a few seconds; if not freed within about 45 s they are released at their room's entry with a score penalty. Nobody is eliminated in P3E. **LATER** (step 3).
+
+## Step 2: sound and look (client)
+
+### How to try it in a browser
+1. `npm run dev:server` (:3001) and `npm run dev:client` (:5173). Escape stages are on by default, no env var needed.
+2. Open `http://localhost:5173/?ghost=1`. This creates a ghost-enabled run that starts at stage 2 (the first stage that can have a ghost). `?ghost=7` starts at stage 7 (the Shade, once built), `?ghost=N` at stage N. The flag only applies to the tab that creates the room; a second tab joins with `#CODE` as usual.
+3. Click the page or press any key once: browsers only start audio after a gesture. Add `&dark=1` to see the flashlight view the ghost is designed for.
+4. Wait. The first appearance is after about 72 to 120 s of play. You get the WARNING first (a whisper every ~1.8 s, the light flickers, "Something is coming..." shows), then the Wisp roams. Walk or run to make noise; hold Shift to sneak; stand still to be silent.
+5. Keys: Shift = sneak (escape stages), M = mute or unmute the ghost sounds. Flags: `&reduceflash=1` (no flicker, only a slow gentle dim), `&mute=1` (start muted).
+6. The debug hook `__WB_DEBUG__.state().ghost` (dev build) shows how many ghosts are drawn, the last cue, whether audio is running, and the aim and sneak being sent.
+
+### What the client receives
+- `ghost:cue` (server to client, per player, only while playing): `{ tick, warning, sounds: [{ id, kind, band 1..3, dir -1|0|1, state, moving }] }`. Sent when it changes (at most every 4 ticks) and at least once a second as a keepalive. THIS IS THE DOCUMENTED EXCEPTION TO THE VISION INVARIANT: it is sent through walls, but it holds only a distance bucket (250/500/800 px), a left/ahead/right direction (60 px deadzone), the type, the state and whether it moves. No coordinates. A ghost beyond the last bucket, or in another room, gives no sound. `warning` is true for everyone while a ghost is about to appear.
+- `GameSnapshot.ghosts`: the ghost itself, only when the player's restricted view includes it. The client draws only what is in this list.
+- Input: `game:input` carries optional `aim` (0..255) and `sneak`. Shift scales the move axis to 0.35 BEFORE prediction and sending, so prediction and server step the same value; the server derives the gait (and noise) from the axis it applied, never from the `sneak` flag.
+
+### Look and sound (all procedural, no assets)
+- The Wisp: pale glow image plus a teardrop body with a wavy tail and two eyes, drawn at depth 11 (under the dark layer, so the flashlight hides it like everything else). Tint: roaming pale blue, hunting warm with red eyes and a faster pulse, stunned dim grey and still.
+- Footsteps: noise ticks, volume by band (1, 0.5, 0.2), stereo pan by direction, period by type, faster when hunting; none when stunned or still. Heartbeat: two low sine thumps for the nearest ghost, faster and louder as it nears and while it hunts. Whisper: filtered, wobbling noise during WARNING.
+- Flicker (WARNING only): the light reach and ambient dip to 35% to 65% in slots of at least 160 ms. It never goes dark, never flashes bright, never exceeds the server's radius. `?reduceflash=1` replaces it with a slow sine between 70% and 100%.
+- Deaf or muted players: a text cue above the hint line says what the audio says ("footsteps near ▶", "HUNTING very close", "Something is coming...").

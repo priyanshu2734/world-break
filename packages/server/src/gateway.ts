@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -50,12 +50,14 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
       if (sessions.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
-      const { roomCode, name, lab, rooms: wantRooms } = parsed.data;
+      const { roomCode, name, lab, rooms: wantRooms, ghost: wantGhost } = parsed.data;
       // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
       // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
       if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true, ghost: opts.escapeStages === true && ghostOn });
+      // P3E dev flag: the ghost, starting at a given stage, only on creation and only when escape stages are enabled (like the multi-room demo).
+      if (wantGhost !== undefined && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true, ghost: opts.escapeStages === true && (ghostOn || wantGhost !== undefined), ...(wantGhost !== undefined ? { startStage: Math.max(2, wantGhost) } : {}) });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);
@@ -151,6 +153,8 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   let stopLoop: (() => void) | null = null;
   /** P3D step 4: the last stage state each player of a restricted room was sent (cleared with the room). */
   const views = new WeakMap<Room, Map<string, { key: string; rev: number }>>();
+  /** P3E: the last ghost cue each player was sent (key without the tick, and the tick it was sent at). */
+  const cues = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
   const onTick = () => {
     rooms.forEach((room) => {
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
@@ -162,6 +166,23 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       // sent reliably: after stage completion the sim stops, so a dropped one would leave clients on a stale phase.
       if (snap) (phaseChanged ? io.to(room.code) : io.to(room.code).volatile).emit('game:snapshot', snap);
       // P3D: each player is told the layout of the room they begin in or enter: to that player's socket only, never broadcast.
+      // P3E: what each player can HEAR of the ghost (distance bucket and direction; the documented exception to the vision invariant).
+      // Sent when it changes (at most every GHOST_CUE.minGapTicks) and at least every GHOST_CUE.keepaliveTicks while the stage has a ghost.
+      if (room.phase === 'playing') {
+        let sentCues = cues.get(room);
+        if (!sentCues) cues.set(room, (sentCues = new Map()));
+        for (const [sid, sess] of sessions) {
+          if (sess.roomCode !== room.code) continue;
+          const cue = room.ghostCue(sess.playerId);
+          if (!cue) continue;
+          const key = JSON.stringify({ w: cue.warning, s: cue.sounds });
+          const last = sentCues.get(sess.playerId);
+          const due = !last || (key !== last.key && cue.tick - last.tick >= GHOST_CUE.minGapTicks) || cue.tick - last.tick >= GHOST_CUE.keepaliveTicks || cue.tick < last.tick;
+          if (!due) continue;
+          sentCues.set(sess.playerId, { key, tick: cue.tick });
+          io.to(sid).emit('ghost:cue', cue);
+        }
+      }
       const layouts = room.drainLayouts();
       if (layouts.length > 0) {
         const socketOf = new Map<string, string>();

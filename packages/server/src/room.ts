@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, getArena, ghostPresentOnStage, ghostTypesForStage, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, getArena, ghostPresentOnStage, ghostTypesForStage, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -184,6 +184,13 @@ export class Room {
   }
   /** P3E: the ghost of the current stage (server side only), for tests and the next steps. */
   get ghostSystem(): GhostSystem | null { return this.ghost; }
+  /** P3E: what one player can HEAR of the ghost (null when this stage has no ghost). The documented exception to the vision invariant: see shared `GHOST_CUE`. */
+  ghostCue(playerId: string): GhostCue | null {
+    if (!this.ghost || !this.sim) return null;
+    const me = this.sim.senses().find((s) => s.id === playerId);
+    const c = this.ghost.cueFor(me?.roomId ?? null, me?.x ?? 0, me?.y ?? 0);
+    return { tick: this.sim.tick, warning: c.warning, sounds: c.sounds };
+  }
   /** P3E: ghost events logged since the last call. */
   drainGhostEvents(): GhostEvent[] { return this.ghost?.drainEvents() ?? []; }
   /** P3D: layouts to deliver (each to its player only). Empty on single-arena stages. */
