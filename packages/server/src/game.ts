@@ -30,10 +30,13 @@ interface SimPlayer extends SimPlayerInit {
   aim: number | null;
   sneak: boolean;
   appliedMoveX: number;
+  /** P3E step 3: E held (frees a caught teammate), and frozen (hiding or caught: every input is ignored, the body only falls). */
+  use: boolean;
+  frozen: boolean;
 }
 
 /** P3E: optional extra input fields (aim step 0..255, Shift). `stepBody` and `InputIntent` are untouched: these never reach the movement code. */
-export interface InputExtra { aim?: number; sneak?: boolean }
+export interface InputExtra { aim?: number; sneak?: boolean; use?: boolean }
 
 /** P3E: what the ghost may know about a player. Read-only; built from the authoritative state. */
 export interface SimSense {
@@ -42,6 +45,8 @@ export interface SimSense {
   moveX: number; sneak: boolean; grounded: boolean;
   /** Radians, or null if the client never sent one. */
   aim: number | null; facing: 1 | -1;
+  /** P3E step 3: E held this tick. */
+  use: boolean;
 }
 
 /** P3D: a player passed through a door this tick. */
@@ -76,7 +81,7 @@ export class GameSim {
       this.players.set(p.id, {
         ...p, body: spawnBody(sp.x, sp.y), connected: true, queue: [],
         lastQueuedSeq: -1, lastAppliedSeq: -1, lastInput: NEUTRAL_INPUT, staleTicks: 0, roomId: null, doorCooldown: 0,
-        aim: null, sneak: false, appliedMoveX: 0,
+        aim: null, sneak: false, appliedMoveX: 0, use: false, frozen: false,
       });
     }
   }
@@ -160,12 +165,15 @@ export class GameSim {
           if (q.extra) {
             if (q.extra.aim !== undefined && Number.isInteger(q.extra.aim) && q.extra.aim >= 0 && q.extra.aim <= 255) p.aim = aimAngle(q.extra.aim);
             p.sneak = q.extra.sneak === true;
+            p.use = q.extra.use === true;
           }
         } else {
           p.staleTicks++;
           if (p.staleTicks <= MAX_REPEAT_TICKS) input = { moveX: p.lastInput.moveX, jump: false };
         }
       }
+      if (p.frozen || !p.connected) p.use = false;
+      if (p.frozen) input = NEUTRAL_INPUT; // hiding or caught: no movement, the body only settles
       p.appliedMoveX = input.moveX;
       // P3B: zones/impulses for THIS tick, or undefined. P3D: each player steps in THEIR room's arena; the physical world is the start room's.
       const here = !this.rooms || p.roomId === this.startRoom;
@@ -214,10 +222,25 @@ export class GameSim {
       p.lastInput = NEUTRAL_INPUT;
       p.staleTicks = 0;
       p.doorCooldown = 0;
-      p.aim = null; p.sneak = false; p.appliedMoveX = 0;
+      p.aim = null; p.sneak = false; p.appliedMoveX = 0; p.use = false; p.frozen = false;
       if (this.rooms) p.roomId = this.startRoom;
     }
     this.transitions = [];
+  }
+
+  /** P3E step 3: freeze or free a player (hiding or caught). A frozen player's input is ignored; the queue is still consumed so acks keep up. */
+  setFrozen(id: string, frozen: boolean): void {
+    const p = this.players.get(id);
+    if (p) { p.frozen = frozen; if (frozen) p.use = false; }
+  }
+  /** P3E step 3: free every player (a new stage binds its own hiding and catch rules). */
+  clearFrozen(): void { for (const p of this.players.values()) p.frozen = false; }
+  /** P3E step 3: put a player on the floor at (x, y) of the room they are in (a release at their room's entry). */
+  placeAt(id: string, x: number, y: number): void {
+    const p = this.players.get(id);
+    if (!p) return;
+    p.body = spawnBody(x, y);
+    p.queue.length = 0; p.lastInput = NEUTRAL_INPUT; p.staleTicks = 0; p.doorCooldown = 0;
   }
 
   /** P3E: where a player aims (radians), or null if they never sent an aim. */
@@ -227,7 +250,7 @@ export class GameSim {
   senses(): SimSense[] {
     return [...this.players.values()].sort((a, b) => a.slot - b.slot).map((p) => ({
       id: p.id, name: p.name, slot: p.slot, roomId: p.roomId, x: p.body.x, y: p.body.y, connected: p.connected,
-      moveX: p.appliedMoveX, sneak: p.sneak, grounded: p.body.grounded, aim: p.aim, facing: p.body.facing,
+      moveX: p.appliedMoveX, sneak: p.sneak, grounded: p.body.grounded, aim: p.aim, facing: p.body.facing, use: p.use && p.connected,
     }));
   }
 

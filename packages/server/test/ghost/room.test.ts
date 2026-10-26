@@ -119,7 +119,7 @@ describe('P3E ghost in the view: a ghost that is not in your view is not in your
   it('a ghost visible to one player is absent for a teammate who cannot see it', () => {
     const r = ghostRoom({ stage: 2, players: 2 });
     const [a, b] = [spawnAt(r), r.gameSnapshot()!.players.find((p) => p.id === 'p1')!];
-    placeGhost(r, { x: a.x + 120, y: a.y - 28 });
+    // (P3E step 3: a catch now freezes a player, so the ghost is placed only AFTER p1 has walked away; before step 3 a catch did nothing)
     // push p1 out of sight: walk it far to the right with the real input path
     for (let i = 0; i < 90; i++) { r.submitInput('p1', ++seq, { moveX: 1, jump: false }); r.tick(); }
     const b2 = r.gameSnapshot()!.players.find((p) => p.id === 'p1')!;

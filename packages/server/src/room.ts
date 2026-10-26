@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, getArena, ghostPresentOnStage, ghostTypesForStage, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, ghostPresentOnStage, ghostTypesForStage, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type GhostAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -15,7 +15,7 @@ import { LOCK_SAMPLER_STAGE, ROOMS_DEMO_STAGE } from './rooms/demoStage';
 import { generateEscapeStage } from './rooms/generate';
 import type { EscapeResult } from './rooms/escape';
 import { restrictedView, type RestrictedView } from './rooms/view';
-import { GhostSystem, type GhostEvent, type GhostPlayer } from './ghost';
+import { CatchSystem, GhostSystem, type CatchHost, type GhostEvent, type GhostPlayer } from './ghost';
 import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
@@ -46,6 +46,8 @@ export class Room {
   private stageRec: StageRecord | null = null;
   /** P3E: the ghost of the current stage (null when the option is off, on stage 1, or on a stage that is not an escape stage). */
   private ghost: GhostSystem | null = null;
+  /** P3E step 3: hiding and the catch of the current stage (exists exactly when `ghost` does). */
+  private catchSys: CatchSystem | null = null;
 
   /**
    * `runSeed` is the root of every stage seed of this run (server-side only). It defaults to a pure function of the
@@ -140,7 +142,7 @@ export class Room {
     if (!e || !snapshot || !e.def.escape || !e.def.rooms) return null;
     const ghosts = this.ghost?.publicGhosts();
     return restrictedView(
-      { snapshot, stage: e.state(), graph: e.def.rooms, radius: visionRadius(this.difficulty, this.stage), ...(ghosts ? { ghosts } : {}) },
+      { snapshot, stage: e.state(), graph: e.def.rooms, radius: visionRadius(this.difficulty, this.stage), ...(ghosts ? { ghosts } : {}), ...(this.catchSys ? { hidden: this.catchSys.hiddenIds() } : {}) },
       { eyes: playerId, self: playerId, ...(this.coneVision ? { aim: this.sim?.aimOf(playerId) ?? null } : {}) },
     );
   }
@@ -165,31 +167,60 @@ export class Room {
 
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
-    this.ghost = null;
+    this.ghost = null; this.catchSys = null;
+    this.sim?.clearFrozen();
     const graph = engine.def.rooms;
     if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
     const seed = deriveSeed(this.stageRec?.seed ?? this.runSeed, 'ghost', this.stage);
     const sim = this.sim;
+    const spots = (engine.def.escape.hidingSpots ?? []).map((h) => ({ id: h.id, room: h.room, x: h.x, y: h.y, kind: h.kind }));
+    const catchHost: CatchHost = {
+      get tick() { return sim.tick; },
+      who: () => sim.senses().filter((s) => s.roomId !== null).map((s) => ({ id: s.id, name: s.name, room: s.roomId!, x: s.x, y: s.y, connected: s.connected, use: s.use })),
+      freeze: (id, on) => sim.setFrozen(id, on),
+      dropOne: (id) => engine.dropOneCarried(id, this.pos),
+      placeAtEntry: (id) => this.placeAtEntry(id),
+      penalty: (points) => engine.penalty('caught', points),
+      say: (text, tone, room) => engine.announce(text, tone, room),
+      watched: (id) => this.ghost?.watching(id) ?? false,
+      canSee: (id, x, y) => this.roomsHost.canSee(id, x, y),
+    };
+    this.catchSys = new CatchSystem(spots, catchHost);
     this.ghost = new GhostSystem(
-      { stage: this.stage, seed, difficulty: this.difficulty, graph, visionRadius: visionRadius(this.difficulty, this.stage), types: ghostTypesForStage(this.stage, seed & 1) },
+      { stage: this.stage, seed, difficulty: this.difficulty, graph, visionRadius: visionRadius(this.difficulty, this.stage), types: ghostTypesForStage(this.stage, seed & 1), hidingSpots: spots },
       {
         get tick() { return sim.tick; },
         players: (): GhostPlayer[] => sim.senses().filter((s) => s.roomId !== null).map((s) => ({
           id: s.id, name: s.name, roomId: s.roomId!, x: s.x, y: s.y, connected: s.connected, moveX: s.moveX,
-          crouch: s.sneak && Math.abs(s.moveX) <= 0.4, aim: s.aim, facing: s.facing, hidden: false, captured: false,
+          crouch: s.sneak && Math.abs(s.moveX) <= 0.4, aim: s.aim, facing: s.facing,
+          hidden: this.catchSys?.isHidden(s.id) ?? false, captured: this.catchSys?.isCaptured(s.id) ?? false,
         })),
         openDoorIds: () => engine.openDoorIds(),
+        onCatch: (id, ev) => this.catchSys?.capture(id, ev),
+        occupantOf: (spotId) => this.catchSys?.occupantOf(spotId) ?? null,
       },
     );
   }
+  /** P3E step 3: put a released player on the floor at their room's entry (the start room's spawn slot, or the arrival point of a door into the room) and tell their client. */
+  private placeAtEntry(id: string): void {
+    const g = this.graph(), sim = this.sim, roomId = sim?.roomOf(id), room = g && roomId ? roomById(g, roomId) : undefined;
+    const me = sim?.senses().find((s) => s.id === id);
+    if (!g || !sim || !roomId || !room || !me) return;
+    const door = roomId === g.start ? undefined : g.rooms.flatMap((r) => r.doors).find((d) => d.to === roomId);
+    const at = door ? door.arrive : room.arena.spawns[me.slot] ?? room.arena.spawns[0]!;
+    sim.placeAt(id, at.x, at.y);
+    this.queueLayout(id, roomId); // the client restarts its prediction from the server's position
+  }
   /** P3E: the ghost of the current stage (server side only), for tests and the next steps. */
   get ghostSystem(): GhostSystem | null { return this.ghost; }
+  /** P3E step 3: hiding and the catch of the current stage (server side only), for tests. */
+  get catchSystem(): CatchSystem | null { return this.catchSys; }
   /** P3E: what one player can HEAR of the ghost (null when this stage has no ghost). The documented exception to the vision invariant: see shared `GHOST_CUE`. */
   ghostCue(playerId: string): GhostCue | null {
     if (!this.ghost || !this.sim) return null;
     const me = this.sim.senses().find((s) => s.id === playerId);
     const c = this.ghost.cueFor(me?.roomId ?? null, me?.x ?? 0, me?.y ?? 0);
-    return { tick: this.sim.tick, warning: c.warning, sounds: c.sounds };
+    return { tick: this.sim.tick, warning: c.warning, sounds: c.sounds, ...(this.catchSys ? { status: this.catchSys.statusFor(playerId) } : {}) };
   }
   /** P3E: ghost events logged since the last call. */
   drainGhostEvents(): GhostEvent[] { return this.ghost?.drainEvents() ?? []; }
@@ -220,6 +251,7 @@ export class Room {
     this.members.delete(id);
     this.sim?.removePlayer(id);
     this.engine?.removePlayer(id);
+    this.catchSys?.remove(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -305,6 +337,7 @@ export class Room {
     } else if (this.phase === 'playing') {
       this.sim.step();
       this.engine?.step(this.pos);
+      this.catchSys?.step();
       this.ghost?.step();
       for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       if (this.engine?.status === 'stabilized') {
@@ -359,9 +392,26 @@ export class Room {
     return { ok: true };
   }
 
+  /** P3E step 3: a caught or hiding player may do nothing but wait or come out. Null = free to act. */
+  private blocked(id: string): string | null {
+    if (this.catchSys?.isCaptured(id)) return 'You are caught. Wait for a teammate.';
+    if (this.catchSys?.isHidden(id)) return 'Not while hiding. Press E to come out.';
+    return null;
+  }
+
+  /** P3E step 3: hide in the hiding spot in reach, or come out. */
+  ghostAction(id: string, action: GhostAction): { ok: true; message: string } | { ok: false; error: string } {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    if (!this.catchSys) return { ok: false, error: 'There is nothing to hide from here.' };
+    return action.action === 'hide' ? this.catchSys.hide(id) : this.catchSys.leave(id);
+  }
+
   /** A player's stage action. The engine validates range, tools, cooldowns and prerequisites. */
   stageAction(id: string, action: StageAction): ActionResult {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    const stop = this.blocked(id);
+    if (stop) return { ok: false, error: stop };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     return this.engine.action(id, action, this.pos);
   }
@@ -369,6 +419,8 @@ export class Room {
   /** P3B: a player's reality-ability intent. The engine validates ownership, range, cooldown, energy, caps and rate. */
   abilityAction(id: string, action: AbilityAction): AbilityResult {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    const stop = this.blocked(id);
+    if (stop) return { ok: false, error: stop };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     return this.engine.abilityAction(id, action, this.pos);
   }
@@ -377,6 +429,8 @@ export class Room {
   /** P3D: a player's escape intent (use a door, enter a code, press a switch, read a clue). */
   escapeAction(id: string, action: EscapeAction): EscapeResult {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    const stop = this.blocked(id);
+    if (stop) return { ok: false, error: stop };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     return this.engine.escapeAction(id, action, this.pos);
   }
@@ -384,7 +438,15 @@ export class Room {
   itemAction(id: string, action: ItemAction): ItemResult {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
-    return this.engine.itemAction(id, action, this.pos);
+    const stop = this.blocked(id);
+    if (stop) return { ok: false, error: stop };
+    const r = this.engine.itemAction(id, action, this.pos);
+    // P3E step 3: dropping a part is LOUD (a clatter the ghost may hear); picking up and handing over are not
+    if (r.ok && (action.action === 'drop' || action.action === 'swap')) {
+      const me = this.sim?.senses().find((s) => s.id === id);
+      if (me && me.roomId) this.ghost?.makeNoise({ room: me.roomId, x: me.x, y: me.y - PLAYER_HEIGHT / 2, loud: NOISE_KIND_LOUDNESS.drop, player: id, name: me.name, kind: 'drop' });
+    }
+    return r;
   }
 
   /** Read-only view of the current public stage state (does not mark it as sent). */

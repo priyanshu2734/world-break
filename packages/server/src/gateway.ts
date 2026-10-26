@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -88,7 +88,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!s) return;
       const p = GameInputSchema.safeParse(payload);
       if (!p.success) return;
-      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump }, { ...(p.data.aim !== undefined ? { aim: p.data.aim } : {}), ...(p.data.sneak !== undefined ? { sneak: p.data.sneak } : {}) });
+      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump }, { ...(p.data.aim !== undefined ? { aim: p.data.aim } : {}), ...(p.data.sneak !== undefined ? { sneak: p.data.sneak } : {}), ...(p.data.use !== undefined ? { use: p.data.use } : {}) });
     });
     // P2: stage actions (interact / tool use / cancel). Validated by Zod here, by the engine for rules.
     socket.on('stage:action', (payload, ack) => {
@@ -126,6 +126,16 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const p = ItemActionSchema.safeParse(payload);
       if (!p.success) return reply(ack, { ok: false, error: 'Invalid item request' });
       const r = rooms.get(s.roomCode)?.itemAction(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
+    // P3E step 3: hide in the hiding spot in reach, or come out. Zod here, rules in the catch system.
+    socket.on('ghost:action', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = GhostActionSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const r = rooms.get(s.roomCode)?.ghostAction(s.playerId, p.data);
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
@@ -175,7 +185,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
           if (sess.roomCode !== room.code) continue;
           const cue = room.ghostCue(sess.playerId);
           if (!cue) continue;
-          const key = JSON.stringify({ w: cue.warning, s: cue.sounds });
+          const key = JSON.stringify({ w: cue.warning, s: cue.sounds, t: cue.status });
           const last = sentCues.get(sess.playerId);
           const due = !last || (key !== last.key && cue.tick - last.tick >= GHOST_CUE.minGapTicks) || cue.tick - last.tick >= GHOST_CUE.keepaliveTicks || cue.tick < last.tick;
           if (!due) continue;

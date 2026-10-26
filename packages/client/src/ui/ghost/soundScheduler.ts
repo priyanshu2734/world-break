@@ -1,10 +1,13 @@
 import type { GhostCue } from '@wb/shared';
 import { CUE_STALE_MS, MAX_CATCHUP_MS, WHISPER_PERIOD_MS, footstepPeriodMs, heartbeatGain, heartbeatPeriodMs, nearest, panFor, soundGain } from './cueMath';
 
+export const KNOCK_PERIOD_MS = 500;
 export type SoundEvent =
   | { kind: 'step'; ghost: string; type: string; gain: number; pan: number; hunting: boolean }
   | { kind: 'beat'; gain: number; fast: boolean }
-  | { kind: 'whisper' };
+  | { kind: 'whisper' }
+  /** The ghost stands at a hiding place and is about to open it (P3E step 3): a slow knocking. */
+  | { kind: 'knock'; gain: number; pan: number };
 
 /**
  * Turns the latest server cue into timed sound events. Pure: the caller passes the clock, so it is deterministic and testable.
@@ -15,6 +18,7 @@ export type SoundEvent =
 export class SoundScheduler {
   private nextBeat = 0;
   private nextWhisper = 0;
+  private nextKnock = 0;
   private nextStep = new Map<string, number>();
 
   tick(cue: GhostCue | null, receivedAt: number, now: number): SoundEvent[] {
@@ -37,6 +41,11 @@ export class SoundScheduler {
       out.push({ kind: 'beat', gain: heartbeatGain(near.band, hunting), fast: hunting });
       this.nextBeat += heartbeatPeriodMs(near.band, hunting);
     }
+    const checking = cue.sounds.find((x) => x.inspecting === true);
+    if (checking) {
+      if (this.nextKnock === 0 || now - this.nextKnock > MAX_CATCHUP_MS) this.nextKnock = now;
+      if (now >= this.nextKnock) { out.push({ kind: 'knock', gain: Math.max(0.35, soundGain(checking.band)), pan: panFor(checking.dir) }); this.nextKnock += KNOCK_PERIOD_MS; }
+    } else this.nextKnock = 0;
     const alive = new Set<string>();
     for (const s of cue.sounds) {
       alive.add(s.id);
@@ -53,5 +62,5 @@ export class SoundScheduler {
     return out;
   }
 
-  reset(): void { this.nextBeat = 0; this.nextWhisper = 0; this.nextStep.clear(); }
+  reset(): void { this.nextBeat = 0; this.nextWhisper = 0; this.nextKnock = 0; this.nextStep.clear(); }
 }

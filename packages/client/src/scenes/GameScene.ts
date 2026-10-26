@@ -26,6 +26,8 @@ import { SoundScheduler } from '../ui/ghost/soundScheduler';
 import { cueIndicator } from '../ui/ghost/cueMath';
 import { lightScale } from '../ui/ghost/flicker';
 import { ghostFlags } from '../ui/ghost/ghostParam';
+import { HideView } from '../ui/ghost/HideView';
+import { canMove, captiveInReach, modeOf, nearestSpot, onEPressed, shouldShowTip } from '../ui/ghost/hideLogic';
 
 /** P3E: Shift = sneak. The move axis is scaled to this before it is predicted and sent, so prediction and server see the same value
  *  (it lies in the server's "sneak" gait band, 0.01 to 0.4, which is quiet). */
@@ -101,6 +103,9 @@ export class GameScene extends Phaser.Scene {
   private ghostFlags = ghostFlags('');
   private cueText!: Phaser.GameObjects.Text;
   private muteKey!: Phaser.Input.Keyboard.Key;
+  /** P3E step 3: hiding places, the caught prompt, the rescue bars and the first-warning line. */
+  private hideView!: HideView;
+  private warnTipShown = false;
 
   private hudRows: { swatch: Phaser.GameObjects.Rectangle; text: Phaser.GameObjects.Text; dot: Phaser.GameObjects.Arc }[] = [];
   private hudStage!: Phaser.GameObjects.Text;
@@ -151,6 +156,8 @@ export class GameScene extends Phaser.Scene {
     // P3E: ghost look and sound
     this.ghostFlags = ghostFlags(window.location.search);
     this.ghostView = new GhostView(this);
+    this.hideView = new HideView(this);
+    this.warnTipShown = GameScene.tipSeen();
     this.ghostAudio = new GhostAudio(this.ghostFlags.muted);
     this.muteKey = kb.addKey('M');
     this.cueText = this.add.text(W / 2, H - 44, '', { ...FONT, fontSize: '18px', color: '#cfe8ff', backgroundColor: '#04101acc' })
@@ -158,7 +165,7 @@ export class GameScene extends Phaser.Scene {
     const arm = () => this.ghostAudio.arm();
     this.input.on('pointerdown', arm);
     kb.on('keydown', arm);
-    this.events.once('shutdown', () => { this.input.off('pointerdown', arm); kb.off('keydown', arm); this.ghostView.destroy(); this.ghostAudio.destroy(); });
+    this.events.once('shutdown', () => { this.input.off('pointerdown', arm); kb.off('keydown', arm); this.ghostView.destroy(); this.hideView.destroy(); this.ghostAudio.destroy(); });
 
     this.exposeDebug();
   }
@@ -289,6 +296,7 @@ export class GameScene extends Phaser.Scene {
     const left = this.cursors.left.isDown || this.keys.A.isDown;
     const right = this.cursors.right.isDown || this.keys.D.isDown;
     const jump = this.cursors.up.isDown || this.keys.W.isDown || this.keys.SPACE.isDown;
+    if (!canMove(this.session.ghostStatus)) return { moveX: 0, jump: false }; // hiding or caught: the server ignores input, so prediction sends none
     const axis = (right ? 1 : 0) - (left ? 1 : 0);
     return { moveX: this.sneaking() ? axis * SNEAK_AXIS : axis, jump };
   }
@@ -339,6 +347,7 @@ export class GameScene extends Phaser.Scene {
       this.session.inputExtra = {
         aim: quantiseAim(aimOf(me, this.pointerSeen ? { x: ptr0.worldX, y: ptr0.worldY } : null, me.facing)),
         sneak: this.sneaking(),
+        use: this.stageKeys.E.isDown && this.session.ghostStatus !== null, // P3E step 3: E held frees a caught teammate in reach
       };
       this.predictor.advance(delta, this.readInput());
     } else {
@@ -376,6 +385,11 @@ export class GameScene extends Phaser.Scene {
       v.glow.setAlpha(p.connected ? 0.28 : 0.05);
       v.label.setText(p.connected ? p.name : `${p.name} (offline)`);
       v.marker.setText(isMe ? '▼ you' : '').setColor('#ffffff');
+      // P3E step 3: a player hiding is drawn faint to themselves (nobody else is sent them at all); a caught player carries a red mark
+      const gs = s.ghostStatus;
+      const caught = isMe ? !!gs?.caught : !!gs?.captives.some((c) => c.id === p.id);
+      if (isMe && gs?.hiddenIn) v.box.setAlpha(0.3);
+      if (caught) v.marker.setText(isMe ? '▼ you  CAUGHT' : 'CAUGHT').setColor('#ff4d4d');
     }
     for (const [id, v] of this.views) if (!live.has(id)) { v.box.destroy(); this.views.delete(id); }
 
@@ -428,6 +442,13 @@ export class GameScene extends Phaser.Scene {
     for (const ev of this.sounds.tick(cue, s.ghostCueAt, nowMs)) this.ghostAudio.play(ev);
     const cueLine = cueIndicator(cue && nowMs - s.ghostCueAt < 1600 ? cue : null);
     this.cueText.setText(cueLine).setVisible(cueLine !== '');
+    const warning = !!cue?.warning && nowMs - s.ghostCueAt < 1600;
+    if (shouldShowTip(warning, this.warnTipShown)) { this.warnTipShown = true; GameScene.rememberTip(); this.hideView.showTip(nowMs); }
+    const status = cue && nowMs - s.ghostCueAt < 3000 ? s.ghostStatus : null;
+    this.hideView.update({
+      status, me: meNow, where: this.where, nameOf: (id) => g.team?.find((p) => p.id === id)?.name ?? g.players.find((p) => p.id === id)?.name ?? 'your teammate',
+      otherPrompt: !!itemLine || this.escapeNearest !== null, now: nowMs,
+    });
     if (this.pad.isOpen) this.drainKeys(); // typing into the pad must not trigger tools or abilities afterwards
     // keys act on what lies in the player's own room only (a part in another room has the same coordinates as nothing here)
     this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
@@ -488,6 +509,12 @@ export class GameScene extends Phaser.Scene {
       E: J(K.E), Q: J(K.Q), tool: [J(K.ONE), J(K.TWO), J(K.THREE), J(K.FOUR), J(K.FIVE)],
     };
     if (!canAct || !st || !me) return;
+    // P3E step 3: hiding or caught: E comes out of a hiding place; nothing else works (the server refuses it too)
+    const ghostSt = this.session.ghostStatus;
+    if (ghostSt && modeOf(ghostSt) !== 'free') {
+      if (pressed.E && modeOf(ghostSt) === 'hidden') void this.session.ghostAction({ action: 'leave' });
+      return;
+    }
     if (pressed.Q) send({ kind: 'cancel' });
     // P3C salvage keys: E pick up / open (else use), G drop or swap (Shift = the older part), F fit a part, H hand over
     const itemSend = (r: ItemIntent) => {
@@ -499,9 +526,16 @@ export class GameScene extends Phaser.Scene {
       if (mine) itemSend(mine);
       else if (this.escapeNearest) this.useEscape(this.escapeNearest, st.tick);
       else {
-        const id = nearestInteractable(st, me);
-        if (id) send({ kind: 'interact', targetId: id });
-        else this.session.notice = { text: 'Nothing to use here.', ok: false, at: performance.now() };
+        // P3E step 3: a hiding place in reach (E hides) or a caught teammate in reach (HOLD E: the hold rides on the input stream, a tap sends nothing)
+        const captive = ghostSt ? captiveInReach(me, ghostSt.captives, this.where) : null;
+        const spot = ghostSt ? nearestSpot(me, ghostSt.spots) : null;
+        const key = onEPressed({ status: ghostSt, spot, captive: captive !== null, otherUse: false });
+        if (key === 'hide') void this.session.ghostAction({ action: 'hide' });
+        else if (captive === null) {
+          const id = nearestInteractable(st, me);
+          if (id) send({ kind: 'interact', targetId: id });
+          else this.session.notice = { text: 'Nothing to use here.', ok: false, at: performance.now() };
+        }
       }
     }
     if (st.items) {
@@ -535,6 +569,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** P3E step 3: has this browser already shown the first-warning line? (Kept in localStorage; if storage is unavailable it just shows once per page.) */
+  private static tipSeen(): boolean {
+    try { return window.localStorage.getItem('wb_warning_tip') === '1'; } catch { return false; }
+  }
+  private static rememberTip(): void {
+    try { window.localStorage.setItem('wb_warning_tip', '1'); } catch { /* storage may be unavailable */ }
+  }
+
   private flash(msg: string): void {
     this.toast.setText(msg).setAlpha(1);
     this.tweens.add({ targets: this.toast, alpha: 0, duration: 1600, delay: 600 });
@@ -549,7 +591,7 @@ export class GameScene extends Phaser.Scene {
         const g = this.session.game;
         return {
           fps: Math.round(this.game.loop.actualFps), predActive: this.predictor.active, sent: this.predictor.sentCount, pending: this.predictor.pendingCount,
-          ghost: { drawn: this.ghostView.count, cue: this.session.ghostCue, audioReady: this.ghostAudio.ready, muted: this.ghostAudio.muted, sneaking: this.sneaking(), extra: this.session.inputExtra },
+          ghost: { drawn: this.ghostView.count, mode: modeOf(this.session.ghostStatus), status: this.session.ghostStatus, cue: this.session.ghostCue, audioReady: this.ghostAudio.ready, muted: this.ghostAudio.muted, sneaking: this.sneaking(), extra: this.session.inputExtra },
           dark: this.darkness ? { ambient: this.darkness.drawnAmbient, assist: this.darkness.assist } : null,
           view: { roomId: g?.players.find((p) => p.id === this.session.playerId)?.roomId ?? null, arena: this.arena.id, scroll: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY }, layouts: [...this.session.layouts.keys()] },
           stage: this.session.stage, notice: this.session.notice?.text ?? null,

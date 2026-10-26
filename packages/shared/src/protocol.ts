@@ -55,6 +55,8 @@ export const GameInputSchema = z.object({
   aim: AimSchema.optional(),
   /** P3E (additive, optional): Shift held. The server trusts it only for crouching in place; how loud a move is comes from the move axis it applied. */
   sneak: z.boolean().optional(),
+  /** P3E step 3 (additive, optional): E held. Freeing a caught teammate needs E held next to them for a few seconds. */
+  use: z.boolean().optional(),
 });
 export type GameInput = z.infer<typeof GameInputSchema>;
 
@@ -121,6 +123,8 @@ export interface ClientToServerEvents {
   'item:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3D: doors (E), keypads and safes (enter a code), switches (press), clues (read). */
   'escape:action': (payload: unknown, ack: (r: Ack<EscapeAck>) => void) => void;
+  /** P3E step 3: hide in the hiding spot in reach, or come out. The server decides. */
+  'ghost:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;

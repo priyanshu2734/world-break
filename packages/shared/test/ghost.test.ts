@@ -187,3 +187,32 @@ describe('P3E ghost cue buckets (the documented sound exception is coarse and bo
     expect(JSON.stringify(parsed)).not.toContain('"x"');
   });
 });
+
+import { CATCH_LIMITS, GhostActionSchema, GhostStatusSchema } from '../src';
+
+describe('P3E step 3 contracts', () => {
+  it('the fixed rules match the brief: 45 s capture, a few seconds to rescue, a telegraph of at least 2 s', () => {
+    expect(CATCH_LIMITS.captureTicks).toBe(900);
+    expect(CATCH_LIMITS.rescueTicks / 20).toBeGreaterThanOrEqual(3);
+    expect(CATCH_LIMITS.inspectTicks / 20).toBeGreaterThanOrEqual(2);
+    expect(CATCH_LIMITS.releasePenalty).toBeGreaterThan(0);
+  });
+  it('the ghost action is hide or leave and nothing else (strict)', () => {
+    expect(GhostActionSchema.safeParse({ action: 'hide' }).success).toBe(true);
+    expect(GhostActionSchema.safeParse({ action: 'leave' }).success).toBe(true);
+    for (const bad of [{ action: 'rescue' }, { action: 'hide', spotId: 'x' }, {}, { action: 1 }, null]) expect(GhostActionSchema.safeParse(bad).success).toBe(false);
+  });
+  it('the input may carry use (E held) as an optional boolean', () => {
+    expect(GameInputSchema.safeParse({ seq: 1, moveX: 0, jump: false, use: true }).success).toBe(true);
+    expect(GameInputSchema.safeParse({ seq: 1, moveX: 0, jump: false }).success).toBe(true);
+    expect(GameInputSchema.safeParse({ seq: 1, moveX: 0, jump: false, use: 'yes' }).success).toBe(false);
+  });
+  it('the status holds spots, the hiding place, a timer and captives, and is bounded', () => {
+    const ok = { spots: [{ id: 'a', x: 1, y: 2, kind: 'closet' }], hiddenIn: null, caught: { secondsLeft: 44 }, captives: [{ id: 'p1', progress: 0.5 }] };
+    expect(GhostStatusSchema.safeParse(ok).success).toBe(true);
+    expect(GhostStatusSchema.safeParse({ ...ok, caught: { secondsLeft: 99 } }).success).toBe(false);
+    expect(GhostStatusSchema.safeParse({ ...ok, captives: [{ id: 'p1', progress: 2 }] }).success).toBe(false);
+    expect(GhostStatusSchema.safeParse({ ...ok, spots: [{ id: 'a', x: 1, y: 2, kind: 'cupboard' }] }).success).toBe(false);
+    expect(GhostStatusSchema.safeParse({ ...ok, spots: Array.from({ length: 13 }, () => ok.spots[0]) }).success).toBe(false);
+  });
+});

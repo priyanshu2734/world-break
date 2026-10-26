@@ -39,6 +39,7 @@ export function cueIndicator(cue: GhostCue | null): string {
   if (cue.warning) return 'Something is coming...';
   const s = nearest(cue.sounds);
   if (!s) return '';
+  if (s.inspecting === true) return s.dir < 0 ? '◀ it is checking a hiding place' : s.dir > 0 ? 'it is checking a hiding place ▶' : 'it is checking a hiding place';
   const dist = s.band === 1 ? 'very close' : s.band === 2 ? 'near' : 'far';
   const side = s.dir < 0 ? '◀ ' : s.dir > 0 ? ' ▶' : '';
   const word = s.state === 'hunting' ? 'HUNTING' : s.state === 'stunned' ? 'stunned' : 'footsteps';

@@ -177,12 +177,63 @@ export const GhostCueSoundSchema = z.object({
   state: z.enum(['roaming', 'hunting', 'stunned']),
   /** Walking right now (a stunned or searching ghost makes no footsteps). */
   moving: z.boolean(),
+  /** P3E step 3 (additive, optional): the ghost stands at a hiding place and is about to open it. A telegraph of at least `CATCH_LIMITS.inspectTicks`. */
+  inspecting: z.boolean().optional(),
 });
+// ------------------------------------------------------------------------------------------------ hiding and the catch (P3E step 3)
+/** Fixed rules of hiding, capture, rescue and release. Times are server ticks (20 Hz). The server enforces all of them. */
+export const CATCH_LIMITS = {
+  /** E at a hiding spot: horizontal reach in px (the vertical offset is bounded by the usual 60 px). */
+  hideRange: 60,
+  /** Minimum ticks between two hide/leave actions of one player. */
+  hideCooldownTicks: 10,
+  /** The height above the floor at which a hiding spot is seen (the same point the server uses to decide whether to tell you about it). */
+  spotPointHeight: 20,
+  /** A caught player is released at their room's entry after this long (45 s) with a score penalty. Nobody is eliminated (P4 replaces this). */
+  captureTicks: 900,
+  releasePenalty: 40,
+  /** A teammate frees a caught player by HOLDING E within this reach (px) for this long (4 s). Letting go costs progress back at the decay rate. */
+  rescueRange: 70,
+  rescueTicks: 80,
+  rescueDecayPerTick: 2,
+  /** A ghost that reaches the place of a noise may check a hiding spot within this many px of it, with this chance (seeded), and does so at most once per spot per `reinspectTicks`. */
+  inspectRadius: 260,
+  inspectShare: 0.6,
+  reinspectTicks: 600,
+  /** The telegraph: the ghost stands at the spot this long (2 s) before it opens it. The hider hears it (the cue says `inspecting`) and may leave. */
+  inspectTicks: 40,
+} as const;
+
+/** Intent: hide in the hiding spot in reach, or come out. (A rescue is not an action: it is the E key HELD, carried by the input stream as `use`.) */
+export const GhostActionSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('hide') }).strict(),
+  z.object({ action: z.literal('leave') }).strict(),
+]);
+export type GhostAction = z.infer<typeof GhostActionSchema>;
+
+export const HidingSpotPublicSchema = z.object({ id: z.string().max(48), x: z.number(), y: z.number(), kind: z.enum(['closet', 'vent']) });
+export type HidingSpotPublic = z.infer<typeof HidingSpotPublicSchema>;
+
+/**
+ * Per-player status (sent inside the `ghost:cue` event). Everything here is what THIS player may know:
+ * the spots in their view (furniture, cut like every other visible thing), the spot they hide in, their own capture timer, and the caught teammates
+ * they can see with the progress of freeing them. Who hides in a spot is never told to anyone else.
+ */
+export const GhostStatusSchema = z.object({
+  spots: z.array(HidingSpotPublicSchema).max(12),
+  hiddenIn: z.string().max(48).nullable(),
+  caught: z.object({ secondsLeft: z.number().int().min(0).max(60) }).nullable(),
+  captives: z.array(z.object({ id: z.string().max(64), progress: z.number().min(0).max(1) })).max(8),
+});
+export type GhostStatus = z.infer<typeof GhostStatusSchema>;
+
 export const GhostCueSchema = z.object({
   tick: z.number().int().min(0),
   /** Some ghost is in its WARNING: the lights flicker and a whisper is heard (everyone, wherever they are). */
   warning: z.boolean(),
   sounds: z.array(GhostCueSoundSchema).max(MAX_GHOSTS),
+  /** P3E step 3 (additive, optional): what this player may know about hiding and being caught. Present while the stage has a ghost. */
+  status: GhostStatusSchema.optional(),
 });
 export type GhostCueSound = z.infer<typeof GhostCueSoundSchema>;
 export type GhostCue = z.infer<typeof GhostCueSchema>;

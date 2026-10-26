@@ -119,3 +119,30 @@ A caught player is CAPTURED where they stand, drops carried items and cannot mov
 - Footsteps: noise ticks, volume by band (1, 0.5, 0.2), stereo pan by direction, period by type, faster when hunting; none when stunned or still. Heartbeat: two low sine thumps for the nearest ghost, faster and louder as it nears and while it hunts. Whisper: filtered, wobbling noise during WARNING.
 - Flicker (WARNING only): the light reach and ambient dip to 35% to 65% in slots of at least 160 ms. It never goes dark, never flashes bright, never exceeds the server's radius. `?reduceflash=1` replaces it with a slow sine between 70% and 100%.
 - Deaf or muted players: a text cue above the hint line says what the audio says ("footsteps near ▶", "HUNTING very close", "Something is coming...").
+
+## Step 3: hiding places and the catch
+
+### How to try it
+Same as step 2 (`http://localhost:5173/?ghost=1&dark=1`). Open a second tab with the room code in the hash (`#ABCD`) to play with a teammate; a lone player can hide but cannot be rescued (they are released after 45 s).
+- **Hide:** stand next to a closet or vent (a dark box in the wall; one or two per room) and press **E** ("E hide in the closet"). You stop, nobody sees you and you make no noise. **E** again comes out. You cannot hide while a ghost is hunting you and has just seen you.
+- **Be caught:** let the ghost touch you, or hide where it checks. You are caught where you stand, drop what you carry and cannot move; a red "CAUGHT" mark and a timer show.
+- **Rescue:** a teammate stands next to you and **holds E** for 4 s ("Hold E to free Ada  60%"). Letting go loses progress.
+- **Release:** if nobody frees you within 45 s you are put at your room's entry and the team loses 40 points. Nobody is eliminated (P4 replaces this).
+- **Noise:** running and dropping a part (G) are loud; walking is quieter; Shift-sneaking is nearly silent; standing still and hiding are silent. After it hears a noise the ghost may check a hiding place within 260 px of where the noise stopped. It stands at the spot for 2 s (you hear slow knocking and the text cue says "it is checking a hiding place"), then opens it. It does not know whether anyone is inside. You may step out during the 2 s, but then it can see you.
+- The first time a warning plays, the line "The lights flicker. Something is near." is shown once (remembered in your browser).
+
+### Rules (all server side, `server/src/ghost/catch.ts`, constants `CATCH_LIMITS` in `shared/src/ghost`)
+- Hiding and capture are held by `CatchSystem`, one per stage, owned by the Room; the ghost keeps its own state machine. A hidden or caught player is frozen in the simulation (`GameSim.setFrozen`): the server ignores their move input, and the client sends none, so prediction stays exact.
+- A hidden player is in nobody's snapshot but their own (`restrictedView(... hidden)`). Hiding spots are furniture and are sent only when in view; who hides in one is never sent.
+- A caught player: carried parts drop where they stand (one per few ticks, through the normal item drop), their task is cancelled, they are shown to teammates in view as caught with the rescue progress.
+- Hide, leave, item, stage, ability and escape actions are refused while hiding (except leave) or caught.
+- Release puts the player on the start room's spawn slot, or at the arrival point of the door into their room, and re-sends the layout so the client restarts its prediction there.
+- Noise: a dropped or swapped part calls `GhostSystem.makeNoise` (loudness 1.1). Movement noise is unchanged (gait from the applied axis).
+- The ghost's inspection is part of the ghost machine (`a.inspect`): chosen by the ghost's seeded generator on arriving at a noise, logged as `inspect` events (start, found, empty), and every catch carries a `because` chain ("Heard Ada running ...; Opened the closet and found Ada ...").
+
+### Contract changes (all additive)
+- `game:input` gains optional `use` (E held). `ghost:action` event (`hide` or `leave`, acked). `ghost:cue` gains an optional `status` (`spots`, `hiddenIn`, `caught`, `captives`) and each sound an optional `inspecting`.
+- Deliberate change to one of my own step-1 tests: `server/test/ghost/room.test.ts`, "a ghost visible to one player is absent for a teammate who cannot see it": a catch used to do nothing; now it freezes the player, so the ghost is placed after the teammate walked away.
+
+### NOT RUN
+Browser play, WebAudio, Phaser drawing of the spots, the E hold in a real keyboard, the gateway handler for `ghost:action` and the gateway tests, real `tsc`/`npm`.

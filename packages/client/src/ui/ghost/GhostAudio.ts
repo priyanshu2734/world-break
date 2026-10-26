@@ -39,6 +39,7 @@ export class GhostAudio {
     if (!this.ctx || !this.master || this.muted || this.ctx.state !== 'running') return;
     try {
       if (e.kind === 'step') this.step(e.gain, e.pan, e.hunting, e.type);
+      else if (e.kind === 'knock') this.knock(e.gain, e.pan);
       else if (e.kind === 'beat') this.beat(e.gain, e.fast);
       else this.whisper();
     } catch { /* a failed sound must never break the frame */ }
@@ -78,6 +79,15 @@ export class GhostAudio {
     const g = this.out(pan, 0.5 * gain * (hunting ? 1.3 : 1), t, hunting ? 0.12 : 0.09);
     src.connect(f); f.connect(g);
     src.start(t, Math.random() * 1.5, 0.15);
+  }
+
+  /** A dull knock on wood: a short low sine with a click. */
+  private knock(gain: number, pan: number): void {
+    const ctx = this.ctx!, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'triangle';
+    o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(90, t + 0.08);
+    const g = this.out(pan, 0.7 * gain, t, 0.14);
+    o.connect(g); o.start(t); o.stop(t + 0.18);
   }
 
   /** Two low thumps: lub-dub. */

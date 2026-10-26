@@ -196,6 +196,25 @@ export class StageEngine {
     return this.items.use(playerId, a, me, pos);
   }
 
+  // ------------------------------------------------------------------ P3E: the catch (called by the Room; the ghost rules live in server/src/ghost)
+  /**
+   * A caught player: cancel their task and drop ONE carried part where they stand. Returns how many parts they still carry (call again next tick until 0;
+   * the item system limits how fast one player may act, so a second part follows a few ticks later).
+   */
+  dropOneCarried(playerId: string, pos: PosFn): number {
+    if (this.channels.delete(playerId)) this.dirty = true;
+    const items = this.items, me = pos(playerId);
+    if (!items || !me) return 0;
+    const first = items.carriedBy(playerId)[0];
+    if (first === undefined) return 0;
+    items.use(playerId, { action: 'drop', itemId: first }, me, pos);
+    return items.carriedBy(playerId).length;
+  }
+  /** Take points off the team score (a release after a capture). The total never goes below 0. */
+  penalty(category: string, points: number): void { this.award(category, -Math.abs(points)); }
+  /** A line for the stage feed, shown to the players in `room` (or everyone). */
+  announce(text: string, tone: 'info' | 'good' | 'warn' | 'bad', room?: string): void { this.say(text, tone, room); }
+
   // ------------------------------------------------------------------ P3D: escape (doors, locks, exit)
   private escapeRooms: { roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean; canSee(playerId: string, x: number, y: number): boolean } | undefined;
   private escapeHost(rooms: typeof this.escapeRooms, start: string): EscapeHost {

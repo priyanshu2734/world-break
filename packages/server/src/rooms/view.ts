@@ -23,6 +23,8 @@ export interface ViewSource {
    * it is in their room, inside their reach, in line of sight and (once their aim is known) in their lit region. Absent = no ghost system.
    */
   ghosts?: readonly GhostPublic[];
+  /** P3E step 3: players hiding in a hiding spot. They are in nobody's snapshot but their own. */
+  hidden?: ReadonlySet<string>;
 }
 /**
  * `eyes` is whose position and line of sight the view is cut from, `self` whose hands are shown. P3E: `aim` (radians) is where the eyes' owner points the
@@ -56,7 +58,7 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
 
   // ---- the game snapshot: yourself, your eyes' owner, and teammates in view (their positions, never their inventories)
   const players = snapshot.players.filter((p) =>
-    p.id === viewer.eyes || showSelf(p.id) || (here(p.roomId) && see(p.x, p.y - POINT_HEIGHT.player)));
+    p.id === viewer.eyes || showSelf(p.id) || (!(src.hidden?.has(p.id)) && here(p.roomId) && see(p.x, p.y - POINT_HEIGHT.player)));
 
   // ---- the stage state
   const out: StageState = {

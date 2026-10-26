@@ -1,10 +1,10 @@
 import {
-  EYE_HEIGHT, GHOST_LIMITS, cueBand, cueDir, GHOST_TRANSITIONS, MAX_GHOSTS, NOISE_KIND_LOUDNESS, NOISE_LOUDNESS, NOISE_MUFFLE,
+  CATCH_LIMITS, EYE_HEIGHT, GHOST_LIMITS, cueBand, cueDir, GHOST_TRANSITIONS, MAX_GHOSTS, NOISE_KIND_LOUDNESS, NOISE_LOUDNESS, NOISE_MUFFLE,
   angleDiff, createRng, deriveSeed, gaitOf, ghostTuning, hasLineOfSight, occluders, pointVisible,
   type Box, type Difficulty, type GhostCueSound, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type RoomDef, type RoomGraph, type Rng,
 } from '@wb/shared';
 import { NavGrid, type Pt } from './nav';
-import type { GhostCatchEvent, GhostEvent, GhostHost, GhostPlayer } from './types';
+import type { GhostCatchEvent, GhostEvent, GhostHost, GhostPlayer, HidingSpotDef } from './types';
 
 /**
  * P3E: the ghost. Server-authoritative and deterministic in (stage, seed, tick): it never reads a clock, `Math.random` or the order of anything
@@ -29,10 +29,12 @@ export interface GhostConfig {
   visionRadius: number;
   /** Which ghost types run (at most `MAX_GHOSTS`). */
   types: readonly GhostType[];
+  /** P3E step 3: the hiding places of the stage. A ghost that reaches the place of a noise may check one near it. Absent = none. */
+  hidingSpots?: readonly HidingSpotDef[];
 }
 
 interface Noise { room: string; x: number; y: number; loud: number; player: string; name: string; label: string; gait: 'run' | 'walk' | 'sneak' | 'drop' | 'door'; tick: number; door?: string }
-interface Goal { room: string; x: number; y: number; door?: string }
+interface Goal { room: string; x: number; y: number; door?: string; inspect?: string }
 interface Seen { room: string; x: number; y: number; tick: number }
 
 interface Actor {
@@ -66,6 +68,8 @@ interface Actor {
   lastHeardLog: number;
   /** Moved during the last tick (for the footsteps a listener hears). */
   moving: boolean;
+  /** Standing at a hiding spot, about to open it (P3E step 3). */
+  inspect: { spot: string; until: number } | null;
 }
 
 const DOOR_REACH = 80;
@@ -88,6 +92,8 @@ export class GhostSystem {
   private readonly log: GhostEvent[] = [];
   private pending: GhostEvent[] = [];
   private readonly lastNoise = new Map<string, Noise>();
+  private readonly spotsById = new Map<string, HidingSpotDef>();
+  private readonly lastInspect = new Map<string, number>();
   private readonly prevPos = new Map<string, { room: string; x: number; y: number }>();
   // per-tick caches
   private occCache = new Map<string, Box[]>();
@@ -95,6 +101,7 @@ export class GhostSystem {
 
   constructor(private readonly cfg: GhostConfig, private readonly host: GhostHost) {
     this.tuning = ghostTuning(cfg.difficulty, cfg.stage);
+    for (const h of cfg.hidingSpots ?? []) this.spotsById.set(h.id, h);
     for (const r of cfg.graph.rooms) {
       this.roomsById.set(r.id, r);
       const grid = new NavGrid(r);
@@ -116,7 +123,7 @@ export class GhostSystem {
       this.actors.push({
         id: `g${index}`, kind, rng, state: 'dormant', since: 0, until: first, warnedAt: -1, blockedLogged: false, present: false,
         room: cfg.graph.start, x: 0, y: 0, angle: 0, path: [], pathGoal: -1, lastPlan: -100, goal: null, patrol: null,
-        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false,
+        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false, inspect: null,
       });
     });
   }
@@ -153,10 +160,19 @@ export class GhostSystem {
         if (!a.present || a.room !== roomId || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
         const band = cueBand(Math.hypot(a.x - x, a.y - (y - BODY_CENTRE)));
         if (band === 0) continue;
-        sounds.push({ id: a.id, kind: a.kind, band, dir: cueDir(a.x - x), state: a.state, moving: a.moving });
+        sounds.push({ id: a.id, kind: a.kind, band, dir: cueDir(a.x - x), state: a.state, moving: a.moving, ...(a.inspect ? { inspecting: true } : {}) });
       }
     }
     return { warning: this.warning, sounds };
+  }
+
+  /**
+   * Is a ghost hunting this player AND has it seen them within the last second? (Then they cannot duck into a hiding place: the ghost is watching.)
+   * It is the same fact the hunt itself runs on (`lastSeen`), nothing is guessed.
+   */
+  watching(playerId: string): boolean {
+    const t = this.host.tick;
+    return this.actors.some((a) => a.present && a.state === 'hunting' && a.quarry === playerId && a.lastSeen !== null && t - a.lastSeen.tick <= 20);
   }
 
   // ------------------------------------------------------------------------------------------------------- inputs from the world
@@ -222,7 +238,7 @@ export class GhostSystem {
     if (to === 'respawn') { a.present = false; a.until = t + this.tuning.intervalTicks; this.clearPlan(a); a.quarry = null; a.lastSeen = null; a.chain = []; a.opening = null; }
     if (to === 'stunned') { this.clearPlan(a); a.opening = null; }
   }
-  private clearPlan(a: Actor): void { a.path = []; a.pathGoal = -1; a.goal = null; a.patrol = null; a.searchUntil = 0; }
+  private clearPlan(a: Actor): void { a.path = []; a.pathGoal = -1; a.goal = null; a.patrol = null; a.searchUntil = 0; a.inspect = null; }
 
   private record(e: GhostEvent): void {
     this.log.push(e); this.pending.push(e);
@@ -357,7 +373,7 @@ export class GhostSystem {
     const seen = this.sees(a, players, open);
     if (a.state === 'roaming') {
       if (seen) this.startHunt(a, seen.p, seen.d, t);
-      else if (t >= a.activeUntil && !a.goal && !a.opening) { this.go(a, 'respawn', 'it faded after roaming without a hunt'); return; }
+      else if (t >= a.activeUntil && !a.goal && !a.opening && !a.inspect) { this.go(a, 'respawn', 'it faded after roaming without a hunt'); return; }
     } else if (seen) {
       // hunting: keep the quarry in sight (or switch to the nearest visible player)
       a.quarry = seen.p.id;
@@ -376,6 +392,7 @@ export class GhostSystem {
     }
 
     if (a.state === 'hunting' && this.catchCheck(a, players, t)) return;
+    if (a.inspect && a.state === 'roaming' && !a.opening) { this.inspecting(a, players, t); return; }
     if (!a.opening) this.move(a, open, t);
   }
   private clearPathOnly(a: Actor): void { a.path = []; a.pathGoal = -1; }
@@ -383,7 +400,7 @@ export class GhostSystem {
   private startHunt(a: Actor, p: GhostPlayer, d: number, t: number): void {
     a.quarry = p.id;
     a.lastSeen = { room: p.roomId, x: p.x, y: p.y - BODY_CENTRE, tick: t };
-    a.goal = null; a.patrol = null; this.clearPathOnly(a);
+    a.goal = null; a.patrol = null; a.inspect = null; this.clearPathOnly(a);
     const text = `Saw ${p.name} at tick ${t}`;
     a.chain = [...a.chain.filter((c) => !c.startsWith('Saw ')), text].slice(-4);
     this.record({ tick: t, ghost: a.id, kind: 'sighted', player: p.id, distance: r2(d), text });
@@ -394,13 +411,52 @@ export class GhostSystem {
     for (const p of players) {
       if (!p.connected || p.captured || p.hidden || p.roomId !== a.room) continue;
       if (Math.hypot(a.x - p.x, a.y - (p.y - BODY_CENTRE)) > GHOST_LIMITS.catchRadius) continue;
-      const ev: GhostCatchEvent = { tick: t, ghost: a.id, kind: 'catch', player: p.id, room: a.room, x: r2(p.x), y: r2(p.y), because: [...a.chain, `Caught ${p.name} at tick ${t}`] };
-      this.record(ev);
-      this.go(a, 'respawn', `it caught ${p.name}`);
-      this.host.onCatch?.(p.id, ev);
+      this.catchPlayer(a, p, t, `Caught ${p.name} at tick ${t}`);
       return true;
     }
     return false;
+  }
+
+  /** Record a catch with the reasons that led to it, send the ghost away (RESPAWN) and tell the host. */
+  private catchPlayer(a: Actor, p: GhostPlayer, t: number, last: string): void {
+    const ev: GhostCatchEvent = { tick: t, ghost: a.id, kind: 'catch', player: p.id, room: a.room, x: r2(p.x), y: r2(p.y), because: [...a.chain, last] };
+    this.record(ev);
+    this.go(a, 'respawn', `it caught ${p.name}`);
+    this.host.onCatch?.(p.id, ev);
+  }
+
+  // ------------------------------------------------------------------------------------------------------- hiding places
+  /** A hiding spot of this room within reach of a noise that this ghost has not checked lately (the nearest one), or null. */
+  private spotNear(room: string, at: Pt, t: number): HidingSpotDef | null {
+    let best: HidingSpotDef | null = null, bestD: number = CATCH_LIMITS.inspectRadius;
+    for (const h of this.spotsById.values()) {
+      if (h.room !== room) continue;
+      const seenAt = this.lastInspect.get(h.id);
+      if (seenAt !== undefined && t - seenAt < CATCH_LIMITS.reinspectTicks) continue;
+      const d = Math.hypot(h.x - at.x, h.y - BODY_CENTRE - at.y);
+      if (d < bestD) { best = h; bestD = d; }
+    }
+    return best;
+  }
+  /** The ghost stands at the spot for `inspectTicks` (the telegraph, heard through the cue), then opens it: whoever is inside is caught. It never knows if anyone is there before it opens. */
+  private inspecting(a: Actor, players: GhostPlayer[], t: number): void {
+    const ins = a.inspect!;
+    const spot = this.spotsById.get(ins.spot);
+    if (!spot) { a.inspect = null; return; }
+    this.turnTo(a, spot.x >= a.x ? 0 : Math.PI);
+    if (t < ins.until) return;
+    a.inspect = null;
+    const who = this.host.occupantOf?.(spot.id) ?? null;
+    const p = who ? players.find((x) => x.id === who && x.connected && !x.captured) : undefined;
+    const base = { tick: t, ghost: a.id, kind: 'inspect' as const, spot: spot.id, room: spot.room };
+    if (p) {
+      this.record({ ...base, phase: 'found', player: p.id, text: `Opened the ${spot.kind} and found ${p.name}` });
+      this.catchPlayer(a, p, t, `Opened the ${spot.kind} and found ${p.name} at tick ${t}`);
+      return;
+    }
+    this.record({ ...base, phase: 'empty', text: `Opened the ${spot.kind}: nobody there` });
+    a.goal = null;
+    this.startSearch(a, t);
   }
 
   // ------------------------------------------------------------------------------------------------------- moving
@@ -449,6 +505,20 @@ export class GhostSystem {
   }
 
   private arrive(a: Actor, tgt: Goal, open: ReadonlySet<string>, t: number): void {
+    // arrived at a hiding spot it chose to check: stand and open it after the telegraph
+    if (tgt.inspect && a.state === 'roaming') {
+      a.goal = null;
+      a.inspect = { spot: tgt.inspect, until: t + CATCH_LIMITS.inspectTicks };
+      this.lastInspect.set(tgt.inspect, t);
+      const h = this.spotsById.get(tgt.inspect);
+      if (h) this.record({ tick: t, ghost: a.id, kind: 'inspect', spot: h.id, room: h.room, phase: 'start', text: `Stopped at the ${h.kind} near where it heard a noise` });
+      return;
+    }
+    // arrived at the place of a noise: it may check a hiding spot near it (seeded chance), instead of only looking around
+    if (a.state === 'roaming' && !tgt.door && this.spotsById.size > 0) {
+      const h = this.spotNear(a.room, tgt, t);
+      if (h && a.rng.next() < CATCH_LIMITS.inspectShare) { a.goal = { room: h.room, x: h.x, y: h.y - BODY_CENTRE, inspect: h.id }; a.searchUntil = 0; return; }
+    }
     // a trail that ends at an open door: the ghost follows it through
     if (tgt.door && open.has(tgt.door) && a.state === 'roaming') {
       const d = this.roomsById.get(a.room)!.doors.find((x) => x.id === tgt.door);
