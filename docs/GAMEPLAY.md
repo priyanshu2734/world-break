@@ -142,3 +142,26 @@ The old tool bar (1 to 5) is removed from the HUD for escape stages. Abilities (
 | Phantom | blinks through walls (sound warning), then touch | stay in lit areas, use doors |
 | Warden | breaks ordinary doors, slow, heavy touch | two-person doors, gun, loops |
 | Twins | two weaker ghosts that hunt together | split attention, hide in separate spots |
+
+## 15. Signature features (v7: what makes this game its own)
+Planned, with the phase that builds each. All server-authoritative, deterministic by seed, bounded, fair and explainable.
+1. **Identify the ghost (P3F, the big hook).** Each ghost type leaves different EVIDENCE in the stage (cold breath on the light, wet footprints, scratched walls, flickering
+   only one lamp, a particular whisper). Players read the evidence, talk, and decide WHICH ghost it is, because the right counter depends on the type (Shade: keep the light on
+   it; Howler: stay quiet; Warden: loop it through doors). A wrong guess costs time or health, a right one gives a clear advantage. Brain use grows with the stage.
+2. **Stealth toolkit (P3I).**
+   * Noise-maker: a throwable lure (bottle, radio) that draws the ghost to a spot for a few seconds. Limited per stage, uses a slot.
+   * Flashlight as a resource: it drains while on, batteries are items, light off is quieter but darker (the Shade needs light, so this is a real tension).
+   * Sprint stamina: running is fast, loud and tiring; sneaking is quiet.
+   * Door tactics: hold a door shut for a few seconds (noisy), lock some doors behind you with a key item; the ghost needs time to open them.
+3. **The ghost learns (P3I).** It remembers your last hiding spots and routes and checks them sooner (a capped "memory"), so you cannot hide in the same place forever.
+   It never cheats: no seeing through walls, no knowing your position without a sense.
+4. **AI director for pacing (P3I).** Deterministic tension and relief cycles: after a scare there is a guaranteed calm window; if the team stalls, pressure builds (the ghost
+   gets bolder, the lights dim); if they are doing well, a safer stretch. Never unfair, always telegraphed.
+5. **Roles by gear (P3H).** In the lobby each player picks a loadout: Scout (wider light cone), Tech (faster locks), Medic (faster revive), Runner (more stamina). Different information and
+   abilities make teamwork matter and give replay value.
+6. **Draft pick and optional loot (P3F):** 1 of 3 upgrades after each stage, risky optional loot rooms, Risk Contracts.
+7. **Later (P6 and beyond):** Daily Breach (same seed for everyone, best stage), cosmetics and Workshop unlocks for accounts.
+
+## 16. Hard rules for all of the above
+Every mechanic has a warning, a counter, a cap and a test. No stage may be a repeat of the previous stage's template or lock type. A first-time player must be able to learn the
+mechanic from a visible prompt before it is required.
