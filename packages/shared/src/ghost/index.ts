@@ -89,7 +89,7 @@ export function gaitOf(moveX: number): Gait {
 /** Share of the ghost's hearing range at which each sound carries (running is loud; walking and sneaking are quiet; standing is silent). */
 export const NOISE_LOUDNESS: Readonly<Record<Gait, number>> = { still: 0, sneak: 0.15, walk: 0.4, run: 1 };
 /** Other sounds: dropping an item, a door being opened. A wall in the way muffles a sound to this share. */
-export const NOISE_KIND_LOUDNESS = { drop: 1.1, door: 0.8 } as const;
+export const NOISE_KIND_LOUDNESS = { drop: 1.1, door: 0.8, shot: 1.1 } as const;
 export const NOISE_MUFFLE = 0.65;
 
 // ------------------------------------------------------------------------------------------------ aim
@@ -180,6 +180,38 @@ export const GhostCueSoundSchema = z.object({
   /** P3E step 3 (additive, optional): the ghost stands at a hiding place and is about to open it. A telegraph of at least `CATCH_LIMITS.inspectTicks`. */
   inspecting: z.boolean().optional(),
 });
+// ------------------------------------------------------------------------------------------------ the Pulse Gun (P3E step 4)
+/**
+ * Fixed rules of the Pulse Gun. One per ghost stage, one charge (a shot spends it, hit or miss), aimed with the aim angle the server already holds
+ * for the player. The bolt is simulated on the server: it flies `speedPx` per tick for at most `rangePx` (so at most `rangePx / speedPx` ticks, well under
+ * a second), stops at a wall or a closed door, and stuns the first ghost whose body it touches. A ghost can only be stunned while ROAMING or HUNTING.
+ */
+export const GUN_LIMITS = {
+  rangePx: 640,
+  speedPx: 48,
+  /** The bolt touches a ghost when the segment it flew this tick passes within this many px of the ghost's body centre. */
+  hitRadiusPx: 30,
+  /** Reach (px) of the muzzle from the shooter's eye. The bolt starts at the eye. */
+  eyeHeight: 28,
+  /** How long a bolt (and its flash) is kept in the world for the clients that saw it, in ticks. */
+  flashTicks: 16,
+} as const;
+
+/** Sent once per shot to the players who can see where it was fired (and the shooter): the client draws the bolt from these numbers. */
+export const GhostShotSchema = z.object({
+  id: z.string().max(40),
+  x: z.number(), y: z.number(),
+  /** Radians. */
+  angle: z.number(),
+  rangePx: z.number().min(0).max(2000),
+  speedPx: z.number().min(1).max(500),
+  /** The server tick it was fired at. */
+  tick: z.number().int().min(0),
+  /** The room the shot was fired in (the viewer is in it). */
+  room: z.string().max(48),
+});
+export type GhostShot = z.infer<typeof GhostShotSchema>;
+
 // ------------------------------------------------------------------------------------------------ hiding and the catch (P3E step 3)
 /** Fixed rules of hiding, capture, rescue and release. Times are server ticks (20 Hz). The server enforces all of them. */
 export const CATCH_LIMITS = {
@@ -208,6 +240,8 @@ export const CATCH_LIMITS = {
 export const GhostActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('hide') }).strict(),
   z.object({ action: z.literal('leave') }).strict(),
+  /** P3E step 4: fire the Pulse Gun you carry. No parameters: the direction is the aim the server already holds for you. */
+  z.object({ action: z.literal('fire') }).strict(),
 ]);
 export type GhostAction = z.infer<typeof GhostActionSchema>;
 

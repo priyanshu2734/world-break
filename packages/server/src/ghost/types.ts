@@ -42,7 +42,7 @@ export interface GhostHost {
 /** Everything the server logs about the ghost (for the future death review, P4). Plain data; bounded ring. */
 export interface GhostEventBase { tick: number; ghost: string }
 export type GhostStateEvent = GhostEventBase & { kind: 'state'; from: GhostState; to: GhostState; cause: string };
-export type GhostHeardEvent = GhostEventBase & { kind: 'heard'; player: string; room: string; x: number; y: number; loudness: number; gait: Gait | 'drop' | 'door'; text: string };
+export type GhostHeardEvent = GhostEventBase & { kind: 'heard'; player: string; room: string; x: number; y: number; loudness: number; gait: Gait | 'drop' | 'door' | 'shot'; text: string };
 export type GhostSightEvent = GhostEventBase & { kind: 'sighted'; player: string; distance: number; text: string };
 export type GhostLostEvent = GhostEventBase & { kind: 'lost'; player: string; text: string };
 export type GhostSpawnEvent = GhostEventBase & { kind: 'spawn'; room: string; x: number; y: number; warnedAt: number };
@@ -50,10 +50,12 @@ export type GhostBlockedEvent = GhostEventBase & { kind: 'spawn_blocked'; reason
 export type GhostDoorEvent = GhostEventBase & { kind: 'door'; door: string; phase: 'start' | 'done' | 'cancelled' };
 export type GhostCatchEvent = GhostEventBase & { kind: 'catch'; player: string; room: string; x: number; y: number; because: string[] };
 export type GhostInspectEvent = GhostEventBase & { kind: 'inspect'; spot: string; room: string; phase: 'start' | 'found' | 'empty'; player?: string; text: string };
+/** A Pulse Gun shot (P3E step 4): fired, and how it ended. `ghost` is the one hit. */
+export type GhostPulseEvent = GhostEventBase & { kind: 'pulse'; by: string; phase: 'fired' | 'hit' | 'stunned' | 'absorbed' | 'wall' | 'miss'; room: string; text: string };
 export type GhostStunEvent = GhostEventBase & { kind: 'stun'; by: string | null; until: number };
 export type GhostEvent =
   | GhostStateEvent | GhostHeardEvent | GhostSightEvent | GhostLostEvent | GhostSpawnEvent
-  | GhostBlockedEvent | GhostDoorEvent | GhostCatchEvent | GhostStunEvent | GhostInspectEvent;
+  | GhostBlockedEvent | GhostDoorEvent | GhostCatchEvent | GhostStunEvent | GhostInspectEvent | GhostPulseEvent;
 
 /** One sentence a person can read: why this catch happened ("Heard Ada running at tick 412; saw Ada at tick 440; caught Ada at tick 466."). */
 export function explainCatch(ev: GhostCatchEvent): string {

@@ -5,7 +5,7 @@ import { WorldPublicSchema } from './abilities/world';
 import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
-import { AimSchema, GhostPublicSchema, type GhostCue } from './ghost';
+import { AimSchema, GhostPublicSchema, type GhostCue, type GhostShot } from './ghost';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -139,4 +139,6 @@ export interface ServerToClientEvents {
    * vision invariant) and whether a warning is on. Sent when it changes (at most every 4 ticks) and at least once a second while a ghost exists.
    */
   'ghost:cue': (cue: GhostCue) => void;
+  /** P3E step 4. Sent to the players who can see where a Pulse Gun shot was fired (and its shooter): the bolt to draw. */
+  'ghost:shot': (shot: GhostShot) => void;
 }

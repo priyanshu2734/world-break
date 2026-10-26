@@ -27,6 +27,8 @@ import { cueIndicator } from '../ui/ghost/cueMath';
 import { lightScale } from '../ui/ghost/flicker';
 import { ghostFlags } from '../ui/ghost/ghostParam';
 import { HideView } from '../ui/ghost/HideView';
+import { GunView } from '../ui/ghost/GunView';
+import { canFire, carriesGun } from '../ui/ghost/gunLogic';
 import { canMove, captiveInReach, modeOf, nearestSpot, onEPressed, shouldShowTip } from '../ui/ghost/hideLogic';
 
 /** P3E: Shift = sneak. The move axis is scaled to this before it is predicted and sent, so prediction and server see the same value
@@ -105,6 +107,7 @@ export class GameScene extends Phaser.Scene {
   private muteKey!: Phaser.Input.Keyboard.Key;
   /** P3E step 3: hiding places, the caught prompt, the rescue bars and the first-warning line. */
   private hideView!: HideView;
+  private gunView!: GunView;
   private warnTipShown = false;
 
   private hudRows: { swatch: Phaser.GameObjects.Rectangle; text: Phaser.GameObjects.Text; dot: Phaser.GameObjects.Arc }[] = [];
@@ -157,6 +160,7 @@ export class GameScene extends Phaser.Scene {
     this.ghostFlags = ghostFlags(window.location.search);
     this.ghostView = new GhostView(this);
     this.hideView = new HideView(this);
+    this.gunView = new GunView(this);
     this.warnTipShown = GameScene.tipSeen();
     this.ghostAudio = new GhostAudio(this.ghostFlags.muted);
     this.muteKey = kb.addKey('M');
@@ -165,7 +169,14 @@ export class GameScene extends Phaser.Scene {
     const arm = () => this.ghostAudio.arm();
     this.input.on('pointerdown', arm);
     kb.on('keydown', arm);
-    this.events.once('shutdown', () => { this.input.off('pointerdown', arm); kb.off('keydown', arm); this.ghostView.destroy(); this.hideView.destroy(); this.ghostAudio.destroy(); });
+    // P3E step 4: a left click fires the Pulse Gun when one is in hand (the server checks everything: gun, aim, range, hit); the crack plays when a shot arrives
+    const fire = (p: Phaser.Input.Pointer) => {
+      const items = this.session.stage?.items;
+      if (this.session.game?.phase === 'playing' && canFire(carriesGun(items, this.session.playerId), this.session.ghostStatus, p.button)) void this.session.ghostAction({ action: 'fire' });
+    };
+    this.input.on('pointerdown', fire);
+    this.session.onGhostShot = () => this.ghostAudio.zap();
+    this.events.once('shutdown', () => { this.input.off('pointerdown', arm); this.input.off('pointerdown', fire); this.session.onGhostShot = null; kb.off('keydown', arm); this.ghostView.destroy(); this.hideView.destroy(); this.gunView.destroy(); this.ghostAudio.destroy(); });
 
     this.exposeDebug();
   }
@@ -449,6 +460,12 @@ export class GameScene extends Phaser.Scene {
       status, me: meNow, where: this.where, nameOf: (id) => g.team?.find((p) => p.id === id)?.name ?? g.players.find((p) => p.id === id)?.name ?? 'your teammate',
       otherPrompt: !!itemLine || this.escapeNearest !== null, now: nowMs,
     });
+    const ptrG = this.input.activePointer;
+    this.gunView.update({
+      me: meNow, carries: g.phase === 'playing' && carriesGun(s.stage?.items, s.playerId),
+      aim: meNow ? aimOf(meNow, this.pointerSeen ? { x: ptrG.worldX, y: ptrG.worldY } : null, meNow.facing) : 0,
+      status, shots: s.ghostShots, ghosts: g.ghosts ?? [], myRoom, nowMs,
+    });
     if (this.pad.isOpen) this.drainKeys(); // typing into the pad must not trigger tools or abilities afterwards
     // keys act on what lies in the player's own room only (a part in another room has the same coordinates as nothing here)
     this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
@@ -591,6 +608,7 @@ export class GameScene extends Phaser.Scene {
         const g = this.session.game;
         return {
           fps: Math.round(this.game.loop.actualFps), predActive: this.predictor.active, sent: this.predictor.sentCount, pending: this.predictor.pendingCount,
+          gun: { carries: carriesGun(this.session.stage?.items, this.session.playerId), shots: this.session.ghostShots.length },
           ghost: { drawn: this.ghostView.count, mode: modeOf(this.session.ghostStatus), status: this.session.ghostStatus, cue: this.session.ghostCue, audioReady: this.ghostAudio.ready, muted: this.ghostAudio.muted, sneaking: this.sneaking(), extra: this.session.inputExtra },
           dark: this.darkness ? { ambient: this.darkness.drawnAmbient, assist: this.darkness.assist } : null,
           view: { roomId: g?.players.find((p) => p.id === this.session.playerId)?.roomId ?? null, arena: this.arena.id, scroll: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY }, layouts: [...this.session.layouts.keys()] },

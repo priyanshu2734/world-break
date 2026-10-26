@@ -17,6 +17,7 @@ export function drawShape(g: Phaser.GameObjects.Graphics, shape: MarkerShape, x:
       { x: x - s * 0.3, y: y - s }, { x: x + s * 0.3, y: y - s }, { x: x + s * 0.3, y: y - s * 0.3 }, { x: x + s, y: y - s * 0.3 }, { x: x + s, y: y + s * 0.3 }, { x: x + s * 0.3, y: y + s * 0.3 },
       { x: x + s * 0.3, y: y + s }, { x: x - s * 0.3, y: y + s }, { x: x - s * 0.3, y: y + s * 0.3 }, { x: x - s, y: y + s * 0.3 }, { x: x - s, y: y - s * 0.3 }, { x: x - s * 0.3, y: y - s * 0.3 },
     ]); break;
+    case 'bolt': poly([{ x: x + s * 0.2, y: y - s }, { x: x - s * 0.7, y: y + s * 0.1 }, { x: x - s * 0.05, y: y + s * 0.1 }, { x: x - s * 0.2, y: y + s }, { x: x + s * 0.7, y: y - s * 0.15 }, { x: x + s * 0.05, y: y - s * 0.15 }]); break;
     case 'block': poly([{ x: x - s, y: y - s }, { x: x + s, y: y - s }, { x: x + s, y: y + s }, { x: x - s, y: y + s }]); g.strokeRect(x - s * 0.5, y - s * 0.5, s, s); break;
   }
 }

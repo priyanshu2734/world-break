@@ -1,6 +1,6 @@
 import {
   ACTION_MIN_GAP_TICKS, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type ItemAction, type StageAction, type StageState, type ToolId,
+  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type ItemAction, type ItemKind, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
@@ -210,6 +210,10 @@ export class StageEngine {
     items.use(playerId, { action: 'drop', itemId: first }, me, pos);
     return items.carriedBy(playerId).length;
   }
+  /** P3E step 4: does the player carry a part of this kind? */
+  carriesKind(playerId: string, kind: ItemKind): boolean { return this.items?.carriedKinds(playerId).includes(kind) ?? false; }
+  /** P3E step 4: spend a carried part of this kind (the Pulse Gun's charge). True if one was carried and is now gone. */
+  spendCarried(playerId: string, kind: ItemKind): boolean { return this.items?.consumeCarried(playerId, kind) === 'ok'; }
   /** Take points off the team score (a release after a capture). The total never goes below 0. */
   penalty(category: string, points: number): void { this.award(category, -Math.abs(points)); }
   /** A line for the stage feed, shown to the players in `room` (or everyone). */

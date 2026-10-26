@@ -146,3 +146,25 @@ Same as step 2 (`http://localhost:5173/?ghost=1&dark=1`). Open a second tab with
 
 ### NOT RUN
 Browser play, WebAudio, Phaser drawing of the spots, the E hold in a real keyboard, the gateway handler for `ghost:action` and the gateway tests, real `tsc`/`npm`.
+
+## Step 4: the Pulse Gun and the safe it lives in
+
+### How to try it
+Same URL as before (`?ghost=1&dark=1`), from stage 2 on (use the dev `startStage`, or play on). In the **start room** find a locker (stages 2 to 4) or a safe (stage 5 and later: three torn pages in the start room spell its 3-digit combination). Open it with **E**, pick up the **Pulse Gun** (a lightning-bolt marker; it takes one hand slot). While you hold it a faint cyan line shows the range and a crosshair the aim. **Left click** fires. There is ONE charge: a shot spends the gun, hit or miss. A hit **stuns** the ghost (it never dies): it freezes, grey and tagged STUNNED, for about 150 s at the lowest stages, shorter on later stages, never under 45 s (`ghostTuning().stunTicks`). It then respawns. A ghost in its WARNING (not in the room) cannot be hit. The crack of the shot is loud: a ghost within hearing comes to look.
+
+### Rules (all server side: `server/src/ghost/gun.ts`, `GUN_LIMITS` in `shared/src/ghost`)
+- The direction is the aim the server already holds for the player (never a client vector). Range 640 px, 48 px per tick, so a bolt lives at most 14 ticks; it stops at walls and closed doors (`GhostSystem.trace`) and stuns the first ghost within 30 px of its path via `GhostSystem.stun`, which refuses anything but ROAMING or HUNTING.
+- A hidden or caught player cannot fire (the same `blocked()` check as every other action). No gun, no aim yet, or an unknown player: refused, and the gun is not spent.
+- Placement (`generateEscapeStage(stage, seed, { ghost: true })`): exactly one genuine `pulse_gun` in the START room, in a locker (stage below 5) or in a combination safe whose notes are in the start room (stage 5 and later, falling back to a locker when the limits are full). One item slot is reserved, so the 12-part cap still holds. The extra draws come last, so a stage generated without the option is byte for byte what it was. `Room` passes `ghost` through.
+- The validator (`escapeValidate.ts`, `requireGun`) proves: one gun, not a decoy, in the start room (no door needed), locked in a start-room locker or safe, clues spell the combination and lie in the start room, one hand (fits next to another part within 2 slots). The old rule "a safe must hold a door's part" is relaxed for the gun's safe only.
+- Everything is a function of the tick and the inputs: no clock, no `Math.random`.
+
+### Contract changes (additive)
+- Item kind `pulse_gun` (`shared/src/salvage/specs.ts`, outside the P3D section-9 list; needed to reuse the item system) and its marker shape `bolt` (`client/src/ui/itemView.ts`, `itemDraw.ts`).
+- `ghost:action` gains `{ action: 'fire' }` (strict, no payload). New server event `ghost:shot` (`GhostShotSchema`: origin, angle, range, speed, tick, room), sent only to players who can see where it was fired. `GUN_LIMITS`; noise kind `shot` (`NOISE_KIND_LOUDNESS`). `GenerateOptions { ghost }` on the generator.
+
+### Tests
+`server/test/ghost/{gun.unit,gun.room,gunPlacement,gun.solve}.test.ts`, `shared/test/gun.test.ts`, `client/test/gunLogic.test.ts`: shot, miss, wall, range, one charge, no aim, no gun, stun timer and floor, never in WARNING, determinism, placement over many stages and seeds, unchanged stages without the option, generated stages cleared with the gun in hand by 1 player (2 slots) and by 2 to 4. Mutation checks (wall, spend, stun state guard, stage-1 guard, start-room rule) each make tests fail.
+
+### NOT RUN
+Browser play, Phaser drawing (aim line, bolt, STUNNED tag), WebAudio zap, the gateway emission of `ghost:shot` and the gateway tests (`socket.io-client` is not installed in my checker), real `npm ci`/`tsc`/`npm run build`.

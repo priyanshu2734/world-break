@@ -33,7 +33,7 @@ export interface GhostConfig {
   hidingSpots?: readonly HidingSpotDef[];
 }
 
-interface Noise { room: string; x: number; y: number; loud: number; player: string; name: string; label: string; gait: 'run' | 'walk' | 'sneak' | 'drop' | 'door'; tick: number; door?: string }
+interface Noise { room: string; x: number; y: number; loud: number; player: string; name: string; label: string; gait: 'run' | 'walk' | 'sneak' | 'drop' | 'door' | 'shot'; tick: number; door?: string }
 interface Goal { room: string; x: number; y: number; door?: string; inspect?: string }
 interface Seen { room: string; x: number; y: number; tick: number }
 
@@ -80,7 +80,7 @@ const HOVER = 56;
 const BODY_CENTRE = 22; // a player's body centre above the feet (half of PLAYER_HEIGHT)
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
-const label = (g: 'run' | 'walk' | 'sneak' | 'drop' | 'door') => (g === 'run' ? 'running' : g === 'walk' ? 'walking' : g === 'sneak' ? 'sneaking' : g === 'drop' ? 'dropping something' : 'a door');
+const label = (g: 'run' | 'walk' | 'sneak' | 'drop' | 'door' | 'shot') => (g === 'run' ? 'running' : g === 'walk' ? 'walking' : g === 'sneak' ? 'sneaking' : g === 'drop' ? 'dropping something' : g === 'shot' ? 'a shot' : 'a door');
 
 export class GhostSystem {
   readonly tuning: GhostTuning;
@@ -177,8 +177,36 @@ export class GhostSystem {
 
   // ------------------------------------------------------------------------------------------------------- inputs from the world
   /** A sound (an item dropped, a door used, a scream): every present ghost in that room that can hear it investigates. */
-  makeNoise(n: { room: string; x: number; y: number; loud: number; player: string; name: string; kind: 'drop' | 'door'; door?: string }): void {
+  makeNoise(n: { room: string; x: number; y: number; loud: number; player: string; name: string; kind: 'drop' | 'door' | 'shot'; door?: string }): void {
     this.emitNoise({ room: n.room, x: n.x, y: n.y, loud: n.loud, player: n.player, name: n.name, label: label(n.kind), gait: n.kind, tick: this.host.tick, ...(n.door ? { door: n.door } : {}) });
+  }
+
+  /**
+   * P3E step 4: trace a Pulse Gun bolt over one tick, from `from` to `to` in `room`. The bolt ends at a wall or a closed door, and touches the first ghost
+   * (roaming, hunting or stunned: a body in the room) whose centre lies within `radius` of the segment AND that the bolt can reach without crossing a wall.
+   * A ghost that is absent (dormant, in its warning, respawning) is not in the room and is never touched.
+   */
+  trace(room: string, from: Pt, to: Pt, radius: number): { hit: string | null; blocked: boolean } {
+    const open = this.host.openDoorIds();
+    const occ = this.roomsById.has(room) ? this.occ(room, open) : [];
+    let hit: string | null = null, hitD = Infinity;
+    const dx = to.x - from.x, dy = to.y - from.y, len2 = dx * dx + dy * dy;
+    for (const a of this.actors) {
+      if (!a.present || a.room !== room || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
+      const u = len2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((a.x - from.x) * dx + (a.y - from.y) * dy) / len2));
+      const px = from.x + u * dx, py = from.y + u * dy;
+      if (Math.hypot(a.x - px, a.y - py) > radius) continue;
+      if (!hasLineOfSight(from, { x: px, y: py }, occ)) continue;
+      const d = Math.hypot(a.x - from.x, a.y - from.y);
+      if (d < hitD) { hit = a.id; hitD = d; }
+    }
+    if (hit !== null) return { hit, blocked: false };
+    return { hit: null, blocked: !hasLineOfSight(from, to, occ) };
+  }
+
+  /** P3E step 4: put a Pulse Gun event (fired, hit, stunned, absorbed, wall, miss) in the ghost log, so a shot can be explained like a catch. */
+  logPulse(by: string, phase: 'fired' | 'hit' | 'stunned' | 'absorbed' | 'wall' | 'miss', room: string, text: string, ghost = ''): void {
+    this.record({ tick: this.host.tick, ghost, kind: 'pulse', by, phase, room, text });
   }
 
   /** A Pulse Gun hit (P3E step 4 calls this). A ghost can be stunned only while ROAMING or HUNTING: never in its WARNING, never while absent. */

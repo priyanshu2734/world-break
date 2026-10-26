@@ -193,6 +193,10 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
           io.to(sid).emit('ghost:cue', cue);
         }
       }
+      // P3E step 4: Pulse Gun shots, each to the players who can see where it was fired (and its shooter) only.
+      for (const { to, shot } of room.drainShots()) {
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:shot', shot);
+      }
       const layouts = room.drainLayouts();
       if (layouts.length > 0) {
         const socketOf = new Map<string, string>();

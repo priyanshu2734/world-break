@@ -6,6 +6,8 @@ import { z } from 'zod';
  */
 export const ItemKindSchema = z.enum([
   'fuse', 'flux_coil', 'coolant_cell', 'valve_wheel', 'access_key', 'battery', 'revive_cell', 'power_core',
+  /** P3E step 4: the Pulse Gun. One per ghost stage, locked in a safe or locker, one hand, one charge (a shot spends it). */
+  'pulse_gun',
 ]);
 export type ItemKind = z.infer<typeof ItemKindSchema>;
 export const ITEM_KINDS = ItemKindSchema.options;
@@ -26,6 +28,7 @@ export const ITEM_KIND_SPECS: Record<ItemKind, ItemKindSpec> = {
   battery: { kind: 'battery', label: 'Battery', defaultSlots: 1 },
   revive_cell: { kind: 'revive_cell', label: 'Revive Cell', defaultSlots: 1 },
   power_core: { kind: 'power_core', label: 'Power Core', defaultSlots: 2 },
+  pulse_gun: { kind: 'pulse_gun', label: 'Pulse Gun', defaultSlots: 1 },
 };
 
 /** Where an item is in its life. `hidden`, `consumed` and `destroyed` items are NEVER published to clients. */

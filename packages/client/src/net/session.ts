@@ -1,8 +1,8 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  GameSnapshotSchema, GhostCueSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
+  GameSnapshotSchema, GhostCueSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
   type AbilityAction, type Ack, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
-  type EscapeAction, type EscapeAck, type GhostAction, type GhostCue, type GhostStatus, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
+  type EscapeAction, type EscapeAck, type GhostAction, type GhostCue, type GhostShot, type GhostStatus, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { addNote } from '../ui/escapeUse';
 import { SnapshotBuffer } from './interpolation';
@@ -31,6 +31,10 @@ export class Session {
   /** P3E: the latest ghost sound cue (distance bucket and direction, never a position) and when it arrived (performance.now). */
   ghostCue: GhostCue | null = null;
   ghostCueAt = 0;
+  /** P3E step 4: Pulse Gun shots the server sent me (only those I can see), with their arrival time (performance.now). Old ones are dropped. */
+  ghostShots: { shot: GhostShot; at: number }[] = [];
+  /** Set by the scene: called once per new shot (for the sound). */
+  onGhostShot: ((shot: GhostShot) => void) | null = null;
   /** P3E: aim (0..255, see `quantiseAim`) and Shift (sneak) sent with every input. Set by the scene before it predicts. Absent = not sent. */
   inputExtra: { aim?: number; sneak?: boolean; use?: boolean } = {};
   /** P3E step 3: what the server told this player about hiding and being caught (from the latest cue). Null until a cue with a status arrives. */
@@ -41,7 +45,7 @@ export class Session {
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.layouts.clear(); this.buffer.clear(); });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.ghostShots = []; this.layouts.clear(); this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
@@ -54,6 +58,13 @@ export class Session {
     this.socket.on('stage:state', (raw) => {
       const parsed = StageStateSchema.safeParse(raw);
       if (parsed.success && (!this.stage || parsed.data.rev >= this.stage.rev)) this.stage = parsed.data;
+    });
+    this.socket.on('ghost:shot', (raw) => {
+      const parsed = GhostShotSchema.safeParse(raw);
+      if (!parsed.success) return;
+      const now = performance.now();
+      this.ghostShots = [...this.ghostShots.filter((s) => now - s.at < 3000), { shot: parsed.data, at: now }].slice(-8);
+      this.onGhostShot?.(parsed.data);
     });
     this.socket.on('ghost:cue', (raw) => {
       const parsed = GhostCueSchema.safeParse(raw);

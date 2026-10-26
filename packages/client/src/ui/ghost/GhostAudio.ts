@@ -45,6 +45,21 @@ export class GhostAudio {
     } catch { /* a failed sound must never break the frame */ }
   }
 
+  /** P3E step 4: the crack of the Pulse Gun (a falling sine plus a noise burst). Silent if audio is not armed or muted. */
+  zap(): void {
+    if (!this.ctx || !this.master || this.muted || this.ctx.state !== 'running') return;
+    try {
+      const ctx = this.ctx, t = ctx.currentTime;
+      const o = ctx.createOscillator(); o.type = 'sawtooth';
+      o.frequency.setValueAtTime(900, t); o.frequency.exponentialRampToValueAtTime(90, t + 0.25);
+      const g = this.out(0, 0.5, t, 0.3);
+      o.connect(g); o.start(t); o.stop(t + 0.32);
+      const src = ctx.createBufferSource(); src.buffer = this.noise;
+      const g2 = this.out(0, 0.3, t, 0.12);
+      src.connect(g2); src.start(t, 0, 0.12);
+    } catch { /* a failed sound must never break the frame */ }
+  }
+
   destroy(): void {
     try { void this.ctx?.close(); } catch { /* already closed */ }
     this.ctx = null; this.master = null;
