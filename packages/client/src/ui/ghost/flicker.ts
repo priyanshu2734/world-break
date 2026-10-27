@@ -21,6 +21,19 @@ export function flickerLevel(ms: number, reduced: boolean): number {
   return r < 0.4 ? FLICKER_MIN + 0.3 * hash(slot + 7919) : 1; // 40% of slots are dim (0.35..0.65), the rest full
 }
 
+/**
+ * P3E step 5: a Howler's scream broke the lights of this room for a while: the light stays low (about half) with a slow unsteady wobble, and never
+ * above what the server publishes. `reduced` keeps it steady. Returns 1 when the lights are fine.
+ */
+export function brokenLightScale(active: boolean, ms: number, reduced: boolean): number {
+  if (!active || !Number.isFinite(ms)) return 1;
+  return reduced ? 0.55 : 0.5 + 0.08 * Math.sin(ms / 350) + 0.04 * Math.sin(ms / 130);
+}
+/** Is the lights-out of the latest cue still running (the server sends ticks left; the client counts them down from the arrival time)? */
+export function lightsOutActive(left: number | undefined, receivedAt: number, now: number): boolean {
+  return left !== undefined && left > 0 && now - receivedAt < left * 50;
+}
+
 /** The multiplier to apply to the light reach and ambient: 1 outside a warning. */
 export function lightScale(warning: boolean, ms: number, reduced: boolean): number {
   return warning ? flickerLevel(ms, reduced) : 1;

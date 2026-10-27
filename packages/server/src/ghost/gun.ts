@@ -5,18 +5,18 @@ export interface GunHost {
   readonly tick: number;
   /** The shooter: room, feet position and the aim angle the server holds for them (radians, null = never sent). Undefined = unknown player. */
   shooter(id: string): { room: string; x: number; y: number; aim: number | null; name: string; connected: boolean } | undefined;
-  /** Spend the Pulse Gun the player carries (it leaves their hands for good). False if they carry none. */
-  spend(id: string): boolean;
   /** Does the player carry a Pulse Gun? */
   carries(id: string): boolean;
   /** Trace one tick of a bolt (see `GhostSystem.trace`). */
   trace(room: string, from: { x: number; y: number }, to: { x: number; y: number }, radius: number): { hit: string | null; blocked: boolean };
-  /** Stun a ghost (false if it cannot be stunned now: not roaming or hunting). */
-  stun(ghostId: string, by: string): boolean;
+  /** Destroy a ghost (false if it cannot be hit now: not roaming or hunting). It returns after the respawn timer, through its warning. */
+  destroy(ghostId: string, by: string): boolean;
+  /** Ticks the gun needs to recharge between two shots (the tuning table: 30 s at stage 2, +1 s per stage, cap 90 s). */
+  readonly cooldownTicks: number;
   /** The loud crack of a shot: a ghost in earshot investigates. */
   noise(room: string, x: number, y: number, by: string, name: string): void;
   say(text: string, tone: 'info' | 'good' | 'warn' | 'bad', room?: string): void;
-  log(by: string, phase: 'fired' | 'hit' | 'stunned' | 'absorbed' | 'wall' | 'miss', room: string, text: string, ghost?: string): void;
+  log(by: string, phase: 'fired' | 'hit' | 'stunned' | 'destroyed' | 'absorbed' | 'wall' | 'miss', room: string, text: string, ghost?: string): void;
   /** Every player id of the run (to work out who sees the flash). */
   playerIds(): string[];
   /** Is (x, y) of `room` in the viewer's view? (False for a viewer in another room.) */
@@ -29,19 +29,22 @@ interface Bolt { id: string; owner: string; room: string; x: number; y: number; 
 export interface ShotDelivery { to: string[]; shot: GhostShot }
 
 /**
- * P3E step 4: the Pulse Gun. One charge: a shot spends the gun, hit or miss. The direction is the aim the server already holds for the player (never a
+ * P3E step 4 and 5: the Pulse Gun (v2: reusable). A shot starts a COOLDOWN (`host.cooldownTicks`, 30 s at stage 2 and growing); the gun stays in the player's hands. The direction is the aim the server already holds for the player (never a
  * client-supplied vector). The bolt is simulated here, tick by tick: `speedPx` per tick for at most `rangePx`, ended by a wall or a closed door, and it
- * stuns the first ghost it touches. A stun never kills; it is refused in a ghost's WARNING because an absent ghost is not in the room to be touched.
+ * destroys the first ghost it touches (it dissolves; it comes back after the respawn timer, through its warning). It is refused in a ghost's WARNING because an absent ghost is not in the room to be touched.
  * Everything is a function of the tick and the inputs, so it is deterministic.
  */
 export class PulseGun {
   private bolts: Bolt[] = [];
   private deliveries: ShotDelivery[] = [];
   private shots = 0;
+  private readyAt = 0;
 
   constructor(private readonly host: GunHost) {}
 
   get flying(): number { return this.bolts.length; }
+  /** Ticks until the gun can fire again (0 = ready). */
+  cooldownLeft(): number { return Math.max(0, this.readyAt - this.host.tick); }
   /** Shots to send to clients since the last call (each with the players who can see where it was fired). */
   drainDeliveries(): ShotDelivery[] { const d = this.deliveries; this.deliveries = []; return d; }
 
@@ -50,7 +53,9 @@ export class PulseGun {
     if (!me || !me.connected) return { ok: false, error: 'You are not part of this run.' };
     if (!this.host.carries(id)) return { ok: false, error: 'You have no Pulse Gun.' };
     if (me.aim === null) return { ok: false, error: 'Aim first: move the mouse.' };
-    if (!this.host.spend(id)) return { ok: false, error: 'You have no Pulse Gun.' };
+    const wait = this.cooldownLeft();
+    if (wait > 0) return { ok: false, error: `The Pulse Gun is recharging (${Math.ceil(wait * 0.05)} s).` };
+    this.readyAt = this.host.tick + this.host.cooldownTicks;
     const x = me.x, y = me.y - GUN_LIMITS.eyeHeight, t = this.host.tick;
     const bolt: Bolt = { id: `${id}_${t}_${this.shots++}`, owner: id, room: me.room, x, y, dx: Math.cos(me.aim), dy: Math.sin(me.aim), travelled: 0 };
     this.bolts.push(bolt);
@@ -59,7 +64,7 @@ export class PulseGun {
     this.host.say(`${me.name} fires the Pulse Gun!`, 'info', me.room);
     const to = this.host.playerIds().filter((p) => p === id || this.host.sees(p, me.room, x, y));
     this.deliveries.push({ to, shot: { id: bolt.id, x, y, angle: me.aim, rangePx: GUN_LIMITS.rangePx, speedPx: GUN_LIMITS.speedPx, tick: t, room: me.room } });
-    return { ok: true, message: 'Pulse fired. That was the only charge.' };
+    return { ok: true, message: `Pulse fired. It recharges in ${Math.ceil(this.host.cooldownTicks * 0.05)} s.` };
   }
 
   /** Once per server tick. */
@@ -71,11 +76,11 @@ export class PulseGun {
       const r = this.host.trace(b.room, from, to, GUN_LIMITS.hitRadiusPx);
       const by = this.host.shooter(b.owner)?.name ?? 'Someone';
       if (r.hit !== null) {
-        const stunned = this.host.stun(r.hit, b.owner);
+        const destroyed = this.host.destroy(r.hit, b.owner);
         this.host.log(b.owner, 'hit', b.room, `${by}'s pulse hit the ghost`, r.hit);
-        if (stunned) {
-          this.host.log(b.owner, 'stunned', b.room, 'The ghost is stunned', r.hit);
-          this.host.say('The pulse hits! The ghost is stunned.', 'good', b.room);
+        if (destroyed) {
+          this.host.log(b.owner, 'destroyed', b.room, 'The ghost dissolved', r.hit);
+          this.host.say('The pulse hits! The ghost dissolves. It will come back.', 'good', b.room);
         } else {
           this.host.log(b.owner, 'absorbed', b.room, 'The pulse had no effect', r.hit);
           this.host.say('The pulse hits the ghost, but it has no effect now.', 'warn', b.room);

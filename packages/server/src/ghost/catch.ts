@@ -63,6 +63,12 @@ export class CatchSystem {
     for (const [pid, sid] of this.hiddenIn) if (sid === spotId) return pid;
     return null;
   }
+  /** P3E step 5: everyone hiding in a spot (up to `CATCH_LIMITS.spotCapacity`), in the order they entered. */
+  occupantsOf(spotId: string): string[] {
+    const out: string[] = [];
+    for (const [pid, sid] of this.hiddenIn) if (sid === spotId) out.push(pid);
+    return out;
+  }
   get capturedCount(): number { return this.captives.size; }
   /** Ticks until a caught player is released (null if not caught). */
   releaseIn(id: string): number | null { const c = this.captives.get(id); return c ? Math.max(0, c.until - this.host.tick) : null; }
@@ -82,7 +88,7 @@ export class CatchSystem {
     let best: HidingSpotDef | null = null, bestD = Infinity;
     for (const s of this.byRoom.get(me.room) ?? []) {
       const dx = Math.abs(s.x - me.x);
-      if (dx > CATCH_LIMITS.hideRange || Math.abs(s.y - me.y) > RANGE_DY || this.occupantOf(s.id) !== null) continue;
+      if (dx > CATCH_LIMITS.hideRange || Math.abs(s.y - me.y) > RANGE_DY || this.occupantsOf(s.id).length >= CATCH_LIMITS.spotCapacity) continue;
       if (dx < bestD) { best = s; bestD = dx; }
     }
     // no spot, a full spot and a spot out of reach all read the same

@@ -1,3 +1,4 @@
+import type { GhostType } from '@wb/shared';
 import type { SoundEvent } from './soundScheduler';
 
 /**
@@ -41,7 +42,8 @@ export class GhostAudio {
       if (e.kind === 'step') this.step(e.gain, e.pan, e.hunting, e.type);
       else if (e.kind === 'knock') this.knock(e.gain, e.pan);
       else if (e.kind === 'beat') this.beat(e.gain, e.fast);
-      else this.whisper();
+      else if (e.kind === 'scream') this.scream(e.gain, e.pan);
+      else this.whisper(e.type);
     } catch { /* a failed sound must never break the frame */ }
   }
 
@@ -57,6 +59,53 @@ export class GhostAudio {
       const src = ctx.createBufferSource(); src.buffer = this.noise;
       const g2 = this.out(0, 0.3, t, 0.12);
       src.connect(g2); src.start(t, 0, 0.12);
+    } catch { /* a failed sound must never break the frame */ }
+  }
+
+  /** The Shade's warning: a cold low drone with a slow tremolo. */
+  private drone(): void {
+    const ctx = this.ctx!, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 64;
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 260;
+    const g = this.out(0, 0.3, t, 1.5);
+    const lfo = ctx.createOscillator(), lg = ctx.createGain();
+    lfo.frequency.value = 4; lg.gain.value = 0.4; lfo.connect(lg); lg.connect(g.gain);
+    o.connect(f); f.connect(g);
+    o.start(t); o.stop(t + 1.6); lfo.start(t); lfo.stop(t + 1.6);
+  }
+
+  /** The Howler's warning: a faint, far howl (a sine that sweeps down with vibrato). */
+  private howl(): void {
+    const ctx = this.ctx!, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(420, t); o.frequency.exponentialRampToValueAtTime(230, t + 1.3);
+    const vib = ctx.createOscillator(), vg = ctx.createGain();
+    vib.frequency.value = 6; vg.gain.value = 9; vib.connect(vg); vg.connect(o.frequency);
+    const g = this.out(0, 0.22, t, 1.4);
+    o.connect(g); o.start(t); o.stop(t + 1.5); vib.start(t); vib.stop(t + 1.5);
+  }
+
+  /** The Howler's scream: loud, rough, falling (a saw sweep plus a noise burst). */
+  private scream(gain: number, pan: number): void {
+    const ctx = this.ctx!, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(820, t); o.frequency.exponentialRampToValueAtTime(260, t + 0.9);
+    const g = this.out(pan, 0.9 * gain, t, 1.0);
+    o.connect(g); o.start(t); o.stop(t + 1.05);
+    const src = ctx.createBufferSource(); src.buffer = this.noise;
+    const g2 = this.out(pan, 0.5 * gain, t, 0.8);
+    src.connect(g2); src.start(t, 0, 0.8);
+  }
+
+  /** A ghost dissolving after a Pulse Gun hit: a bright shimmer falling away. */
+  dissolve(): void {
+    if (!this.ctx || !this.master || this.muted || this.ctx.state !== 'running') return;
+    try {
+      const ctx = this.ctx, t = ctx.currentTime;
+      const o = ctx.createOscillator(); o.type = 'triangle';
+      o.frequency.setValueAtTime(1400, t); o.frequency.exponentialRampToValueAtTime(180, t + 0.7);
+      const g = this.out(0, 0.35, t, 0.8);
+      o.connect(g); o.start(t); o.stop(t + 0.85);
     } catch { /* a failed sound must never break the frame */ }
   }
 
@@ -90,7 +139,7 @@ export class GhostAudio {
     const ctx = this.ctx!, t = ctx.currentTime;
     const src = ctx.createBufferSource(); src.buffer = this.noise;
     const f = ctx.createBiquadFilter(); f.type = 'bandpass';
-    f.frequency.value = (type === 'wisp' ? 1800 : 900) * (hunting ? 0.7 : 1); f.Q.value = 1.4;
+    f.frequency.value = (type === 'wisp' ? 1800 : type === 'shade' ? 420 : type === 'howler' ? 600 : 900) * (hunting ? 0.7 : 1); f.Q.value = 1.4;
     const g = this.out(pan, 0.5 * gain * (hunting ? 1.3 : 1), t, hunting ? 0.12 : 0.09);
     src.connect(f); f.connect(g);
     src.start(t, Math.random() * 1.5, 0.15);
@@ -117,7 +166,9 @@ export class GhostAudio {
   }
 
   /** A breathy whisper: filtered noise with a slow amplitude wobble. */
-  private whisper(): void {
+  private whisper(type?: GhostType): void {
+    if (type === 'shade') return this.drone();
+    if (type === 'howler') return this.howl();
     const ctx = this.ctx!, t = ctx.currentTime;
     const src = ctx.createBufferSource(); src.buffer = this.noise; src.loop = true;
     const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 3;

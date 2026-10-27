@@ -1,7 +1,7 @@
 import {
   CATCH_LIMITS, EYE_HEIGHT, GHOST_LIMITS, cueBand, cueDir, GHOST_TRANSITIONS, MAX_GHOSTS, NOISE_KIND_LOUDNESS, NOISE_LOUDNESS, NOISE_MUFFLE,
-  angleDiff, createRng, deriveSeed, gaitOf, ghostTuning, hasLineOfSight, occluders, pointVisible,
-  type Box, type Difficulty, type GhostCueSound, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type RoomDef, type RoomGraph, type Rng,
+  HOWLER_LIMITS, angleDiff, createRng, deriveSeed, gaitOf, ghostTuning, hasLineOfSight, inFlashlightCone, occluders, pointVisible,
+  type Box, type Difficulty, type GhostCueSound, type GhostFx, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type RoomDef, type RoomGraph, type Rng,
 } from '@wb/shared';
 import { NavGrid, type Pt } from './nav';
 import type { GhostCatchEvent, GhostEvent, GhostHost, GhostPlayer, HidingSpotDef } from './types';
@@ -70,6 +70,13 @@ interface Actor {
   moving: boolean;
   /** Standing at a hiding spot, about to open it (P3E step 3). */
   inspect: { spot: string; until: number } | null;
+  /** P3E step 5: a Howler's wind-up (it stands still until `until`, then screams). */
+  scream: { until: number } | null;
+  screamReadyAt: number;
+  /** P3E step 5: a Shade held still by a flashlight cone this tick. */
+  lit: boolean;
+  /** P3E step 5: destroyed by the gun: its next appearance is farther from every player. */
+  afterDestroy: boolean;
 }
 
 const DOOR_REACH = 80;
@@ -91,6 +98,7 @@ export class GhostSystem {
   private readonly groundCells = new Map<string, number[]>();
   private readonly log: GhostEvent[] = [];
   private pending: GhostEvent[] = [];
+  private fx: GhostFx[] = [];
   private readonly lastNoise = new Map<string, Noise>();
   private readonly spotsById = new Map<string, HidingSpotDef>();
   private readonly lastInspect = new Map<string, number>();
@@ -123,7 +131,7 @@ export class GhostSystem {
       this.actors.push({
         id: `g${index}`, kind, rng, state: 'dormant', since: 0, until: first, warnedAt: -1, blockedLogged: false, present: false,
         room: cfg.graph.start, x: 0, y: 0, angle: 0, path: [], pathGoal: -1, lastPlan: -100, goal: null, patrol: null,
-        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false, inspect: null,
+        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false, inspect: null, scream: null, screamReadyAt: 0, lit: false, afterDestroy: false,
       });
     });
   }
@@ -133,6 +141,10 @@ export class GhostSystem {
   get events(): readonly GhostEvent[] { return this.log; }
   /** Events logged since the last call (for a consumer that forwards them, e.g. the future death review). */
   drainEvents(): GhostEvent[] { const p = this.pending; this.pending = []; return p; }
+  /** P3E step 5: visible effects (a dissolve, a scream) since the last call, for the host to send to those who can see them. */
+  drainFx(): GhostFx[] { const f = this.fx; this.fx = []; return f; }
+  /** P3E step 5: the kinds of the ghosts in their WARNING now (each type has its own whisper and flicker). */
+  warnKinds(): GhostType[] { return this.actors.filter((a) => a.state === 'warning').map((a) => a.kind); }
   /** Ghost states, for tests and debug displays (server side only). */
   snapshotActors(): { id: string; kind: GhostType; state: GhostState; present: boolean; room: string; x: number; y: number; angle: number; until: number }[] {
     return this.actors.map((a) => ({ id: a.id, kind: a.kind, state: a.state, present: a.present, room: a.room, x: a.x, y: a.y, angle: a.angle, until: a.until }));
@@ -144,7 +156,7 @@ export class GhostSystem {
     const out: GhostPublic[] = [];
     for (const a of this.actors) {
       if (!a.present || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
-      out.push({ id: a.id, kind: a.kind, x: r2(a.x), y: r2(a.y), angle: r2(a.angle), state: a.state, room: a.room });
+      out.push({ id: a.id, kind: a.kind, x: r2(a.x), y: r2(a.y), angle: r2(a.angle), state: a.state, room: a.room, ...(a.lit ? { lit: true } : {}) });
     }
     return out;
   }
@@ -160,7 +172,7 @@ export class GhostSystem {
         if (!a.present || a.room !== roomId || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
         const band = cueBand(Math.hypot(a.x - x, a.y - (y - BODY_CENTRE)));
         if (band === 0) continue;
-        sounds.push({ id: a.id, kind: a.kind, band, dir: cueDir(a.x - x), state: a.state, moving: a.moving, ...(a.inspect ? { inspecting: true } : {}) });
+        sounds.push({ id: a.id, kind: a.kind, band, dir: cueDir(a.x - x), state: a.state, moving: a.moving, ...(a.inspect ? { inspecting: true } : {}), ...(a.scream ? { screaming: true } : {}) });
       }
     }
     return { warning: this.warning, sounds };
@@ -205,7 +217,7 @@ export class GhostSystem {
   }
 
   /** P3E step 4: put a Pulse Gun event (fired, hit, stunned, absorbed, wall, miss) in the ghost log, so a shot can be explained like a catch. */
-  logPulse(by: string, phase: 'fired' | 'hit' | 'stunned' | 'absorbed' | 'wall' | 'miss', room: string, text: string, ghost = ''): void {
+  logPulse(by: string, phase: 'fired' | 'hit' | 'stunned' | 'destroyed' | 'absorbed' | 'wall' | 'miss', room: string, text: string, ghost = ''): void {
     this.record({ tick: this.host.tick, ghost, kind: 'pulse', by, phase, room, text });
   }
 
@@ -217,6 +229,24 @@ export class GhostSystem {
     this.go(a, 'stunned', 'hit by the Pulse Gun');
     a.until = t + this.tuning.stunTicks;
     this.record({ tick: t, ghost: a.id, kind: 'stun', by, until: a.until });
+    return true;
+  }
+
+  /**
+   * P3E step 5 (Pulse Gun v2): a hit DESTROYS the ghost. It dissolves where it stands (a `dissolve` effect for those who see it) and is gone for
+   * `respawnTicks`, then comes back through the normal WARNING at a spot far from every player. Only a ROAMING or HUNTING ghost can be hit: one in its
+   * WARNING, absent or already gone is not in the room.
+   */
+  destroy(ghostId: string, by: string | null): boolean {
+    const a = this.actors.find((x) => x.id === ghostId);
+    if (!a || !a.present || (a.state !== 'roaming' && a.state !== 'hunting')) return false;
+    const t = this.host.tick;
+    const at = { room: a.room, x: r2(a.x), y: r2(a.y) };
+    this.go(a, 'respawn', 'destroyed by the Pulse Gun');
+    a.until = t + this.tuning.respawnTicks;
+    a.afterDestroy = true; a.scream = null; a.lit = false;
+    this.record({ tick: t, ghost: a.id, kind: 'destroy', by, ghostKind: a.kind, ...at, returnsAt: a.until });
+    this.fx.push({ kind: 'dissolve', ghost: a.kind, ...at, tick: t });
     return true;
   }
 
@@ -251,7 +281,7 @@ export class GhostSystem {
       case 'respawn': if (t >= a.until) this.go(a, 'warning', 'the interval elapsed'); break;
       case 'stunned': if (t >= a.until) this.go(a, 'respawn', 'the stun wore off'); break;
       case 'warning': if (t >= a.until) this.tryAppear(a, players, open, t); break;
-      case 'roaming': case 'hunting': { const px = a.x, py = a.y; this.act(a, players, open, t); a.moving = Math.hypot(a.x - px, a.y - py) > 0.01 && !a.opening; break; }
+      case 'roaming': case 'hunting': { const px = a.x, py = a.y; a.lit = false; this.act(a, players, open, t); a.moving = Math.hypot(a.x - px, a.y - py) > 0.01 && !a.opening; break; }
     }
     if (a.state !== 'roaming' && a.state !== 'hunting') a.moving = false;
   }
@@ -275,7 +305,8 @@ export class GhostSystem {
 
   // ------------------------------------------------------------------------------------------------------- appearing (waves)
   private tryAppear(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>, t: number): void {
-    const spot = this.pickSpawn(a, players, open);
+    // after a Pulse Gun hit it returns as far from everyone as the room allows: the larger distance first, the normal rule if no place has it
+    const spot = (a.afterDestroy ? this.pickSpawn(a, players, open, GHOST_LIMITS.respawnMinDistance) : null) ?? this.pickSpawn(a, players, open, GHOST_LIMITS.minSpawnDistance);
     if (!spot) {
       // no fair place exists right now: the warning simply goes on a little longer (it is never skipped)
       a.until = t + GHOST_LIMITS.spawnRetryTicks;
@@ -283,7 +314,7 @@ export class GhostSystem {
       return;
     }
     a.present = true; a.room = spot.room; a.x = spot.x; a.y = spot.y; a.angle = a.rng.next() * 2 * Math.PI - Math.PI;
-    a.activeUntil = t + GHOST_LIMITS.roamTicks; a.chain = []; this.clearPlan(a);
+    a.activeUntil = t + GHOST_LIMITS.roamTicks; a.chain = []; this.clearPlan(a); a.afterDestroy = false; a.scream = null;
     this.record({ tick: t, ghost: a.id, kind: 'spawn', room: spot.room, x: r2(spot.x), y: r2(spot.y), warnedAt: a.warnedAt });
     this.go(a, 'roaming', 'the warning ended');
     // "ROAMING (investigates the last noise)": a noise made in this room shortly before it appeared
@@ -292,7 +323,7 @@ export class GhostSystem {
   }
 
   /** A fair spawn: a room that holds a player, a free floating point on that player's side, outside every view, far from every player, clear of the arrival areas. */
-  private pickSpawn(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>): { room: string; x: number; y: number } | null {
+  private pickSpawn(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>, minDistance: number): { room: string; x: number; y: number } | null {
     const live = players.filter((p) => p.connected && !p.captured);
     const roomIds = [...new Set(live.map((p) => p.roomId))].filter((r) => this.roomsById.has(r));
     if (roomIds.length === 0) return null;
@@ -309,7 +340,7 @@ export class GhostSystem {
       let ok = true;
       for (const p of here) {
         const eye = { x: p.x, y: p.y - EYE_HEIGHT };
-        if (Math.hypot(c.x - p.x, c.y - (p.y - BODY_CENTRE)) < GHOST_LIMITS.minSpawnDistance || pointVisible(room, eye, c, open, this.cfg.visionRadius)) { ok = false; break; }
+        if (Math.hypot(c.x - p.x, c.y - (p.y - BODY_CENTRE)) < minDistance || pointVisible(room, eye, c, open, this.cfg.visionRadius)) { ok = false; break; }
       }
       if (ok) out.push(c);
     }
@@ -420,6 +451,13 @@ export class GhostSystem {
     }
 
     if (a.state === 'hunting' && this.catchCheck(a, players, t)) return;
+    // the Howler's scream: it stands still for the wind-up (the telegraph), then lets go
+    if (a.scream) {
+      if (t < a.scream.until) return;
+      this.finishScream(a, players, t);
+    }
+    // the Shade moves ONLY while no flashlight cone is on it
+    if (a.kind === 'shade' && this.litBy(a, players, open)) { a.lit = true; return; }
     if (a.inspect && a.state === 'roaming' && !a.opening) { this.inspecting(a, players, t); return; }
     if (!a.opening) this.move(a, open, t);
   }
@@ -433,6 +471,46 @@ export class GhostSystem {
     a.chain = [...a.chain.filter((c) => !c.startsWith('Saw ')), text].slice(-4);
     this.record({ tick: t, ghost: a.id, kind: 'sighted', player: p.id, distance: r2(d), text });
     this.go(a, 'hunting', `saw ${p.name}`);
+    if (a.kind === 'howler' && t >= a.screamReadyAt) {
+      a.scream = { until: t + HOWLER_LIMITS.windupTicks }; a.screamReadyAt = t + HOWLER_LIMITS.cooldownTicks;
+      this.record({ tick: t, ghost: a.id, kind: 'scream', phase: 'windup', room: a.room, text: `The Howler drew breath after it saw ${p.name}`, alerted: null });
+    }
+  }
+
+  /** Is any visible, standing player's flashlight cone on this ghost (in its room, with a clear line)? Hidden and caught players hold no light. */
+  private litBy(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>): boolean {
+    for (const p of players) {
+      if (!p.connected || p.hidden || p.captured || p.roomId !== a.room) continue;
+      const eye = { x: p.x, y: p.y - EYE_HEIGHT }, aim = p.aim ?? (p.facing === 1 ? 0 : Math.PI);
+      if (inFlashlightCone(eye, aim, { x: a.x, y: a.y }, this.cfg.visionRadius) && hasLineOfSight(eye, { x: a.x, y: a.y }, this.occ(a.room, open))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The scream lets go: the lights break in this room (the host does it), every other ghost anywhere hears it and comes to the place, and the Howler
+   * learns where the nearest player is who is NOT crouching or hiding, in any room. A crouching or hidden player is not revealed: that is the counter.
+   */
+  private finishScream(a: Actor, players: GhostPlayer[], t: number): void {
+    a.scream = null;
+    let best: GhostPlayer | null = null, bestD = Infinity;
+    for (const p of players) {
+      if (!p.connected || p.hidden || p.captured || p.crouch) continue;
+      const d = p.roomId === a.room ? Math.hypot(p.x - a.x, p.y - a.y) : 1e6;
+      if (d < bestD) { best = p; bestD = d; }
+    }
+    this.record({ tick: t, ghost: a.id, kind: 'scream', phase: 'scream', room: a.room, text: best ? `The Howler screamed and learned where ${best.name} is` : 'The Howler screamed; everybody was quiet', alerted: best ? best.id : null });
+    this.fx.push({ kind: 'scream', ghost: a.kind, room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
+    this.host.onScream?.({ ghost: a.id, room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
+    for (const o of this.actors) {
+      if (o === a || !o.present || o.state !== 'roaming') continue;
+      o.goal = { room: a.room, x: a.x, y: a.y }; o.searchUntil = 0; o.patrol = null; o.path = []; o.pathGoal = -1;
+    }
+    if (best) {
+      const at = { room: best.roomId, x: best.x, y: best.y - BODY_CENTRE, tick: t };
+      if (a.state === 'hunting') { a.quarry = best.id; a.lastSeen = at; } else { a.goal = { room: at.room, x: at.x, y: at.y }; a.searchUntil = 0; }
+      this.clearPathOnly(a);
+    }
   }
 
   private catchCheck(a: Actor, players: GhostPlayer[], t: number): boolean {
@@ -474,11 +552,17 @@ export class GhostSystem {
     this.turnTo(a, spot.x >= a.x ? 0 : Math.PI);
     if (t < ins.until) return;
     a.inspect = null;
-    const who = this.host.occupantOf?.(spot.id) ?? null;
-    const p = who ? players.find((x) => x.id === who && x.connected && !x.captured) : undefined;
+    const who = this.host.occupantsOf?.(spot.id) ?? ((): string[] => { const one = this.host.occupantOf?.(spot.id) ?? null; return one ? [one] : []; })();
+    const found = players.filter((x) => who.includes(x.id) && x.connected && !x.captured);
+    const p = found[0];
     const base = { tick: t, ghost: a.id, kind: 'inspect' as const, spot: spot.id, room: spot.room };
     if (p) {
       this.record({ ...base, phase: 'found', player: p.id, text: `Opened the ${spot.kind} and found ${p.name}` });
+      // a spot holds up to two: the ghost opens it and catches everyone inside
+      for (const q of found.slice(1)) {
+        this.record({ ...base, phase: 'found', player: q.id, text: `Opened the ${spot.kind} and found ${q.name}` });
+        this.host.onCatch?.(q.id, { tick: t, ghost: a.id, kind: 'catch', player: q.id, room: a.room, x: r2(q.x), y: r2(q.y), because: [...a.chain, `Opened the ${spot.kind} and found ${q.name} at tick ${t}`] });
+      }
       this.catchPlayer(a, p, t, `Opened the ${spot.kind} and found ${p.name} at tick ${t}`);
       return;
     }

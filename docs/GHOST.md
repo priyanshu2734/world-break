@@ -77,23 +77,27 @@ Progress is `max(0, stage - 2) x modeRate` (Easy 1, Intermediate 1.5, Hardcore 2
 |---|---|---|---|
 | Speed (share of sprint) | 70 % | +0.5 % | 95 % |
 | Appearance interval | 120 s | -1.5 s | 40 s |
-| Stun after a Pulse Gun hit | 150 s | -2 s | 45 s |
+| Gun recharge (step 5, v2; the old `stunTicks` is kept but unused by the gun) | 30 s | +1 s | 90 s |
+| Respawn after a gun hit (step 5) | 150 s | -2 s | 45 s |
 | Hearing range of a runner | 300 px | +5 px | 560 px |
-| Hiding spots per room (read by the generator in step 5) | 4 | -1 per 8 points | 1 |
+| Hiding spots per room (read by the generator, step 5) | 4 | -1 per 8 points | 1 |
+| Ghosts at once | 1 | 2 from stage 20 | 2 |
 
-| Stage | Speed | Interval | Stun | Hearing | Hiding spots |
-|---|---|---|---|---|---|
-| 1 and 2 | 70.0 % | 120 s | 150 s | 300 px | 4 |
-| 7 | 72.5 % | 112.5 s | 140 s | 325 px | 4 |
-| 12 | 75.0 % | 105 s | 130 s | 350 px | 3 |
-| 100 | 95.0 % | 40 s | 45 s | 560 px | 1 |
-| 1,000,000 | 95.0 % | 40 s | 45 s | 560 px | 1 |
+| Stage | Speed | Interval | Gun recharge | Respawn | Hearing | Hiding spots | Ghosts |
+|---|---|---|---|---|---|---|---|
+| 1 | (no ghost: the tutorial) | | | | | | 0 |
+| 2 | 70.0 % | 120 s | 30 s | 150 s | 300 px | 4 | 1 |
+| 7 | 72.5 % | 112.5 s | 35 s | 140 s | 325 px | 4 | 1 |
+| 12 | 75.0 % | 105 s | 40 s | 130 s | 350 px | 3 | 1 |
+| 20 | 79.0 % | 93 s | 48 s | 114 s | 390 px | 2 | 2 |
+| 100 | 95.0 % | 40 s | 90 s | 45 s | 560 px | 1 | 2 |
+| 1,000,000 | 95.0 % | 40 s | 90 s | 45 s | 560 px | 1 | 2 |
 
-(Hardcore at stage 12: 80 %, 90 s, 110 s, 400 px, 2 spots.) Tested at stages 1, 2, 7, 12, 100 and 1,000,000 in every mode (`shared/test/ghost.test.ts`).
+(Hardcore at stage 12: 80 %, 90 s, recharge 50 s, respawn 110 s, 400 px, 2 spots.) Tested at stages 1, 2, 7, 12, 100 and 1,000,000 in every mode (`shared/test/ghost.test.ts`).
 
 ## Types (`ghostTypesForStage`)
 
-Wisp from stage 2, Shade ALONE at stage 7, Howler ALONE at stage 12; stages 8 to 11 mix Wisp and Shade; from 13 a seeded pair (Wisp and Howler, or Shade and Howler). At most 2 types, one ghost per type. **In step 1 every type behaves as the Wisp** (noise chaser); the Shade and the Howler powers, looks and sounds are step 5 (and step 2 for the look and sound). Mimic, Phantom, Warden and Twins are later phases and are not built.
+Wisp from stage 2, Shade ALONE at stage 7, Howler ALONE at stage 12; stages 8 to 11 mix Wisp and Shade; from 13 a seeded pair (Wisp and Howler, or Shade and Howler). At most 2 types, one ghost per type. Step 5 gives the Shade and the Howler their own behaviour (below). Before stage 20 there is ONE ghost even on a two-type stage: the seed picks which type. Mimic, Phantom, Warden and Twins are later phases and are not built.
 
 ## The interim catch rule (step 3, P4 replaces it)
 
@@ -168,3 +172,27 @@ Same URL as before (`?ghost=1&dark=1`), from stage 2 on (use the dev `startStage
 
 ### NOT RUN
 Browser play, Phaser drawing (aim line, bolt, STUNNED tag), WebAudio zap, the gateway emission of `ghost:shot` and the gateway tests (`socket.io-client` is not installed in my checker), real `npm ci`/`tsc`/`npm run build`.
+
+## Step 5: gun v2, hiding spots, ghost types, generator and solver (final P3E step)
+
+### How to try it
+Same URL (`?ghost=1&dark=1`), start at stage 2, 7 or 12 with the dev `startStage` (stage 20 for two ghosts). Find the Pulse Gun (locker or safe in the start room), **left click** to fire. A hit makes the ghost DISSOLVE (a spark burst, a sound). It is gone, then comes back after the respawn time through the normal warning; the screen says "THE GHOST IS COMING BACK: find a hiding place!". The gun is reusable: a recharge bar and "PULSE GUN: recharging N s" show the wait. A shot is loud.
+
+### The rules
+- **Gun v2** (`server/src/ghost/gun.ts`): recharge `ghostTuning().gunCooldownTicks` (30 s at stage 2, +1 s per stage, mode scales it, cap 90 s). A hit calls `GhostSystem.destroy`: only ROAMING or HUNTING ghosts can be hit; it goes to RESPAWN for `respawnTicks` (150 s at stage 2, -2 s per stage, floor 45 s), then WARNING (at least 3 s of lead), then it appears at a random spot at least 700 px from every player (fallback to the 520 px rule when a small room allows nothing farther). `stun()` remains in the code but nothing uses it.
+- **Hiding spots**: with the ghost option the generator places `hidingSpotsPerRoom` spots per room at random floor positions and random kinds (per seed, never one fixed spot), each holds up to 2 players (`CATCH_LIMITS.spotCapacity`); `requireGhostLevel` proves every room keeps at least one spot on a floor.
+- **Wisp** (stage 2+): the noise chaser. Warning: a cold whisper. Counter: sneak, crouch, hide.
+- **Shade** (stage 7+): tall, dark, with a rim light. It moves ONLY while it is not inside a flashlight cone with line of sight (hidden or captured players do not count). Warning: a low drone. Counter: keep the light on it.
+- **Howler** (stage 12+): on sighting a player it winds up (1 s), then screams: the lights in that room drop to 55 % of their vision radius for 10 s (the server cuts the vision radius), other ghosts are alerted to the spot, and the Howler learns the nearest player who is not crouching and not hidden. Warning: a long howl. Counter: crouch or hide before the scream ends.
+- **Count**: at most 2 types per stage; one ghost until stage 20, a second from stage 20, never more than 2.
+- **Look tiers** (`ghostLookTier`): stages 2 to 9 tier 0 (scale 1), 10 to 19 tier 1 (1.3), 20 to 34 tier 2 (1.7, crown spikes, extra eyes), 35+ tier 3 (2.2, more spikes, red shift). A stage 25 ghost is clearly bigger and more menacing than a stage 2 one.
+- **Evidence** (data only; P3F builds identify-the-ghost on it): `escape.ghostEvidence` lists two pieces per type in the lineup: Wisp cold_breath, faint_whisper; Shade wet_footprints, single_dead_lamp; Howler scratched_walls, cracked_glass. Nothing is shown to players yet.
+
+### Contract changes (all additive)
+`ghost:fx` server event (`GhostFx`: dissolve or scream, ghost, x, y, room, tick) sent to players who can see the spot; `GhostCue` gains `warnKinds`, `gun {left,total}`, `lightsOut`; `GhostCueSound` gains `screaming`; `GhostPublic` gains `lit`; `GenerateOptions { ghost, difficulty }`; `ESCAPE_LIMITS.maxEvidence`; `GhostHost.occupantsOf/onScream`; `fire` stays; kind `pulse_gun` unchanged.
+
+### Tests
+shared `ghostTypes.test.ts` (tuning at stages 1, 2, 7, 12, 100, 1,000,000; lineup; tiers; cone; evidence; schemas); server `ghost/types.test.ts`, `ghostLevel.test.ts`, `gun.unit/room/solve`, `catch.test.ts`; client `ghostTypes.test.ts`, `gunLogic.test.ts`. Solver: `HideTeam` (a real-physics bot team that hides when threatened). Stage 20 easy 10/10 solved, stage 29 easy at least 7/10, hardcore stage 12 at least 8/10, 2 to 4 players at stage 20 with statistical thresholds (not 100 %: see known issues).
+
+### NOT RUN
+Browser play of step 5 (look tiers, dissolve, scream ring, recharge bar, sounds), WebAudio output, Phaser drawing (`GhostView`, `GunView`, `GameScene` were NOT type-checked against Phaser in this sandbox), real `tsc`/`npm` (sandbox had no zod, socket.io types), the 9 `gateway.*` test files (no `socket.io-client` here), `npm run build`.

@@ -1,4 +1,4 @@
-import { GUN_LIMITS, TICK_DT, type GhostShot, type GhostPublic, type GhostStatus, type ItemsPublic } from '@wb/shared';
+import { GUN_LIMITS, TICK_DT, type GhostFx, type GhostShot, type GhostPublic, type GhostStatus, type ItemsPublic } from '@wb/shared';
 
 /** P3E step 4: the pure maths and wording of the Pulse Gun on the client (no Phaser, so it is unit-tested). The server decides every hit; this only draws. */
 
@@ -35,11 +35,40 @@ export function liveShots<T extends { at: number }>(shots: readonly T[], nowMs: 
   return shots.filter((s) => nowMs - s.at <= SHOT_SHOW_MS);
 }
 
-/** The line shown while a gun is in hand (null = nothing to say). Hidden or caught players cannot shoot, so they are told nothing. */
-export function gunPrompt(carries: boolean, status: Pick<GhostStatus, 'hiddenIn' | 'caught'> | null): string | null {
+/**
+ * The line shown while a gun is in hand (null = nothing to say). Hidden or caught players cannot shoot, so they are told nothing.
+ * P3E step 5 (the gun is reusable): READY, or the seconds left of its recharge (`leftMs`, 0 = ready).
+ */
+export function gunPrompt(carries: boolean, status: Pick<GhostStatus, 'hiddenIn' | 'caught'> | null, leftMs = 0): string | null {
   if (!carries) return null;
   if (status && (status.hiddenIn !== null || status.caught)) return null;
-  return 'PULSE GUN: aim with the mouse, click to fire. One charge.';
+  return leftMs > 0 ? `PULSE GUN: recharging ${Math.ceil(leftMs / 1000)} s` : 'PULSE GUN READY: aim with the mouse, click to fire.';
+}
+
+/** Milliseconds of recharge left, from the cue's `gun.left` (server ticks) counted down from the moment the cue arrived. 0 = ready (or unknown). */
+export function cooldownLeftMs(gun: { left: number } | undefined, receivedAt: number, now: number): number {
+  if (!gun || gun.left <= 0) return 0;
+  return Math.max(0, gun.left * TICK_DT * 1000 - Math.max(0, now - receivedAt));
+}
+/** How much of the recharge is still to go, 1 (just fired) to 0 (ready): the fill of the cooldown indicator. */
+export function cooldownFraction(gun: { total: number } | undefined, leftMs: number): number {
+  if (!gun || leftMs <= 0) return 0;
+  return Math.max(0, Math.min(1, leftMs / (gun.total * TICK_DT * 1000)));
+}
+
+/** How long the dissolve of a destroyed ghost, and the ring of a scream, are drawn (ms). */
+export const DISSOLVE_MS = 1100;
+export const SCREAM_FX_MS = 900;
+/** 0 (just started) to 1 (gone) of an effect `ageMs` old; `ms` is its length. */
+export function fxProgress(ageMs: number, ms: number): number { return Math.max(0, Math.min(1, ageMs / ms)); }
+export function liveFx<T extends { at: number; fx: Pick<GhostFx, 'kind'> }>(list: readonly T[], nowMs: number): T[] {
+  return list.filter((f) => nowMs - f.at <= (f.fx.kind === 'dissolve' ? DISSOLVE_MS : SCREAM_FX_MS));
+}
+
+/** While a ghost that the gun destroyed is about to come back (its WARNING after a dissolve): say so, so the return is never a surprise. */
+export const RETURN_WINDOW_MS = 240_000;
+export function returnLine(warning: boolean, sinceDissolveMs: number | null): string | null {
+  return warning && sinceDissolveMs !== null && sinceDissolveMs >= 0 && sinceDissolveMs <= RETURN_WINDOW_MS ? 'THE GHOST IS COMING BACK: find a hiding place!' : null;
 }
 
 /** Ghosts the stunned marker is drawn over (only a stunned ghost the server showed me). */

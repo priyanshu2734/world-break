@@ -1,4 +1,4 @@
-import { ESCAPE_LIMITS, ITEM_KIND_SPECS, ITEM_LIMITS, MOVE_SPEED, TICK_DT, type RoomGraph } from '@wb/shared';
+import { ESCAPE_LIMITS, EVIDENCE_PER_TYPE, ITEM_KIND_SPECS, evidenceOwner, ghostLineupForStage, ghostPickFor, ghostSeedFor, ITEM_LIMITS, MOVE_SPEED, TICK_DT, type RoomGraph } from '@wb/shared';
 import { surfaceBelow } from '../salvage/rest';
 import type { StageDef } from '../systems/stageDef';
 import type { EscapeSpec, Lock } from './escapeSpec';
@@ -195,6 +195,10 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
     } else if (!stash || stashRoom(stash) !== graph.start) err(`gun ${g.id} must lie in a locker of the start room`);
   }
   for (const h of spec.hidingSpots ?? []) { claim(h.id, 'hiding spot'); standing(h.id, 'hiding spot', h.room, h.x, h.y); }
+  for (const v of spec.ghostEvidence ?? []) {
+    claim(v.id, 'evidence'); standing(v.id, 'evidence', v.room, v.x, v.y);
+    if (evidenceOwner(v.kind) !== v.ghost) err(`evidence ${v.id}: kind ${v.kind} does not belong to a ${v.ghost}`);
+  }
   if (!rooms.has(spec.exit.room)) err(`exit room ${spec.exit.room} does not exist`);
   return errs;
 }
@@ -203,4 +207,31 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
 export function requireGun(def: Pick<StageDef, 'items'>): string[] {
   const n = (def.items ?? []).filter((i) => i.kind === 'pulse_gun').length;
   return n === 1 ? [] : [`a ghost stage must hold exactly one Pulse Gun (it holds ${n})`];
+}
+
+/**
+ * P3E step 5: what a ghost stage must hold beyond the gun. Every room keeps at least one hiding spot, standing on its floor (a floor is always reachable by
+ * walking and jumping, which the stage's own solvability proof covers), no room holds more than the cap, and every ghost type that runs on the stage left
+ * its pieces of evidence (and only its own kind).
+ */
+export function requireGhostLevel(def: Pick<StageDef, 'rooms' | 'escape'>, stage: number, stageSeed: number): string[] {
+  const errs: string[] = [];
+  const graph = def.rooms, spec = def.escape;
+  if (!graph || !spec) return ['a ghost stage needs rooms and an escape spec'];
+  const spots = spec.hidingSpots ?? [];
+  for (const r of graph.rooms) {
+    const mine = spots.filter((h) => h.room === r.id);
+    if (mine.length === 0) errs.push(`room ${r.id} has no hiding spot`);
+    for (const h of mine) {
+      const floor = r.arena.solids.some((s) => Math.abs(s.y - h.y) < 1 && h.x >= s.x && h.x <= s.x + s.w);
+      if (!floor) errs.push(`hiding spot ${h.id} is not on a floor of ${r.id}`);
+    }
+  }
+  const lineup = ghostLineupForStage(stage, ghostPickFor(ghostSeedFor(stageSeed, stage)));
+  for (const type of lineup) {
+    const n = (spec.ghostEvidence ?? []).filter((e) => e.ghost === type).length;
+    if (n < EVIDENCE_PER_TYPE) errs.push(`the ${type} left ${n} pieces of evidence (needs ${EVIDENCE_PER_TYPE})`);
+  }
+  for (const e of spec.ghostEvidence ?? []) if (!lineup.includes(e.ghost)) errs.push(`evidence ${e.id} belongs to a ${e.ghost}, which does not run on this stage`);
+  return errs;
 }

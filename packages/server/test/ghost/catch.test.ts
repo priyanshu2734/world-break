@@ -61,12 +61,14 @@ describe('P3E hiding', () => {
     }
     expect([...msgs]).toEqual(['There is nowhere to hide here.']);
   });
-  it('a spot holds one player: the second finds it taken (and another spot in reach is used)', () => {
-    const { sys } = setup([who('a', 500), who('b', 510)]);
+  it('a spot holds TWO players (P3E step 5, was one): the third finds it taken', () => {
+    const { sys } = setup([who('a', 500), who('b', 510), who('c', 505)]);
     expect(sys.hide('a').ok).toBe(true);
-    const r = sys.hide('b');
+    expect(sys.hide('b').ok).toBe(true);
+    expect(sys.occupantsOf('r0_h0')).toEqual(['a', 'b']);
+    const r = sys.hide('c');
     expect(r.ok).toBe(false);
-    expect(sys.isHidden('b')).toBe(false);
+    expect(sys.isHidden('c')).toBe(false);
   });
   it('is refused while a ghost is watching, and the refusal still costs the cooldown (no spamming)', () => {
     const { host, sys, run } = setup([who('a', 500)]);

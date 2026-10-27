@@ -43,7 +43,10 @@ describe('P3E ghost in the Room: where it exists', () => {
   it('stage 7 brings the Shade alone, stage 12 the Howler alone; the ghost follows the room to the next stage', () => {
     expect(ghostRoom({ stage: 7 }).ghostSystem!.snapshotActors().map((a) => a.kind)).toEqual(['shade']);
     expect(ghostRoom({ stage: 12 }).ghostSystem!.snapshotActors().map((a) => a.kind)).toEqual(['howler']);
-    expect(ghostRoom({ stage: 8 }).ghostSystem!.snapshotActors().map((a) => a.kind)).toEqual(['wisp', 'shade']);
+    // P3E step 5: one ghost at a time until stage 20 (was both types at once); the seed picks which of the two this stage runs
+    const s8 = ghostRoom({ stage: 8 }).ghostSystem!.snapshotActors().map((a) => a.kind);
+    expect(s8).toHaveLength(1);
+    expect(['wisp', 'shade']).toContain(s8[0]);
   });
   it('the ghost runs in the real tick loop and is deterministic: two rooms with the same seed and inputs log the same events', () => {
     const go = () => {

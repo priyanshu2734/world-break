@@ -1,11 +1,14 @@
-import type { GhostCue } from '@wb/shared';
+import type { GhostCue, GhostType } from '@wb/shared';
 import { CUE_STALE_MS, MAX_CATCHUP_MS, WHISPER_PERIOD_MS, footstepPeriodMs, heartbeatGain, heartbeatPeriodMs, nearest, panFor, soundGain } from './cueMath';
 
 export const KNOCK_PERIOD_MS = 500;
 export type SoundEvent =
   | { kind: 'step'; ghost: string; type: string; gain: number; pan: number; hunting: boolean }
   | { kind: 'beat'; gain: number; fast: boolean }
-  | { kind: 'whisper' }
+  /** `type` (P3E step 5, only when the cue names the ghost in its warning): each type has its own whisper. */
+  | { kind: 'whisper'; type?: GhostType }
+  /** A Howler winding up its scream (P3E step 5): once, when the wind-up starts. */
+  | { kind: 'scream'; gain: number; pan: number }
   /** The ghost stands at a hiding place and is about to open it (P3E step 3): a slow knocking. */
   | { kind: 'knock'; gain: number; pan: number };
 
@@ -20,6 +23,7 @@ export class SoundScheduler {
   private nextWhisper = 0;
   private nextKnock = 0;
   private nextStep = new Map<string, number>();
+  private screaming = new Set<string>();
 
   tick(cue: GhostCue | null, receivedAt: number, now: number): SoundEvent[] {
     const out: SoundEvent[] = [];
@@ -27,12 +31,17 @@ export class SoundScheduler {
     if (cue.warning) {
       this.nextStep.clear(); this.nextBeat = 0;
       if (this.nextWhisper === 0 || now >= this.nextWhisper) {
-        out.push({ kind: 'whisper' });
+        out.push(cue.warnKinds && cue.warnKinds[0] ? { kind: 'whisper', type: cue.warnKinds[0] } : { kind: 'whisper' });
         this.nextWhisper = now + WHISPER_PERIOD_MS;
       }
       return out;
     }
     this.nextWhisper = 0;
+    for (const s of cue.sounds) {
+      if (s.screaming === true) {
+        if (!this.screaming.has(s.id)) { this.screaming.add(s.id); out.push({ kind: 'scream', gain: Math.max(0.5, soundGain(s.band)), pan: panFor(s.dir) }); }
+      } else this.screaming.delete(s.id);
+    }
     const near = nearest(cue.sounds);
     if (!near) { this.nextBeat = 0; this.nextStep.clear(); return out; }
     const hunting = near.state === 'hunting';
@@ -62,5 +71,5 @@ export class SoundScheduler {
     return out;
   }
 
-  reset(): void { this.nextBeat = 0; this.nextWhisper = 0; this.nextKnock = 0; this.nextStep.clear(); }
+  reset(): void { this.nextBeat = 0; this.nextWhisper = 0; this.nextKnock = 0; this.nextStep.clear(); this.screaming.clear(); }
 }

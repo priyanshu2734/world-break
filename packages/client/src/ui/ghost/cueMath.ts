@@ -36,7 +36,12 @@ export const CUE_STALE_MS = 1600;
 /** Short text for the visual cue (for players who cannot hear): where the nearest ghost is, in words. Empty when nothing is near. */
 export function cueIndicator(cue: GhostCue | null): string {
   if (!cue) return '';
-  if (cue.warning) return 'Something is coming...';
+  if (cue.warning) {
+    // P3E step 5: each type warns in its own words (the cue names the type in its warning)
+    const k = cue.warnKinds?.[0];
+    return k === 'shade' ? 'The air turns cold... keep your light ready.' : k === 'howler' ? 'A distant howl... stay quiet.' : 'Something is coming...';
+  }
+  if (cue.sounds.some((x) => x.screaming === true)) return 'IT IS ABOUT TO SCREAM: crouch (Shift) and break line of sight!';
   const s = nearest(cue.sounds);
   if (!s) return '';
   if (s.inspecting === true) return s.dir < 0 ? '◀ it is checking a hiding place' : s.dir > 0 ? 'it is checking a hiding place ▶' : 'it is checking a hiding place';

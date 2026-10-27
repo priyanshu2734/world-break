@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GUN_LIMITS, TICK_DT, ghostTuning, quantiseAim } from '@wb/shared';
+import { GHOST_LIMITS, GUN_LIMITS, TICK_DT, ghostTuning, quantiseAim } from '@wb/shared';
 import { Room } from '../../src/room';
 import { generateEscapeStage } from '../../src/rooms/generate';
 import { Bot, Team } from '../rooms/bot';
@@ -58,30 +58,47 @@ describe('Pulse Gun through the Room', () => {
     if (!r.ok) expect(r.error).toMatch(/Aim|aim/);
   });
 
-  it('a hit stuns the ghost for the tuned time, then it respawns; the gun is spent', () => {
+  it('a hit DESTROYS the ghost (not frozen), the gun is kept and recharges; the ghost returns after the tuned time, warning first, far from everyone', () => {
     const a = armed();
     takeGun(a);
     aim(a, 0);
     placeGhost(a, 240);
     const res = a.room.ghostAction('p0', { action: 'fire' });
     expect(res.ok).toBe(true);
-    expect(a.team.state().items!.players.find((p) => p.id === 'p0')!.slotsUsed).toBe(0);
-    let stunnedAt = -1;
-    for (let i = 0; i < 20; i++) { a.team.tick(); if (ghostOf(a).state === 'stunned') { stunnedAt = a.room.gameSnapshot()!.tick; break; } }
-    expect(stunnedAt).toBeGreaterThan(0);
+    const slots = () => a.team.state().items!.players.find((p) => p.id === 'p0')!.slotsUsed;
+    expect(slots()).toBe(1); // the gun is still in hand
+    let goneAt = -1;
+    for (let i = 0; i < 20; i++) { a.team.tick(); if (ghostOf(a).state === 'respawn') { goneAt = a.room.gameSnapshot()!.tick; break; } }
+    expect(goneAt).toBeGreaterThan(0);
     const g = ghostOf(a);
-    expect(g.until - stunnedAt).toBeLessThanOrEqual(ghostTuning('easy', 2).stunTicks);
-    expect(g.until - stunnedAt).toBeGreaterThan(ghostTuning('easy', 2).stunTicks - 5);
-    expect((g.until - stunnedAt) * TICK_DT).toBeGreaterThan(100);
-    // it stays stunned, then comes round and respawns (never killed)
-    for (let i = 0; i < 40; i++) a.team.tick();
-    expect(ghostOf(a).state).toBe('stunned');
-    for (let i = 0; i < ghostTuning('easy', 2).stunTicks + 10; i++) a.team.tick();
-    expect(ghostOf(a).state).not.toBe('stunned');
-    expect(['respawn', 'dormant', 'warning', 'roaming', 'hunting']).toContain(ghostOf(a).state);
+    const tune = ghostTuning('easy', 2);
+    expect(g.present).toBe(false); // dissolved: nothing left in the room
+    expect(g.until - goneAt).toBeLessThanOrEqual(tune.respawnTicks);
+    expect(g.until - goneAt).toBeGreaterThan(tune.respawnTicks - 5);
+    expect((g.until - goneAt) * TICK_DT).toBeGreaterThan(100);
+    expect(a.room.drainGhostEvents().some((e) => e.kind === 'destroy')).toBe(true);
+    expect(a.room.drainFx().some((f) => f.fx.kind === 'dissolve')).toBe(true);
+    // the gun is not ready again until its cooldown ends
+    const refused = a.room.ghostAction('p0', { action: 'fire' });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toMatch(/recharging/);
+    // stand at the west end of the room, so that a fair spawn exists far away (in the middle of a small room none does: the warning then simply goes on)
+    (a.room as unknown as { sim: { placeAt(id: string, x: number, y: number): void } }).sim.placeAt('p0', 300, 680);
+    // the ghost stays gone, then WARNS (everyone is told), then appears (far from every player)
+    let warned = -1, appeared = -1;
+    for (let i = 0; i < tune.respawnTicks + 400 && appeared < 0; i++) {
+      a.team.tick();
+      const st = ghostOf(a);
+      if (st.state === 'warning' && warned < 0) warned = i;
+      if ((st.state === 'roaming' || st.state === 'hunting') && appeared < 0) appeared = i;
+    }
+    expect(warned).toBeGreaterThanOrEqual(tune.respawnTicks - 40);
+    expect(appeared).toBeGreaterThan(warned + 55); // a warning of at least 3 s first
+    const back = ghostOf(a), p = me(a);
+    if (back.room === p.roomId) expect(Math.hypot(back.x - p.x, back.y - p.y)).toBeGreaterThanOrEqual(GHOST_LIMITS.minSpawnDistance);
   });
 
-  it('a shot aimed away misses and the charge is still gone', () => {
+  it('a shot aimed away misses; the gun is still in hand but recharging', () => {
     const a = armed();
     takeGun(a);
     aim(a, Math.PI);
@@ -89,8 +106,9 @@ describe('Pulse Gun through the Room', () => {
     const shot = a.room.ghostAction('p0', { action: 'fire' });
     expect(shot).toMatchObject({ ok: true });
     for (let i = 0; i < 30; i++) a.team.tick();
-    expect(ghostOf(a).state).not.toBe('stunned');
+    expect(['roaming', 'hunting']).toContain(ghostOf(a).state);
     expect(a.room.ghostAction('p0', { action: 'fire' }).ok).toBe(false);
+    expect(a.room.ghostCue('p0')!.gun!.left).toBeGreaterThan(0);
   });
 
   it('out of range is a miss', () => {
@@ -100,7 +118,7 @@ describe('Pulse Gun through the Room', () => {
     placeGhost(a, GUN_LIMITS.rangePx + 200);
     a.room.ghostAction('p0', { action: 'fire' });
     for (let i = 0; i < 30; i++) a.team.tick();
-    expect(ghostOf(a).state).not.toBe('stunned');
+    expect(ghostOf(a).state).not.toBe('respawn');
   });
 
   it('the shot is sent to the players who can see it, and the bolt is bounded', () => {

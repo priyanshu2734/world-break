@@ -1,4 +1,4 @@
-import type { Gait, GhostState } from '@wb/shared';
+import type { Gait, GhostFx, GhostState, GhostType } from '@wb/shared';
 
 /** What the ghost may know about one player, supplied by the host (the Room) from authoritative state. */
 export interface GhostPlayer {
@@ -37,6 +37,10 @@ export interface GhostHost {
   onCatch?(playerId: string, event: GhostCatchEvent): void;
   /** Who hides in a spot right now (P3E step 3), or null. Only asked when the ghost opens that spot. */
   occupantOf?(spotId: string): string | null;
+  /** P3E step 5: everyone hiding in a spot (a spot holds up to 2). Preferred over `occupantOf` when given. */
+  occupantsOf?(spotId: string): string[];
+  /** P3E step 5: a Howler's scream let go in `room` (the host breaks the lights there). */
+  onScream?(ev: { ghost: string; room: string; x: number; y: number; tick: number }): void;
 }
 
 /** Everything the server logs about the ghost (for the future death review, P4). Plain data; bounded ring. */
@@ -51,11 +55,16 @@ export type GhostDoorEvent = GhostEventBase & { kind: 'door'; door: string; phas
 export type GhostCatchEvent = GhostEventBase & { kind: 'catch'; player: string; room: string; x: number; y: number; because: string[] };
 export type GhostInspectEvent = GhostEventBase & { kind: 'inspect'; spot: string; room: string; phase: 'start' | 'found' | 'empty'; player?: string; text: string };
 /** A Pulse Gun shot (P3E step 4): fired, and how it ended. `ghost` is the one hit. */
-export type GhostPulseEvent = GhostEventBase & { kind: 'pulse'; by: string; phase: 'fired' | 'hit' | 'stunned' | 'absorbed' | 'wall' | 'miss'; room: string; text: string };
+export type GhostPulseEvent = GhostEventBase & { kind: 'pulse'; by: string; phase: 'fired' | 'hit' | 'stunned' | 'destroyed' | 'absorbed' | 'wall' | 'miss'; room: string; text: string };
+/** P3E step 5: a Pulse Gun hit destroyed the ghost; it comes back (warning first) at `returnsAt`. */
+export type GhostDestroyEvent = GhostEventBase & { kind: 'destroy'; by: string | null; ghostKind: GhostType; room: string; x: number; y: number; returnsAt: number };
+/** P3E step 5: a Howler's scream: the wind-up (the telegraph), then the scream (`alerted` = the player it now knows the place of, if any). */
+export type GhostScreamEvent = GhostEventBase & { kind: 'scream'; phase: 'windup' | 'scream'; room: string; text: string; alerted: string | null };
 export type GhostStunEvent = GhostEventBase & { kind: 'stun'; by: string | null; until: number };
 export type GhostEvent =
   | GhostStateEvent | GhostHeardEvent | GhostSightEvent | GhostLostEvent | GhostSpawnEvent
-  | GhostBlockedEvent | GhostDoorEvent | GhostCatchEvent | GhostStunEvent | GhostInspectEvent | GhostPulseEvent;
+  | GhostBlockedEvent | GhostDoorEvent | GhostCatchEvent | GhostStunEvent | GhostInspectEvent | GhostPulseEvent | GhostDestroyEvent | GhostScreamEvent;
+export type { GhostFx };
 
 /** One sentence a person can read: why this catch happened ("Heard Ada running at tick 412; saw Ada at tick 440; caught Ada at tick 466."). */
 export function explainCatch(ev: GhostCatchEvent): string {

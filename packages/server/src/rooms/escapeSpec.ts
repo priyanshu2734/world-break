@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ESCAPE_LIMITS, EscapeIdSchema as Id } from '@wb/shared';
+import { ESCAPE_LIMITS, EVIDENCE_KINDS, EscapeIdSchema as Id, GHOST_TYPES } from '@wb/shared';
 
 const Pt = { x: z.number(), y: z.number() };
 
@@ -38,6 +38,8 @@ export const EscapeSpecSchema = z.object({
    * Placeholder hiding spots for the ghost (P3E). Server-private and inert in P3D: nothing reads them yet except the validator
    * (they must stand on a solid). They are never published.
    */
+  /** P3E step 5 (additive, optional): evidence each ghost type of the stage leaves (data only; P3F uses it). */
+  ghostEvidence: z.array(z.object({ id: Id, room: Id, ...Pt, kind: z.enum(EVIDENCE_KINDS), ghost: z.enum(GHOST_TYPES) })).max(ESCAPE_LIMITS.maxEvidence).optional(),
   hidingSpots: z.array(z.object({ id: Id, room: Id, ...Pt, kind: z.enum(['closet', 'vent']) })).max(ESCAPE_LIMITS.maxHidingSpots).optional(),
 });
 export type EscapeSpec = z.infer<typeof EscapeSpecSchema>;

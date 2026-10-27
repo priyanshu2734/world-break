@@ -1,4 +1,4 @@
-import type { RoomGraph } from '@wb/shared';
+import type { Arena, RoomGraph } from '@wb/shared';
 import { Room } from '../../src/room';
 import { generateEscapeStage } from '../../src/rooms/generate';
 import type { StageDef } from '../../src/systems/stageDef';
@@ -43,10 +43,10 @@ export function advanceTo(room: Room, ids: string[], stage: number): StageDef {
 
 const graphOf = (def: StageDef): RoomGraph => def.rooms!;
 
-export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean } = {}): SolveStats {
+export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team } = {}): SolveStats {
   const graph = graphOf(def), spec = def.escape!;
   const arenas = new Map(graph.rooms.map((r) => [r.id, r.arena]));
-  const team = new Team(room, (id) => arenas.get(id)!);
+  const team = opts.team ? opts.team(room, (id) => arenas.get(id)!) : new Team(room, (id) => arenas.get(id)!);
   const bots = ids.map((id) => new Bot(team, id));
   const play: Play = { room, team, bots, ids, arenas };
   const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0 };

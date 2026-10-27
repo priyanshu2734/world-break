@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { deriveSeed } from '../disasters/rng';
+import { ghostCountForStage } from '../rooms/tables';
 
 /**
  * P3E: what the ghost is, as data shared by the server (which runs it) and the client (which draws and hears it).
@@ -43,6 +45,77 @@ export function ghostTypesForStage(stage: number, pick = 0): GhostType[] {
 /** Hard cap on ghosts alive at once (one per type, at most 2 types). */
 export const MAX_GHOSTS = 2;
 
+/**
+ * P3E step 5: the ghosts that actually RUN on a stage. `ghostTypesForStage` says which types a stage may use (at most 2); how many run at once is
+ * `ghostCountForStage` (1 until stage 20, then 2). With one ghost on a two-type stage the seed (`pick`) chooses which type it is, so stages 8 to 19
+ * mix the types from stage to stage, never inside one stage. A new type is still alone in its first stage (7 Shade, 12 Howler).
+ */
+export function ghostLineupForStage(stage: number, pick = 0): GhostType[] {
+  const types = ghostTypesForStage(stage, pick);
+  const count = ghostCountForStage(stage);
+  if (count >= types.length) return types;
+  return [types[pick === 1 ? types.length - 1 : 0]!].slice(0, count);
+}
+
+/** The seed of a stage's ghost, derived from the stage seed. Server (generator and Room) and tests use this one function. */
+export function ghostSeedFor(stageSeed: number, stage: number): number { return deriveSeed(stageSeed, 'ghost', stage); }
+
+/** The stage seed's bit that picks between two types (see `ghostLineupForStage`). */
+export function ghostPickFor(ghostSeed: number): number { return ghostSeed & 1; }
+
+/**
+ * P3E step 5: how the ghost LOOKS grows with the stage, in four tiers (so a stage 25 ghost is clearly bigger and more menacing than a stage 2 one).
+ * Pure data: the client draws it, tests pin it. Tier 0 stage 2-9, 1: 10-19, 2: 20-34, 3: 35 and later.
+ */
+export function ghostLookTier(stage: number): 0 | 1 | 2 | 3 {
+  const s = Number.isFinite(stage) ? Math.floor(stage) : 1;
+  return s < 10 ? 0 : s < 20 ? 1 : s < 35 ? 2 : 3;
+}
+/** Body scale per look tier. */
+export const GHOST_LOOK_SCALE = [1, 1.3, 1.7, 2.2] as const;
+
+/**
+ * The flashlight CONE only (not the small always-on light): is `target` inside the cone of a player at `eye` aiming at `aim`, within the lit reach?
+ * The Shade freezes while any player's cone is on it (it still needs line of sight, checked by the caller).
+ */
+export function inFlashlightCone(eye: { x: number; y: number }, aim: number, target: { x: number; y: number }, radius: number): boolean {
+  const dx = target.x - eye.x, dy = target.y - eye.y, d = Math.hypot(dx, dy);
+  if (d > radius * LIT.reachShare) return false;
+  if (d < 1) return true;
+  return Math.abs(angleDiff(Math.atan2(dy, dx), aim)) <= LIT.coneHalf;
+}
+
+// ------------------------------------------------------------------------------------------------ evidence (data only; P3F builds the game on it)
+/**
+ * Each ghost type leaves its own kind of EVIDENCE in the level. P3E only places it (data in the stage spec, validated, deterministic by seed): nothing
+ * shows it to the player yet. P3F builds the identify-the-ghost game on it, so the kinds of two types never overlap.
+ */
+export const EVIDENCE_BY_TYPE: Readonly<Record<GhostType, readonly string[]>> = {
+  wisp: ['cold_breath', 'faint_whisper'],
+  shade: ['wet_footprints', 'single_dead_lamp'],
+  howler: ['scratched_walls', 'cracked_glass'],
+};
+export const EVIDENCE_KINDS = ['cold_breath', 'faint_whisper', 'wet_footprints', 'single_dead_lamp', 'scratched_walls', 'cracked_glass'] as const;
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
+/** The type that leaves a kind of evidence (null for an unknown kind). */
+export function evidenceOwner(kind: string): GhostType | null {
+  for (const t of GHOST_TYPES) if (EVIDENCE_BY_TYPE[t].includes(kind)) return t;
+  return null;
+}
+/** Evidence pieces placed per ghost type on a stage. */
+export const EVIDENCE_PER_TYPE = 2;
+
+// ------------------------------------------------------------------------------------------------ the Howler
+export const HOWLER_LIMITS = {
+  /** The wind-up before a scream (1 s): the Howler stops, and its cue says `screaming`. The telegraph a player can answer by crouching. */
+  windupTicks: 20,
+  /** Minimum ticks between two screams (20 s). */
+  cooldownTicks: 400,
+  /** How long the lights stay broken in the room it screamed in (10 s) and the share of the vision radius that is left. */
+  lightsOutTicks: 200,
+  lightsOutShare: 0.55,
+} as const;
+
 // ------------------------------------------------------------------------------------------------ fixed rules
 export const GHOST_LIMITS = {
   /** Every appearance is preceded by a warning of at least this many ticks (3 s). The server uses `warningTicks`, which is never below it. */
@@ -53,6 +126,8 @@ export const GHOST_LIMITS = {
   /** A spawn point is at least this far (px) from every player of the room, and outside this radius of every arrival point and spawn slot of the room. */
   minSpawnDistance: 520,
   arrivalSafeRadius: 150,
+  /** P3E step 5: after a Pulse Gun hit the ghost returns at least this far (px) from every player of the room. */
+  respawnMinDistance: 700,
   /** Sight: a cone in front of the ghost (half-angle in radians, range in px). Hunting widens the cone. */
   sightRange: 340,
   sightHalfAngle: (35 * Math.PI) / 180,
@@ -140,6 +215,8 @@ export const GhostPublicSchema = z.object({
   angle: z.number(),
   state: z.enum(['roaming', 'hunting', 'stunned']),
   room: z.string().max(48),
+  /** P3E step 5 (additive, optional): a Shade held still by a flashlight cone. */
+  lit: z.boolean().optional(),
 });
 export type GhostPublic = z.infer<typeof GhostPublicSchema>;
 
@@ -179,6 +256,8 @@ export const GhostCueSoundSchema = z.object({
   moving: z.boolean(),
   /** P3E step 3 (additive, optional): the ghost stands at a hiding place and is about to open it. A telegraph of at least `CATCH_LIMITS.inspectTicks`. */
   inspecting: z.boolean().optional(),
+  /** P3E step 5 (additive, optional): a Howler winding up its scream (the telegraph; crouch and break line of sight). */
+  screaming: z.boolean().optional(),
 });
 // ------------------------------------------------------------------------------------------------ the Pulse Gun (P3E step 4)
 /**
@@ -196,6 +275,19 @@ export const GUN_LIMITS = {
   /** How long a bolt (and its flash) is kept in the world for the clients that saw it, in ticks. */
   flashTicks: 16,
 } as const;
+
+/**
+ * P3E step 5: a visible effect, sent to the players who can see where it happened. `dissolve` = a ghost destroyed by the Pulse Gun.
+ * `scream` = a Howler's scream let go (lights break). Position and type only, to players who can see the spot.
+ */
+export const GhostFxSchema = z.object({
+  kind: z.enum(['dissolve', 'scream']),
+  ghost: z.enum(GHOST_TYPES),
+  x: z.number(), y: z.number(),
+  room: z.string().max(48),
+  tick: z.number().int().min(0),
+});
+export type GhostFx = z.infer<typeof GhostFxSchema>;
 
 /** Sent once per shot to the players who can see where it was fired (and the shooter): the client draws the bolt from these numbers. */
 export const GhostShotSchema = z.object({
@@ -234,6 +326,8 @@ export const CATCH_LIMITS = {
   reinspectTicks: 600,
   /** The telegraph: the ghost stands at the spot this long (2 s) before it opens it. The hider hears it (the cue says `inspecting`) and may leave. */
   inspectTicks: 40,
+  /** P3E step 5: a hiding place holds up to this many players. */
+  spotCapacity: 2,
 } as const;
 
 /** Intent: hide in the hiding spot in reach, or come out. (A rescue is not an action: it is the E key HELD, carried by the input stream as `use`.) */
@@ -268,6 +362,12 @@ export const GhostCueSchema = z.object({
   sounds: z.array(GhostCueSoundSchema).max(MAX_GHOSTS),
   /** P3E step 3 (additive, optional): what this player may know about hiding and being caught. Present while the stage has a ghost. */
   status: GhostStatusSchema.optional(),
+  /** P3E step 5 (additive, optional): the kinds of the ghosts now in their WARNING (each has its own whisper and flicker). */
+  warnKinds: z.array(z.enum(GHOST_TYPES)).max(MAX_GHOSTS).optional(),
+  /** P3E step 5 (additive, optional): the Pulse Gun's recharge, in ticks left and in total. Absent while the stage has no gun. */
+  gun: z.object({ left: z.number().int().min(0).max(5000), total: z.number().int().min(1).max(5000) }).optional(),
+  /** P3E step 5 (additive, optional): ticks the lights stay broken in this player's room after a Howler's scream (0 = lit). */
+  lightsOut: z.number().int().min(0).max(1000).optional(),
 });
 export type GhostCueSound = z.infer<typeof GhostCueSoundSchema>;
 export type GhostCue = z.infer<typeof GhostCueSchema>;

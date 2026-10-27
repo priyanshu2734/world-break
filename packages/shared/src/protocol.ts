@@ -5,7 +5,7 @@ import { WorldPublicSchema } from './abilities/world';
 import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
-import { AimSchema, GhostPublicSchema, type GhostCue, type GhostShot } from './ghost';
+import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -141,4 +141,6 @@ export interface ServerToClientEvents {
   'ghost:cue': (cue: GhostCue) => void;
   /** P3E step 4. Sent to the players who can see where a Pulse Gun shot was fired (and its shooter): the bolt to draw. */
   'ghost:shot': (shot: GhostShot) => void;
+  /** P3E step 5: a ghost dissolved (Pulse Gun hit) or a Howler screamed. Only to players who can see the spot. */
+  'ghost:fx': (fx: GhostFx) => void;
 }

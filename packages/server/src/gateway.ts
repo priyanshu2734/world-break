@@ -185,7 +185,8 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
           if (sess.roomCode !== room.code) continue;
           const cue = room.ghostCue(sess.playerId);
           if (!cue) continue;
-          const key = JSON.stringify({ w: cue.warning, s: cue.sounds, t: cue.status });
+          // the gun's countdown and the lights' countdown change every tick and are counted down by the client, so only their on/off flips make a new cue
+          const key = JSON.stringify({ w: cue.warning, s: cue.sounds, t: cue.status, k: cue.warnKinds, g: cue.gun ? cue.gun.left > 0 : null, d: (cue.lightsOut ?? 0) > 0 });
           const last = sentCues.get(sess.playerId);
           const due = !last || (key !== last.key && cue.tick - last.tick >= GHOST_CUE.minGapTicks) || cue.tick - last.tick >= GHOST_CUE.keepaliveTicks || cue.tick < last.tick;
           if (!due) continue;
@@ -196,6 +197,10 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       // P3E step 4: Pulse Gun shots, each to the players who can see where it was fired (and its shooter) only.
       for (const { to, shot } of room.drainShots()) {
         for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:shot', shot);
+      }
+      // P3E step 5: a ghost dissolved or a Howler screamed: only to the players who can see the spot.
+      for (const { to, fx } of room.drainFx()) {
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:fx', fx);
       }
       const layouts = room.drainLayouts();
       if (layouts.length > 0) {
