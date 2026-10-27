@@ -1,6 +1,6 @@
 import {
   ACTION_MIN_GAP_TICKS, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type ItemAction, type StageAction, type StageState, type ToolId,
+  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type ItemAction, type ItemKind, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
@@ -195,6 +195,29 @@ export class StageEngine {
     if (!this.items) return fail('There is nothing to carry in this stage.');
     return this.items.use(playerId, a, me, pos);
   }
+
+  // ------------------------------------------------------------------ P3E: the catch (called by the Room; the ghost rules live in server/src/ghost)
+  /**
+   * A caught player: cancel their task and drop ONE carried part where they stand. Returns how many parts they still carry (call again next tick until 0;
+   * the item system limits how fast one player may act, so a second part follows a few ticks later).
+   */
+  dropOneCarried(playerId: string, pos: PosFn): number {
+    if (this.channels.delete(playerId)) this.dirty = true;
+    const items = this.items, me = pos(playerId);
+    if (!items || !me) return 0;
+    const first = items.carriedBy(playerId)[0];
+    if (first === undefined) return 0;
+    items.use(playerId, { action: 'drop', itemId: first }, me, pos);
+    return items.carriedBy(playerId).length;
+  }
+  /** P3E step 4: does the player carry a part of this kind? */
+  carriesKind(playerId: string, kind: ItemKind): boolean { return this.items?.carriedKinds(playerId).includes(kind) ?? false; }
+  /** P3E step 4: spend a carried part of this kind (the Pulse Gun's charge). True if one was carried and is now gone. */
+  spendCarried(playerId: string, kind: ItemKind): boolean { return this.items?.consumeCarried(playerId, kind) === 'ok'; }
+  /** Take points off the team score (a release after a capture). The total never goes below 0. */
+  penalty(category: string, points: number): void { this.award(category, -Math.abs(points)); }
+  /** A line for the stage feed, shown to the players in `room` (or everyone). */
+  announce(text: string, tone: 'info' | 'good' | 'warn' | 'bad', room?: string): void { this.say(text, tone, room); }
 
   // ------------------------------------------------------------------ P3D: escape (doors, locks, exit)
   private escapeRooms: { roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean; canSee(playerId: string, x: number, y: number): boolean } | undefined;

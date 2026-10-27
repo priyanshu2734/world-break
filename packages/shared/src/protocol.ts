@@ -5,6 +5,7 @@ import { WorldPublicSchema } from './abilities/world';
 import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
+import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -16,6 +17,8 @@ export const JoinPayloadSchema = z.object({
   lab: z.boolean().optional(),
   /** P3D dev flag: create the room with the multi-room demo stage as stage 1. Honoured only when the server runs with ESCAPE_STAGES on, and only on creation. */
   rooms: z.union([z.boolean(), z.literal(2)]).optional(),
+  /** P3E dev flag: create the room with the ghost on, beginning at this stage (1 means 2, the first stage with a ghost). Honoured only on creation and only when escape stages are enabled. */
+  ghost: z.number().int().min(1).max(1_000_000).optional(),
 });
 export const ReadyPayloadSchema = z.object({ ready: z.boolean() });
 export const DifficultyPayloadSchema = z.object({ difficulty: DifficultySchema });
@@ -48,6 +51,12 @@ export const GameInputSchema = z.object({
   seq: z.number().int().min(0).max(2_000_000_000),
   moveX: z.number().min(-1).max(1),
   jump: z.boolean(),
+  /** P3E (additive, optional): where the player aims the flashlight and the Pulse Gun, quantised to 0..255 (see `quantiseAim`). Absent = unknown. */
+  aim: AimSchema.optional(),
+  /** P3E (additive, optional): Shift held. The server trusts it only for crouching in place; how loud a move is comes from the move axis it applied. */
+  sneak: z.boolean().optional(),
+  /** P3E step 3 (additive, optional): E held. Freeing a caught teammate needs E held next to them for a few seconds. */
+  use: z.boolean().optional(),
 });
 export type GameInput = z.infer<typeof GameInputSchema>;
 
@@ -88,6 +97,8 @@ export const GameSnapshotSchema = z.object({
    * team panel reads this instead: every teammate's name, slot and connection, never a position or an inventory. Absent on other stages.
    */
   team: z.array(z.object({ id: z.string(), name: z.string(), slot: z.number().int().min(0), connected: z.boolean() })).max(MAX_PLAYERS).optional(),
+  /** P3E (additive, optional): the ghosts THIS player can see (at most 2). Absent = none in view (a ghost out of view is never in the message). */
+  ghosts: z.array(GhostPublicSchema).max(2).optional(),
 });
 export type GameSnapshot = z.infer<typeof GameSnapshotSchema>;
 
@@ -112,6 +123,8 @@ export interface ClientToServerEvents {
   'item:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3D: doors (E), keypads and safes (enter a code), switches (press), clues (read). */
   'escape:action': (payload: unknown, ack: (r: Ack<EscapeAck>) => void) => void;
+  /** P3E step 3: hide in the hiding spot in reach, or come out. The server decides. */
+  'ghost:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;
@@ -121,4 +134,13 @@ export interface ServerToClientEvents {
   'stage:state': (state: StageState) => void;
   /** P3D. Sent to ONE player (never broadcast) when they begin a stage or enter a room: the walls and doorways of that room. */
   'room:layout': (layout: RoomLayout) => void;
+  /**
+   * P3E. Sent to ONE player: what they can HEAR of the ghost (a distance bucket and a direction, through walls: the documented exception to the
+   * vision invariant) and whether a warning is on. Sent when it changes (at most every 4 ticks) and at least once a second while a ghost exists.
+   */
+  'ghost:cue': (cue: GhostCue) => void;
+  /** P3E step 4. Sent to the players who can see where a Pulse Gun shot was fired (and its shooter): the bolt to draw. */
+  'ghost:shot': (shot: GhostShot) => void;
+  /** P3E step 5: a ghost dissolved (Pulse Gun hit) or a Howler screamed. Only to players who can see the spot. */
+  'ghost:fx': (fx: GhostFx) => void;
 }

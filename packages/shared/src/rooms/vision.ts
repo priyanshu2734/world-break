@@ -29,7 +29,8 @@ export const EYE_HEIGHT = 28;
  * Height above the floor of the point a thing is seen at (the same numbers the server uses to decide what to publish and what an
  * action may touch, so "visible" means one thing everywhere).
  */
-export const POINT_HEIGHT = { player: 28, item: 12, stash: 20, keypad: 40, safe: 25, clue: 12, switch: 8, exit: 50 } as const;
+/** `ghost` is 0: a ghost's public position is already its body centre (it floats), so it is seen at that very point. */
+export const POINT_HEIGHT = { player: 28, item: 12, stash: 20, keypad: 40, safe: 25, clue: 12, switch: 8, exit: 50, ghost: 0 } as const;
 
 export interface Pt { x: number; y: number }
 export interface Box { x: number; y: number; w: number; h: number }

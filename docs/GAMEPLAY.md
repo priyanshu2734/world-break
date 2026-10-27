@@ -54,8 +54,8 @@ Server-authoritative AI, deterministic by seed and tick, never wall-clock.
 * **Fairness rules:** never spawns near a player or inside a safe zone; warning always precedes an appearance; never faster than 95 percent of
   sprint speed; doors take time to open; hiding works; every room has a reachable escape path. Every catch must be explainable in the review.
 * **Sound:** positional audio (distance volume and left/right pan), a heartbeat that rises as it nears, distinct footsteps. You can HEAR it before you see it.
-* **Catch:** the caught player is CAPTURED, a rescue window (about 45 s) lets a teammate revive them at the spot, then they are ELIMINATED and spectate.
-* **Pulse Gun:** found in a safe or locker. 1 charge, needs aim and range. A hit STUNS the ghost (not kills): about 150 s at low stages, shrinking with stage.
+* **Touch kills (v6):** if a ghost touches a player (contact radius, short contact time, sight required) that player DIES. There is no "stuck and freed by E" any more. Stakes are real and always explainable (the event log says what touched you and why it saw you). Other ghost types kill in their own ways (see the types table). Easy and Intermediate allow ONE revive per stage through a rare Revive Cell item (section 8); Hardcore has none.
+* **Pulse Gun (v6):** found in a safe or locker, reusable with a COOLDOWN, aimed with the mouse, limited range. A hit DESTROYS the ghost (it dissolves with a clear effect; it is not left frozen beside you). The ghost RESPAWNS after a timer at a random spot far from every player, with a warning cue. As stages rise the gun cooldown GROWS and the ghost respawn timer SHRINKS (both with caps and floors). A shot is loud and attracts other ghosts.
   Carrying it uses a slot. Only one gun per stage (more on later stages is a tuning choice).
 ### Ghost types (new type every few stages; looks, sound and power all change)
 Each type has its own SILHOUETTE and COLOUR, its own SOUND signature, one signature power, and a COUNTER the player can learn. A new type is introduced
@@ -79,9 +79,11 @@ Speed, interval and stun timers still follow the tuning table below; the type on
 | Ghost present | no ghost on stage 1; mild from stage 2 | | |
 | Speed (share of sprint) | 70 percent | +0.5 percent per stage | 95 percent |
 | Appearance interval | 120 s | shrinks | floor 40 s |
-| Stun duration after a hit | 150 s | shrinks | floor 45 s |
+| Gun cooldown | 30 s | +1 s per stage (mode scales it) | cap 90 s |
+| Ghost respawn after a hit | 150 s | -2 s per stage | floor 45 s |
+| Ghosts at once | 1 | 2 from stage 20, never more than 2 | 2 |
 | Hearing range | small | grows | cap |
-| Hiding spots per room | 4 | fewer | min 1 per room |
+| Hiding spots per room | 4 | fewer | min 1 per room (each holds up to 2 players) |
 | Ambient brightness | 100 percent | dims | floor 35 percent |
 New tricks unlock by stage (breaks lights, blinks short distances, imitates a teammate's ping), never all at once.
 Mode (Easy, Intermediate at stage 10, Hardcore at stage 20) scales severity (how fast the curves move), stage scales complexity.
@@ -92,11 +94,12 @@ From stage 3 a disaster runs alongside the escape: gravity inversion, reactor ov
 * Each disaster has an optional CURE puzzle (parts and tools from P2 and P3C). Curing it gives relief (light returns, ghost slows, a shortcut opens).
 * Intensity and number grow with stage (caps: 1 disaster until stage 14, 2 until stage 39, then 3). Combinations only where tested.
 
-## 8. Death, spectating, revive
-* Caught -> CAPTURED (rescue window) -> ELIMINATED -> SPECTATING.
-* Spectators see ONLY the ghost and their teammates (never items, codes or solutions). They can ping "ghost here" and use chat.
-* A teammate revives a CAPTURED player by staying next to them a few seconds (a Revive Cell item may be required on harder modes).
-* All players captured or eliminated -> stage over, restart with a new seed. At least one escapes -> stage cleared, all return next stage.
+## 8. Death, spectating, revive (v6)
+* **Touch = death.** A dead player becomes a SPECTATOR. In a solo run, death ends the attempt: the stage restarts with a NEW seed; the stage number never goes back to 1.
+* **Spectators see ONLY the ghost(s) and their teammates.** Never items, codes, doors or solutions. They can ping where the ghost is coming from ("ghost here, there") and chat. They cannot touch the live world.
+* **Revive:** Easy and Intermediate place at most ONE rare Revive Cell per stage (a carried item that uses a slot; a teammate carries it to the dead player's body and holds E for a few seconds; the body must still be reachable). Hardcore has no revive. A revive is a real decision: the Revive Cell competes with other items for your 2 slots.
+* **Clear and wipe rules:** if everyone is dead, the stage is over and restarts with a new seed. If at least one player reaches the exit alive, the stage is cleared and ALL players (including the dead) return for the next stage; bonus score if nobody died.
+* The death review (P4) shows the real cause from recorded server events: what touched you, what it heard, what you were carrying.
 
 ## 9. Making 2D work (hidden things stay hidden)
 1. **Darkness + flashlight:** the level is dark; each player sees a light cone and a small radius. Brightness dims with stage.
@@ -121,3 +124,44 @@ The old tool bar (1 to 5) is removed from the HUD for escape stages. Abilities (
 1. No checklist stages. Objective text states goals only. 2. Every lock and puzzle is validated solvable for 1 to 4 players by the solver.
 3. All counts bounded and documented. 4. Hidden information never leaves the server except inside a player's vision.
 5. The ghost must be deterministic, fair and explainable. 6. Never claim supported or fun without tests and a human playtest note.
+
+## 13. Randomised, vertical, varied levels (v6)
+* **Randomised everything per seed:** hiding spot positions (never the same fixed place), item and container positions, safe locations, door positions, lock order, ghost spawn points, room templates and themes. Each is validated solvable.
+* **Hiding spots hold up to 2 players** (a cupboard, a vent, a crate). Two players inside are quieter together only if both sneak; the ghost may check an occupied spot after a noise (telegraphed), so hiding is never a guarantee.
+* **Verticality:** rooms are tall. Platforms, ledges, vents and shafts at many heights; items and containers are not all near the floor (some on ledges, some need a gravity pickup, a clone or a teammate boost). No room is only a flat floor.
+* **Room templates (12+):** corridor, shaft, split level, mezzanine, vent crawl, pit, tower, hub, moving platforms and more. No stage repeats the previous stage's template.
+* **Two ghosts (from stage 20), never more:** a pair (for example Twins from stage 45, or two different types). Each has its own warning cue. Fairness rules apply to each.
+
+## 14. Ghost kill methods (every method has a warning and a counter)
+| Type | Kills by | Counter |
+|---|---|---|
+| Wisp | touch | hide, sneak, gun |
+| Shade | touch, but only moves while NOT in a flashlight cone | keep light on it |
+| Howler | scream breaks lights and alerts it, then touch | crouch, avoid noise |
+| Mimic | touch, after luring you with a fake teammate ping | confirm with the ping wheel code word |
+| Phantom | blinks through walls (sound warning), then touch | stay in lit areas, use doors |
+| Warden | breaks ordinary doors, slow, heavy touch | two-person doors, gun, loops |
+| Twins | two weaker ghosts that hunt together | split attention, hide in separate spots |
+
+## 15. Signature features (v7: what makes this game its own)
+Planned, with the phase that builds each. All server-authoritative, deterministic by seed, bounded, fair and explainable.
+1. **Identify the ghost (P3F, the big hook).** Each ghost type leaves different EVIDENCE in the stage (cold breath on the light, wet footprints, scratched walls, flickering
+   only one lamp, a particular whisper). Players read the evidence, talk, and decide WHICH ghost it is, because the right counter depends on the type (Shade: keep the light on
+   it; Howler: stay quiet; Warden: loop it through doors). A wrong guess costs time or health, a right one gives a clear advantage. Brain use grows with the stage.
+2. **Stealth toolkit (P3I).**
+   * Noise-maker: a throwable lure (bottle, radio) that draws the ghost to a spot for a few seconds. Limited per stage, uses a slot.
+   * Flashlight as a resource: it drains while on, batteries are items, light off is quieter but darker (the Shade needs light, so this is a real tension).
+   * Sprint stamina: running is fast, loud and tiring; sneaking is quiet.
+   * Door tactics: hold a door shut for a few seconds (noisy), lock some doors behind you with a key item; the ghost needs time to open them.
+3. **The ghost learns (P3I).** It remembers your last hiding spots and routes and checks them sooner (a capped "memory"), so you cannot hide in the same place forever.
+   It never cheats: no seeing through walls, no knowing your position without a sense.
+4. **AI director for pacing (P3I).** Deterministic tension and relief cycles: after a scare there is a guaranteed calm window; if the team stalls, pressure builds (the ghost
+   gets bolder, the lights dim); if they are doing well, a safer stretch. Never unfair, always telegraphed.
+5. **Roles by gear (P3H).** In the lobby each player picks a loadout: Scout (wider light cone), Tech (faster locks), Medic (faster revive), Runner (more stamina). Different information and
+   abilities make teamwork matter and give replay value.
+6. **Draft pick and optional loot (P3F):** 1 of 3 upgrades after each stage, risky optional loot rooms, Risk Contracts.
+7. **Later (P6 and beyond):** Daily Breach (same seed for everyone, best stage), cosmetics and Workshop unlocks for accounts.
+
+## 16. Hard rules for all of the above
+Every mechanic has a warning, a counter, a cap and a test. No stage may be a repeat of the previous stage's template or lock type. A first-time player must be able to learn the
+mechanic from a visible prompt before it is required.

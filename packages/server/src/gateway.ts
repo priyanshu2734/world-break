@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GameInputSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -16,7 +16,7 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean } = {}): GameServer {
+export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean; ghostStages?: boolean } = {}): GameServer {
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
     res.writeHead(404).end();
@@ -24,6 +24,8 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(http, {
     cors: { origin: opts.corsOrigin ?? 'http://localhost:5173' },
   });
+  // P3E: the ghost. Off unless the caller says so or the server is started with GHOST_STAGES=1 (config.ts and main.ts are outside this phase's file list, so the variable is read here).
+  const ghostOn = opts.ghostStages ?? process.env.GHOST_STAGES === '1';
   const rooms = new RoomManager({ briefingTicks: opts.briefingTicks, huntStage: opts.huntStage });
   // socket.id -> membership. playerId is a server-issued opaque id, never client-chosen.
   const sessions = new Map<string, { playerId: string; roomCode: string }>();
@@ -48,12 +50,14 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
       if (sessions.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
-      const { roomCode, name, lab, rooms: wantRooms } = parsed.data;
+      const { roomCode, name, lab, rooms: wantRooms, ghost: wantGhost } = parsed.data;
       // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
       // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
       if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true });
+      // P3E dev flag: the ghost, starting at a given stage, only on creation and only when escape stages are enabled (like the multi-room demo).
+      if (wantGhost !== undefined && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
+      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true, ghost: opts.escapeStages === true && (ghostOn || wantGhost !== undefined), ...(wantGhost !== undefined ? { startStage: Math.max(2, wantGhost) } : {}) });
       if (!room) return reply(ack, { ok: false, error: 'Room not found' });
       const playerId = randomUUID();
       const r = room.join(playerId, name);
@@ -84,7 +88,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!s) return;
       const p = GameInputSchema.safeParse(payload);
       if (!p.success) return;
-      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump });
+      rooms.get(s.roomCode)?.submitInput(s.playerId, p.data.seq, { moveX: p.data.moveX, jump: p.data.jump }, { ...(p.data.aim !== undefined ? { aim: p.data.aim } : {}), ...(p.data.sneak !== undefined ? { sneak: p.data.sneak } : {}), ...(p.data.use !== undefined ? { use: p.data.use } : {}) });
     });
     // P2: stage actions (interact / tool use / cancel). Validated by Zod here, by the engine for rules.
     socket.on('stage:action', (payload, ack) => {
@@ -125,6 +129,16 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
+    // P3E step 3: hide in the hiding spot in reach, or come out. Zod here, rules in the catch system.
+    socket.on('ghost:action', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = GhostActionSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const r = rooms.get(s.roomCode)?.ghostAction(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
     // P3A: host advances to the next stage (endless loop). Uses the existing NEXT_STAGE room transition.
     socket.on('room:nextStage', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.nextStage(pid));
@@ -149,6 +163,8 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   let stopLoop: (() => void) | null = null;
   /** P3D step 4: the last stage state each player of a restricted room was sent (cleared with the room). */
   const views = new WeakMap<Room, Map<string, { key: string; rev: number }>>();
+  /** P3E: the last ghost cue each player was sent (key without the tick, and the tick it was sent at). */
+  const cues = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
   const onTick = () => {
     rooms.forEach((room) => {
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
@@ -160,6 +176,32 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       // sent reliably: after stage completion the sim stops, so a dropped one would leave clients on a stale phase.
       if (snap) (phaseChanged ? io.to(room.code) : io.to(room.code).volatile).emit('game:snapshot', snap);
       // P3D: each player is told the layout of the room they begin in or enter: to that player's socket only, never broadcast.
+      // P3E: what each player can HEAR of the ghost (distance bucket and direction; the documented exception to the vision invariant).
+      // Sent when it changes (at most every GHOST_CUE.minGapTicks) and at least every GHOST_CUE.keepaliveTicks while the stage has a ghost.
+      if (room.phase === 'playing') {
+        let sentCues = cues.get(room);
+        if (!sentCues) cues.set(room, (sentCues = new Map()));
+        for (const [sid, sess] of sessions) {
+          if (sess.roomCode !== room.code) continue;
+          const cue = room.ghostCue(sess.playerId);
+          if (!cue) continue;
+          // the gun's countdown and the lights' countdown change every tick and are counted down by the client, so only their on/off flips make a new cue
+          const key = JSON.stringify({ w: cue.warning, s: cue.sounds, t: cue.status, k: cue.warnKinds, g: cue.gun ? cue.gun.left > 0 : null, d: (cue.lightsOut ?? 0) > 0 });
+          const last = sentCues.get(sess.playerId);
+          const due = !last || (key !== last.key && cue.tick - last.tick >= GHOST_CUE.minGapTicks) || cue.tick - last.tick >= GHOST_CUE.keepaliveTicks || cue.tick < last.tick;
+          if (!due) continue;
+          sentCues.set(sess.playerId, { key, tick: cue.tick });
+          io.to(sid).emit('ghost:cue', cue);
+        }
+      }
+      // P3E step 4: Pulse Gun shots, each to the players who can see where it was fired (and its shooter) only.
+      for (const { to, shot } of room.drainShots()) {
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:shot', shot);
+      }
+      // P3E step 5: a ghost dissolved or a Howler screamed: only to the players who can see the spot.
+      for (const { to, fx } of room.drainFx()) {
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:fx', fx);
+      }
       const layouts = room.drainLayouts();
       if (layouts.length > 0) {
         const socketOf = new Map<string, string>();

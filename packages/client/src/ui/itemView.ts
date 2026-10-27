@@ -19,10 +19,10 @@ export const TONE_COLOR: Record<Tone, number> = { danger: COLOR.danger, cyan: CO
 export const TONE_HEX: Record<Tone, string> = { danger: '#ff6b6b', cyan: '#3de8ff', amber: '#ffb02e', green: '#6dffb0' };
 
 /** One silhouette per kind, so a part is never told apart by colour alone (colour-blind safe). */
-export type MarkerShape = 'bar' | 'ring' | 'hex' | 'spoke' | 'triangle' | 'cell' | 'cross' | 'block';
+export type MarkerShape = 'bar' | 'ring' | 'hex' | 'spoke' | 'triangle' | 'cell' | 'cross' | 'block' | 'bolt';
 export const ITEM_SHAPE: Record<ItemKind, MarkerShape> = {
   fuse: 'bar', flux_coil: 'ring', coolant_cell: 'hex', valve_wheel: 'spoke',
-  access_key: 'triangle', battery: 'cell', revive_cell: 'cross', power_core: 'block',
+  access_key: 'triangle', battery: 'cell', revive_cell: 'cross', power_core: 'block', pulse_gun: 'bolt',
 };
 
 /** A repaired/installed part is green, a visibly cracked part is red, everything else you can pick up is cyan. */

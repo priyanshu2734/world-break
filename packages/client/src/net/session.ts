@@ -1,11 +1,12 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  GameSnapshotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
+  GameSnapshotSchema, GhostCueSchema, GhostFxSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
   type AbilityAction, type Ack, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
-  type EscapeAction, type EscapeAck, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
+  type EscapeAction, type EscapeAck, type GhostAction, type GhostCue, type GhostFx, type GhostShot, type GhostStatus, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { addNote } from '../ui/escapeUse';
 import { SnapshotBuffer } from './interpolation';
+import { ghostRequested } from '../ui/ghost/ghostParam';
 
 type S = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -27,13 +28,27 @@ export class Session {
   readonly notes: { id: string; text: string }[] = [];
   /** Result of the most recent action, for HUD feedback. */
   notice: { text: string; ok: boolean; at: number } | null = null;
+  /** P3E: the latest ghost sound cue (distance bucket and direction, never a position) and when it arrived (performance.now). */
+  ghostCue: GhostCue | null = null;
+  ghostCueAt = 0;
+  /** P3E step 4: Pulse Gun shots the server sent me (only those I can see), with their arrival time (performance.now). Old ones are dropped. */
+  ghostShots: { shot: GhostShot; at: number }[] = [];
+  /** Set by the scene: called once per new shot (for the sound). */
+  onGhostShot: ((shot: GhostShot) => void) | null = null;
+  /** P3E step 5: dissolves and screams the server sent me (only those I can see), with their arrival time. */
+  ghostFx: { fx: GhostFx; at: number }[] = [];
+  onGhostFx: ((fx: GhostFx) => void) | null = null;
+  /** P3E: aim (0..255, see `quantiseAim`) and Shift (sneak) sent with every input. Set by the scene before it predicts. Absent = not sent. */
+  inputExtra: { aim?: number; sneak?: boolean; use?: boolean } = {};
+  /** P3E step 3: what the server told this player about hiding and being caught (from the latest cue). Null until a cue with a status arrives. */
+  get ghostStatus(): GhostStatus | null { return this.ghostCue?.status ?? null; }
   playerId = '';
   connected = false;
   error = '';
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.layouts.clear(); this.buffer.clear(); });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.ghostShots = []; this.ghostFx = []; this.layouts.clear(); this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
@@ -46,6 +61,24 @@ export class Session {
     this.socket.on('stage:state', (raw) => {
       const parsed = StageStateSchema.safeParse(raw);
       if (parsed.success && (!this.stage || parsed.data.rev >= this.stage.rev)) this.stage = parsed.data;
+    });
+    this.socket.on('ghost:shot', (raw) => {
+      const parsed = GhostShotSchema.safeParse(raw);
+      if (!parsed.success) return;
+      const now = performance.now();
+      this.ghostShots = [...this.ghostShots.filter((s) => now - s.at < 3000), { shot: parsed.data, at: now }].slice(-8);
+      this.onGhostShot?.(parsed.data);
+    });
+    this.socket.on('ghost:fx', (raw) => {
+      const parsed = GhostFxSchema.safeParse(raw);
+      if (!parsed.success) return;
+      const now = performance.now();
+      this.ghostFx = [...this.ghostFx.filter((f) => now - f.at < 3000), { fx: parsed.data, at: now }].slice(-8);
+      this.onGhostFx?.(parsed.data);
+    });
+    this.socket.on('ghost:cue', (raw) => {
+      const parsed = GhostCueSchema.safeParse(raw);
+      if (parsed.success) { this.ghostCue = parsed.data; this.ghostCueAt = performance.now(); }
     });
     this.socket.on('game:snapshot', (raw) => {
       const parsed = GameSnapshotSchema.safeParse(raw);
@@ -64,7 +97,8 @@ export class Session {
   }
 
   async join(name: string, roomCode?: string, lab = false, rooms: boolean | 2 = false): Promise<void> {
-    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}), ...(rooms && !roomCode ? { rooms } : {}) });
+    const ghost = ghostRequested(typeof window !== 'undefined' ? window.location.search : '');
+    const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}), ...(rooms && !roomCode ? { rooms } : {}), ...(ghost !== null && !roomCode ? { ghost } : {}) });
     if (r.ok) { this.playerId = r.playerId; this.error = ''; } else this.error = r.error;
   }
   async setReady(ready: boolean) { this.report(await this.call('room:ready', { ready })); }
@@ -77,7 +111,8 @@ export class Session {
    */
   sendInput(seq: number, input: InputIntent) {
     if (!this.socket.connected) return; // never queue stale input for a later reconnect
-    this.socket.emit('game:input', { seq, moveX: input.moveX, jump: input.jump });
+    const { aim, sneak, use } = this.inputExtra;
+    this.socket.emit('game:input', { seq, moveX: input.moveX, jump: input.jump, ...(aim !== undefined ? { aim } : {}), ...(sneak ? { sneak: true } : {}), ...(use ? { use: true } : {}) });
   }
   /** Ask the server to perform a stage action; shows the server's verdict in the HUD. */
   async stageAction(action: StageAction): Promise<void> {
@@ -100,6 +135,11 @@ export class Session {
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
     if (r.ok && r.note) addNote(this.notes, r.note);
     return r;
+  }
+  /** P3E step 3: hide in the hiding spot in reach, or come out. The server's verdict shows in the HUD. */
+  async ghostAction(action: GhostAction): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('ghost:action', action);
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }
   /** P3A: host-only. Asks the server to advance from a completed stage to the next one (stages are endless). */

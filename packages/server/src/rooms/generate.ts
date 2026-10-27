@@ -1,11 +1,19 @@
 import {
-  ITEM_LIMITS, TUTORIAL_AMBIENT_MIN, createRng, decoysForStage, deriveSeed, hidingSpotsForStage, locksForStage, roomCountForStage,
-  type LockType, type RoomDef, type RoomGraph, type Rng,
+  ESCAPE_LIMITS, ITEM_LIMITS, TUTORIAL_AMBIENT_MIN, createRng, decoysForStage, deriveSeed, EVIDENCE_BY_TYPE, EVIDENCE_PER_TYPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, ghostTuning, hidingSpotsForStage, locksForStage, roomCountForStage,
+  type Difficulty, type LockType, type RoomDef, type RoomGraph, type Rng,
 } from '@wb/shared';
 import { StageDefSchema, type StageDef } from '../systems/stageDef';
 import { validateStageDef } from '../systems/validate';
 import type { EscapeSpec, Lock } from './escapeSpec';
 import { bareEscapeStage } from './stageBase';
+import { requireGhostLevel, requireGun } from './escapeValidate';
+
+/** P3E step 4: from this stage the Pulse Gun is in a SAFE (a 3-digit combination found on notes in the start room); before it, in a plain locker. */
+export const GUN_SAFE_FROM_STAGE = 5;
+/** Free floor spots a room keeps after its hiding spots (the gun's locker or safe and its three notes are placed afterwards). */
+const GUN_RESERVED_FLOOR = 4;
+/** Options of the generator. `ghost: true` = the run has a ghost: every ghost stage then holds one Pulse Gun. Default (off) = exactly the earlier stages. */
+export interface GenerateOptions { ghost?: boolean; /** P3E step 5: the mode (hiding spots per room come from the tuning table). Default easy. */ difficulty?: Difficulty }
 
 /**
  * P3D step 5: the seeded escape-stage generator. It builds EVERY stage of an escape run (stage 1 included) from `(stage, seed)` alone, so a
@@ -84,7 +92,7 @@ const COMBO_NOTE = (n: number, d: string) => `Torn page: the ${['first', 'second
 
 /** The result of one attempt. */
 /** One attempt (exported for the tests, which prove the first attempt of every tested stage and seed is valid). */
-export function attemptEscapeStage(stage: number, seed: number, tryNo: number): StageDef {
+export function attemptEscapeStage(stage: number, seed: number, tryNo: number, opts: GenerateOptions = {}): StageDef {
   const rng = createRng(deriveSeed(seed, 'escape', stage, tryNo));
   const count = roomCountForStage(stage);
   const single = count === 1;
@@ -128,7 +136,9 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number): 
   const safes: EscapeSpec['safes'] = [];
   const switches: EscapeSpec['switches'] = [];
   const decoys = decoysForStage(stage);
-  let decoyBudget = ITEM_LIMITS.maxItemsPerStage - types.filter((t) => t === 'key_item' || t === 'power' || t === 'safe').length;
+  const gunOn = opts.ghost === true && ghostPresentOnStage(stage);
+  // the Pulse Gun is one more part of the stage: it is counted before the decoys are, so the 12-part cap always leaves room for it
+  let decoyBudget = ITEM_LIMITS.maxItemsPerStage - types.filter((t) => t === 'key_item' || t === 'power' || t === 'safe').length - (gunOn ? 1 : 0);
 
   types.forEach((type, i) => {
     const room = plans[i]!;                       // the room of the door's near side
@@ -204,12 +214,54 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number): 
   });
 
   // ---- placeholder hiding spots for the ghost (P3E). Inert here.
+  //      P3E step 5: with the ghost option the spots are real: per room as many as the tuning table says (4 falling to 1; the total never above the stage cap),
+  //      at RANDOM floor positions of this seed, of a random kind. Without the option the old placeholders are drawn exactly as before.
   const hidingSpots: NonNullable<EscapeSpec['hidingSpots']> = [];
+  const perRoom = gunOn
+    ? Math.max(1, Math.min(ghostTuning(opts.difficulty ?? 'easy', stage).hidingSpotsPerRoom, Math.floor(ESCAPE_LIMITS.maxHidingSpots / plans.length)))
+    : hidingSpotsForStage(stage);
   for (const p of plans) {
-    for (let h = 0; h < hidingSpotsForStage(stage); h++) {
+    for (let h = 0; h < perRoom; h++) {
       if (spots(p, 'floor').length === 0) break;
+      if (gunOn && h > 0 && spots(p, 'floor').length <= GUN_RESERVED_FLOOR) break; // keep floor for the gun's locker and the safe's notes
       const s = take(p, rng, 'floor');
-      hidingSpots.push({ id: `${p.id}_h${h}`, room: p.id, x: s.x, y: s.y, kind: h % 2 === 0 ? 'closet' : 'vent' });
+      hidingSpots.push({ id: `${p.id}_h${h}`, room: p.id, x: s.x, y: s.y, kind: gunOn ? rng.pick(['closet', 'vent'] as const) : h % 2 === 0 ? 'closet' : 'vent' });
+    }
+  }
+
+  // ---- P3E step 4: the Pulse Gun. One per ghost stage, in the START room (so it needs no door opened to reach), locked in a locker or a safe.
+  //      It is drawn from the same seeded generator AFTER everything else, so a stage without the ghost option is byte-for-byte what it was.
+  if (gunOn) {
+    const home = plans[0]!, gunId = `${prefix}_gun`;
+    const useSafe = stage >= GUN_SAFE_FROM_STAGE && safes.length < ESCAPE_LIMITS.maxSafes && clues.length + 3 <= ESCAPE_LIMITS.maxClues && spots(home, 'any').length >= 4;
+    if (useSafe) {
+      const combo = digitsOf(rng, 3);
+      const s = take(home, rng, 'floor');
+      const clueIds = combo.split('').map((d, n) => {
+        const c = take(home, rng, 'any'), id = `${prefix}_gs${n}`;
+        clues.push({ id, room: home.id, x: c.x, y: c.y, label: `Torn page ${n + 1}`, text: COMBO_NOTE(n, d) });
+        return id;
+      });
+      safes.push({ id: `${prefix}_gunsafe`, room: home.id, x: s.x, y: s.y, code: combo, clueIds, contains: gunId });
+      items.push({ id: gunId, kind: 'pulse_gun', x: s.x, y: s.y, room: home.id, hidden: { container: 'locker', reveal: 'interact' } });
+    } else {
+      const s = take(home, rng, 'floor');
+      stashes.push({ id: `${prefix}_gunlocker`, kind: 'locker', label: 'Locker', x: s.x, y: s.y, room: home.id });
+      items.push({ id: gunId, kind: 'pulse_gun', x: s.x, y: s.y, room: home.id, hidden: { container: 'locker', reveal: 'interact', stashId: `${prefix}_gunlocker` } });
+    }
+  }
+
+  // ---- P3E step 5: EVIDENCE. Each ghost type of the stage leaves pieces of its own kind of evidence at random floor spots (data only: P3F builds the identify-the-ghost game on it).
+  const evidence: NonNullable<EscapeSpec['ghostEvidence']> = [];
+  if (gunOn) {
+    const lineup = ghostLineupForStage(stage, ghostPickFor(ghostSeedFor(seed, stage)));
+    for (const type of lineup) {
+      for (let n = 0; n < EVIDENCE_PER_TYPE; n++) {
+        const room = plans.filter((p) => spots(p, 'any').length > 0);
+        if (room.length === 0) break;
+        const p = rng.pick(room), s = take(p, rng, 'any'), kinds = EVIDENCE_BY_TYPE[type];
+        evidence.push({ id: `${prefix}_ev${evidence.length}`, room: p.id, x: s.x, y: s.y, kind: kinds[n % kinds.length]! as NonNullable<EscapeSpec['ghostEvidence']>[number]['kind'], ghost: type });
+      }
     }
   }
 
@@ -223,7 +275,7 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number): 
     doors: doors[p.id]!,
   }));
   const graph: RoomGraph = { start: plans[0]!.id, rooms };
-  const escape: EscapeSpec = { exit, links, keypads, safes, clues, switches, ...(hidingSpots.length > 0 ? { hidingSpots } : {}) };
+  const escape: EscapeSpec = { exit, links, keypads, safes, clues, switches, ...(hidingSpots.length > 0 ? { hidingSpots } : {}), ...(evidence.length > 0 ? { ghostEvidence: evidence } : {}) };
   return StageDefSchema.parse({
     ...bareEscapeStage(`escape_${stage}`, stage === 1 ? 'Escape tutorial' : `Escape ${stage}`, graph, 20 * 60 * (5 + 3 * count)),
     stashes, items, escape,
@@ -238,18 +290,19 @@ export interface GeneratedEscape { def: StageDef; attempts: number }
  * (a room ran out of spots, say) is replaced by the next derived attempt, never by a different stage. Throws only if all 8 attempts fail,
  * which the test suite proves does not happen (every tested stage and seed succeeds on attempt 1).
  */
-export function generateEscapeStageDetailed(stage: number, seed: number): GeneratedEscape {
+export function generateEscapeStageDetailed(stage: number, seed: number, opts: GenerateOptions = {}): GeneratedEscape {
   if (!Number.isSafeInteger(stage) || stage < 1) throw new Error(`Invalid stage number ${stage}`);
   let lastError = 'unknown';
   for (let tryNo = 0; tryNo < 8; tryNo++) {
     try {
-      const def = attemptEscapeStage(stage, seed, tryNo);
+      const def = attemptEscapeStage(stage, seed, tryNo, opts);
       const start = def.rooms!.rooms.find((r) => r.id === def.rooms!.start)!.arena;
       const errs = validateStageDef(def, start);
+      if (opts.ghost === true && ghostPresentOnStage(stage)) errs.push(...requireGun(def), ...requireGhostLevel(def, stage, seed));
       if (errs.length === 0) return { def, attempts: tryNo + 1 };
       lastError = errs.join('; ');
     } catch (e) { lastError = e instanceof Error ? e.message : String(e); }
   }
   throw new Error(`escape stage ${stage} (seed ${seed}) could not be generated: ${lastError}`);
 }
-export function generateEscapeStage(stage: number, seed: number): StageDef { return generateEscapeStageDetailed(stage, seed).def; }
+export function generateEscapeStage(stage: number, seed: number, opts: GenerateOptions = {}): StageDef { return generateEscapeStageDetailed(stage, seed, opts).def; }

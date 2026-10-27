@@ -26,7 +26,7 @@ export const ESCAPE_LIMITS = {
   /** Minimum ticks between two escape intents from one player (accepted AND refused). */
   minGapTicks: 4,
   /** Authoring bounds per stage (the room cap of 6 gives at most 5 doors). */
-  maxLinks: 5, maxClues: 20, maxKeypads: 5, maxSafes: 5, maxSwitches: 10, maxHidingSpots: 12,
+  maxLinks: 5, maxClues: 20, maxKeypads: 5, maxSafes: 5, maxSwitches: 10, maxHidingSpots: 12, maxEvidence: 6,
 } as const;
 
 /** The refusal on a locked door: it says WHAT is missing, never WHERE it is. Key and safe doors read the same on purpose. */

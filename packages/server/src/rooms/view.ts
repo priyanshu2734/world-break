@@ -1,6 +1,6 @@
 import {
-  EYE_HEIGHT, POINT_HEIGHT, pointVisible, roomById,
-  type GameSnapshot, type Pt, type RoomDef, type RoomGraph, type StageState,
+  EYE_HEIGHT, POINT_HEIGHT, inLitRegion, pointVisible, roomById,
+  type GameSnapshot, type GhostPublic, type Pt, type RoomDef, type RoomGraph, type StageState,
 } from '@wb/shared';
 
 /**
@@ -18,8 +18,19 @@ export interface ViewSource {
   graph: RoomGraph;
   /** Vision reach in px (`visionRadius(difficulty, stage)`). */
   radius: number;
+  /**
+   * P3E: the ghosts that are PRESENT (every one, in every room). A ghost is just another entity of the view: it is in a player's snapshot only while
+   * it is in their room, inside their reach, in line of sight and (once their aim is known) in their lit region. Absent = no ghost system.
+   */
+  ghosts?: readonly GhostPublic[];
+  /** P3E step 3: players hiding in a hiding spot. They are in nobody's snapshot but their own. */
+  hidden?: ReadonlySet<string>;
 }
-export interface Viewer { eyes: string; self: string | null }
+/**
+ * `eyes` is whose position and line of sight the view is cut from, `self` whose hands are shown. P3E: `aim` (radians) is where the eyes' owner points the
+ * flashlight; when given, everything is also cut down to the lit region (the small light plus the cone). Absent (null or omitted) = the whole radius, as in P3D.
+ */
+export interface Viewer { eyes: string; self: string | null; aim?: number | null }
 export interface RestrictedView { snapshot: GameSnapshot; stage: StageState }
 
 const doorCentre = (d: { x: number; y: number; w: number; h: number }): Pt => ({ x: d.x + d.w / 2, y: d.y + d.h / 2 });
@@ -40,12 +51,14 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
 
   const eye: Pt = { x: eyesAt.x, y: eyesAt.y - EYE_HEIGHT };
   const open = new Set((stage.escape?.doors ?? []).filter((d) => d.open).map((d) => d.id));
-  const see = (x: number, y: number, ignoreDoor?: string): boolean => pointVisible(room, eye, { x, y }, open, radius, ignoreDoor);
+  const aim = viewer.aim ?? null;
+  const see = (x: number, y: number, ignoreDoor?: string): boolean =>
+    pointVisible(room, eye, { x, y }, open, radius, ignoreDoor) && (aim === null || inLitRegion(eye, aim, { x, y }, radius));
   const here = (r: string | undefined): boolean => r === room.id;
 
   // ---- the game snapshot: yourself, your eyes' owner, and teammates in view (their positions, never their inventories)
   const players = snapshot.players.filter((p) =>
-    p.id === viewer.eyes || showSelf(p.id) || (here(p.roomId) && see(p.x, p.y - POINT_HEIGHT.player)));
+    p.id === viewer.eyes || showSelf(p.id) || (!(src.hidden?.has(p.id)) && here(p.roomId) && see(p.x, p.y - POINT_HEIGHT.player)));
 
   // ---- the stage state
   const out: StageState = {
@@ -74,5 +87,7 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
       ...(es.exit && here(es.exit.room) && see(es.exit.x, es.exit.y - POINT_HEIGHT.exit) ? { exit: es.exit } : {}),
     };
   }
-  return { snapshot: { ...snapshot, players, team }, stage: out };
+  // P3E: the ghost, like everything else, only when it is in view
+  const ghosts = (src.ghosts ?? []).filter((g) => here(g.room) && see(g.x, g.y - POINT_HEIGHT.ghost));
+  return { snapshot: { ...snapshot, players, team, ...(ghosts.length > 0 ? { ghosts } : {}) }, stage: out };
 }
