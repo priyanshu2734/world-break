@@ -221,7 +221,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
           if (sess.roomCode !== room.code) continue;
           const ds = room.deathState(sess.playerId);
           if (!ds) continue;
-          const key = JSON.stringify({ l: ds.life, f: ds.following?.id ?? null, w: ds.watchable.map((x) => x.id), p: ds.pingReadyIn > 0 });
+          const key = JSON.stringify({ l: ds.life, f: ds.following?.id ?? null, w: ds.watchable.map((x) => x.id), p: ds.pingReadyIn > 0, r: ds.reviving ? Math.floor(ds.reviving.progress * 10) : null, b: ds.beingRevived != null ? Math.floor(ds.beingRevived * 10) : null });
           const last = sentLife.get(sess.playerId);
           if (last && last.key === key && ds.tick - last.tick < SERVER_TICK_HZ && ds.tick >= last.tick) continue;
           sentLife.set(sess.playerId, { key, tick: ds.tick });

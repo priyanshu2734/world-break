@@ -1,6 +1,6 @@
 # DEATH (P4)
 
-Status: **steps 1 and 2 of 5 done** (death core, spectating). Revive, stage flow and review are steps 3 and 4; see `docs/handoffs/P4.md`.
+Status: **steps 1 to 3 of 5 done** (death core, spectating, revive). Stage flow and review are step 4; see `docs/handoffs/P4.md`.
 
 ## Rules in force after step 1
 | Rule | Value | Where |
@@ -33,8 +33,21 @@ All numbers live in `DEATH_TABLE` (`death/tuning.ts`); none depends on the stage
 
 Client: `ui/death/spectateLogic.ts` (pure, tested) and `ui/death/SpectateView.ts`; `GameScene` does not predict a dead player, and the camera, room and light follow the watched teammate. Keys: left and right arrows switch, G pings.
 
+## Revive (step 3)
+| Rule | Where |
+|---|---|
+| ONE Revive Cell per ghost stage on Easy and Intermediate, none on Hardcore. It lies in the open on a floor spot of a random room (so a team may have to fetch it), one hand (fits next to the Pulse Gun in 2 slots), genuine. Drawn AFTER the gun and the evidence, so every earlier draw of a stage keeps its place; the item cap reserves a slot for it. | `rooms/generate.ts` |
+| The validator PROVES it: exactly one on Easy/Intermediate, none on Hardcore (`requireRevive`); and for any stage at most one, not a decoy, not hidden, one hand, standing on a floor of its room (`validateEscape`). A stage that fails is regenerated like any other. | `rooms/escapeValidate.ts` |
+| Revive action: a living, connected, not hidden teammate who carries the cell HOLDS E for 3 s (60 ticks, no break) within 70 px (and 60 px up or down) of a body in their room. Letting go, stepping away, hiding, dying, losing the cell or the window running out starts it over. One reviver per body, one body per reviver; the nearer body wins. The ghost standing on the body does not stop it (that is the risk). | `death/revive.ts`, `REVIVE` |
+| A cell is spent only when the body can really come back (`DeathSystem.canRevive`: inside the window, Easy or Intermediate). A refused revive spends nothing. | `death/system.ts` |
+| The player returns ALIVE at the body position with 5 s of protection and EMPTY HANDS: anything still in their hands (a drop in progress) is put down at once; what already fell stays where it fell. | `DeathSystem.revive` |
+| The revive progress is told to the reviver (`reviving`) and to the body (`beingRevived`) only. The cell is never in a spectator's view. | `Room.deathState` |
+| Client: bodies are drawn faint with a mark; with the cell in hand next to a body the prompt says "Hold E to bring NAME back" and E taps do nothing else (the hold rides on the input stream); a bar shows progress. | `ui/death/reviveLogic.ts`, `SpectateView.setRevive`, `GameScene` |
+
+Logical cases, and what the code does: a revive while the ghost stands on the body works and the protection covers the revived player; two players dying on one tick are both bodies and one cell brings back the nearer; a dead player cannot revive anyone and a cell they carried lies where they fell; dropped things never count against the carrier's 2 slots (they are in the world); a gun dropped by a dead player keeps its recharge (the cooldown belongs to the gun, not to the shooter), so picking it up is no free shot.
+
 ## Not done yet
-Revive Cell action, generator placement, Hardcore exclusion (step 3; `revive_cell` already exists as an item kind). Retry with a new seed, clear rule, dead return, death review screen (step 4). Strict solver (step 5).
+Retry with a new seed, clear rule, dead return, death review screen (step 4). Strict solver (step 5).
 
 ## Test hooks
 `DeathSystem.setLethal(false)` is used ONLY by `test/ghost/gun.solve.test.ts` to measure that generated stages are solvable (not that a bot survives the ghost).

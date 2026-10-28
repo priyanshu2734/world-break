@@ -14,6 +14,9 @@ export class SpectateView {
   private head: Phaser.GameObjects.Text;
   private line: Phaser.GameObjects.Text;
   private rings: Phaser.GameObjects.Graphics;
+  /** P4 step 3: the revive prompt and its bar. */
+  private reviveText: Phaser.GameObjects.Text;
+  private reviveBar: Phaser.GameObjects.Graphics;
   private labels: Phaser.GameObjects.Text[] = [];
 
   constructor(private scene: Phaser.Scene) {
@@ -23,6 +26,19 @@ export class SpectateView {
     this.line = scene.add.text(W / 2, H - 76, '', { ...FONT, fontSize: '18px', color: '#cfe8ff', backgroundColor: '#04101acc' })
       .setOrigin(0.5, 1).setPadding(12, 6).setDepth(104).setScrollFactor(0).setVisible(false);
     this.rings = scene.add.graphics().setDepth(30);
+    this.reviveText = scene.add.text(W / 2, H - 150, '', { ...FONT, fontSize: '18px', color: '#9ff0b0', backgroundColor: '#04140acc' })
+      .setOrigin(0.5, 1).setPadding(12, 6).setDepth(104).setScrollFactor(0).setVisible(false);
+    this.reviveBar = scene.add.graphics().setDepth(105).setScrollFactor(0);
+  }
+
+  /** P4 step 3: the revive prompt (to the carrier next to a body), the bar while holding, and the line a body sees. */
+  setRevive(line: { text: string; progress: number | null }): void {
+    this.reviveText.setText(line.text).setVisible(line.text !== '');
+    this.reviveBar.clear();
+    if (line.text !== '' && line.progress !== null) {
+      this.reviveBar.fillStyle(0x04140a, 0.8).fillRect(W / 2 - 160, H - 140, 320, 12);
+      this.reviveBar.fillStyle(0x6be08a, 1).fillRect(W / 2 - 158, H - 138, 316 * Math.max(0, Math.min(1, line.progress)), 8);
+    }
   }
 
   update(o: { death: DeathState | null; arrivedMs: number; pings: readonly { ping: GhostPing; at: number }[]; room: string | undefined; nowMs: number }): void {
@@ -45,5 +61,5 @@ export class SpectateView {
     });
   }
 
-  destroy(): void { this.dim.destroy(); this.head.destroy(); this.line.destroy(); this.rings.destroy(); for (const t of this.labels) t.destroy(); }
+  destroy(): void { this.dim.destroy(); this.head.destroy(); this.line.destroy(); this.rings.destroy(); this.reviveText.destroy(); this.reviveBar.destroy(); for (const t of this.labels) t.destroy(); }
 }

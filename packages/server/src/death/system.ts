@@ -137,6 +137,12 @@ export class DeathSystem {
    * The state change of a revive: downed -REVIVE-> alive, with `protectionTicks` of protection. The ACTION (the Revive Cell, holding E) is a later
    * step; this is only the transition, so every arrow of the machine is exercised. Refused for anyone who is not a body inside the window.
    */
+  /** Could `id` be revived this very tick (a body inside its window, on a mode that has a revive)? Nothing is changed. */
+  canRevive(id: string): boolean {
+    const r = this.rt.get(id);
+    return this.tuning.revivable && !!r && r.life === 'downed' && this.host.tick < r.reviveUntil;
+  }
+
   revive(id: string, by: string | null): { ok: true } | { ok: false; reason: 'not_a_body' | 'window_over' | 'no_revive_here' } {
     const t = this.host.tick, r = this.rt.get(id);
     if (!this.tuning.revivable) return { ok: false, reason: 'no_revive_here' };
@@ -144,7 +150,10 @@ export class DeathSystem {
     if (t >= r.reviveUntil) return { ok: false, reason: 'window_over' };
     r.life = nextPlayerLife(r.life, 'REVIVE');
     r.protectedUntil = t + this.tuning.protectionTicks;
-    r.reviveUntil = 0; r.dropping = false;
+    r.reviveUntil = 0;
+    // back with EMPTY HANDS: whatever they still held (a drop in progress) is put down where they stand; what already fell stays where it fell
+    if (this.host.carried(id).length > 0) this.host.dropAll(id);
+    r.dropping = false;
     this.host.freeze(id, false);
     this.record({ tick: t, kind: 'revived', player: id, name: this.nameOf(id), by, protectedUntil: r.protectedUntil });
     return { ok: true };

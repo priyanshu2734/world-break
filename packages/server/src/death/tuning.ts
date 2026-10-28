@@ -49,3 +49,15 @@ export function deathTuning(difficulty: Difficulty, _stage = 1): DeathTuning {
     dropAttempts: T.dropAttempts,
   };
 }
+
+/**
+ * P4 step 3: reviving. A teammate who carries the Revive Cell holds E next to a body for `holdTicks`; the same numbers on every stage and mode
+ * (only Easy and Intermediate have a Revive Cell at all). Not a difficulty curve: pinned at stages 1 and 1,000,000 by a test.
+ */
+export const REVIVE = {
+  /** E held for 3 s (60 ticks), without a break. */
+  holdTicks: 60,
+  /** How close (px) the reviver must stand to the body, and the vertical slack. */
+  range: 70,
+  dy: 60,
+} as const;

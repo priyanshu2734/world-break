@@ -29,6 +29,7 @@ import { ghostFlags } from '../ui/ghost/ghostParam';
 import { HideView } from '../ui/ghost/HideView';
 import { GunView } from '../ui/ghost/GunView';
 import { SpectateView } from '../ui/death/SpectateView';
+import { bodyInReach, carriesCell, lifeMark, reviveLine } from '../ui/death/reviveLogic';
 import { SPECTATE_HINT, eyesId, isSpectating, switchKey } from '../ui/death/spectateLogic';
 import { canFire, carriesGun, cooldownFraction, cooldownLeftMs } from '../ui/ghost/gunLogic';
 import { canMove, captiveInReach, modeOf, nearestSpot, onEPressed, shouldShowTip } from '../ui/ghost/hideLogic';
@@ -409,6 +410,9 @@ export class GameScene extends Phaser.Scene {
       v.glow.setAlpha(p.connected ? 0.28 : 0.05);
       v.label.setText(p.connected ? p.name : `${p.name} (offline)`);
       v.marker.setText(isMe ? '▼ you' : '').setColor('#ffffff');
+      // P4 step 3: a body is drawn faint and marked (the team list says who is dead); a teammate with the Revive Cell can bring it back
+      const life = g.team?.find((t) => t.id === p.id)?.life;
+      if (life && life !== 'alive') { v.box.setAlpha(life === 'downed' ? 0.5 : 0.3); v.marker.setText(`${isMe ? '▼ you  ' : ''}${lifeMark(life)}`).setColor('#ff8c8c'); }
       // P3E step 3: a player hiding is drawn faint to themselves (nobody else is sent them at all); a caught player carries a red mark
       const gs = s.ghostStatus;
       const caught = isMe ? !!gs?.caught : !!gs?.captives.some((c) => c.id === p.id);
@@ -474,6 +478,10 @@ export class GameScene extends Phaser.Scene {
       otherPrompt: !!itemLine || this.escapeNearest !== null, now: nowMs,
     });
     this.spectateView.update({ death: s.death, arrivedMs: s.deathAt, pings: s.ghostPings, room: myRoom, nowMs });
+    // P4 step 3: the revive prompt for a carrier next to a body, the bar while holding, and what a body is told
+    const carried = st?.items ? carriedItems(st, s.playerId) : [];
+    const nearBody = !spectating && me ? bodyInReach(meNow ?? me, g.team, this.where) : null;
+    this.spectateView.setRevive(reviveLine(s.death, nearBody, carriesCell(carried)));
     // P4 step 2: a spectator's keys. Read before the stage keys (which consume key presses); the server decides everything.
     if (spectating && g.phase === 'playing') {
       const J = Phaser.Input.Keyboard.JustDown;
@@ -574,9 +582,11 @@ export class GameScene extends Phaser.Scene {
         // P3E step 3: a hiding place in reach (E hides) or a caught teammate in reach (HOLD E: the hold rides on the input stream, a tap sends nothing)
         const captive = ghostSt ? captiveInReach(me, ghostSt.captives, this.where) : null;
         const spot = ghostSt ? nearestSpot(me, ghostSt.spots) : null;
-        const key = onEPressed({ status: ghostSt, spot, captive: captive !== null, otherUse: false });
+        // P4 step 3: with the Revive Cell in hand next to a body, E is the revive HOLD (it rides on the input stream): a tap hides nobody and uses nothing
+        const reviving = bodyInReach(me, this.session.game?.team, this.where) !== null && carriesCell(carriedItems(st, this.session.playerId));
+        const key = onEPressed({ status: ghostSt, spot, captive: captive !== null || reviving, otherUse: false });
         if (key === 'hide') void this.session.ghostAction({ action: 'hide' });
-        else if (captive === null) {
+        else if (captive === null && !reviving) {
           const id = nearestInteractable(st, me);
           if (id) send({ kind: 'interact', targetId: id });
           else this.session.notice = { text: 'Nothing to use here.', ok: false, at: performance.now() };

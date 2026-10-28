@@ -32,6 +32,10 @@ export const DeathStateSchema = z.object({
   pingReadyIn: z.number().int().min(0),
   /** For a body: ticks of the revive window left (0 once eliminated or alive). */
   reviveLeft: z.number().int().min(0),
+  /** P4 step 3 (additive, optional): the body a living player is reviving right now and how far along (0..1). Told to the reviver only. */
+  reviving: z.object({ id: z.string(), name: z.string(), progress: z.number().min(0).max(1) }).nullable().optional(),
+  /** P4 step 3 (additive, optional): how far along a teammate is in bringing THIS body back (0..1; null = nobody is). Told to the body only. */
+  beingRevived: z.number().min(0).max(1).nullable().optional(),
 });
 export type DeathState = z.infer<typeof DeathStateSchema>;
 

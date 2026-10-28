@@ -19,7 +19,7 @@ import { CatchSystem, GhostSystem, PulseGun, type CatchHost, type GunHost, type 
 import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
-import { DeathSystem, SpectateSystem, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
+import { DeathSystem, ReviveSystem, SpectateSystem, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -55,6 +55,8 @@ export class Room {
   private death: DeathSystem | null = null;
   /** P4 step 2: whom each dead player watches, and the ghost-here ping (exists exactly when `death` does). */
   private spectate: SpectateSystem | null = null;
+  /** P4 step 3: reviving (exists exactly when `death` does). */
+  private reviveSys: ReviveSystem | null = null;
   /** P4 step 2: pings waiting to be sent, each to the players it concerns. Bounded. */
   private pings: { to: string[]; ping: GhostPing }[] = [];
   /** P4 step 2: the (target, room) each spectator was last sent a layout for, so they learn the walls of the room they are watching and nothing else. */
@@ -197,7 +199,7 @@ export class Room {
 
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
-    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.pings = []; this.specLayouts = new Map(); this.lightsOut = new Map();
+    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.reviveSys = null; this.pings = []; this.specLayouts = new Map(); this.lightsOut = new Map();
     this.sim?.clearFrozen();
     const graph = engine.def.rooms;
     if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
@@ -233,6 +235,18 @@ export class Room {
       roster: () => sim.senses().map((x) => ({ id: x.id, name: x.name, connected: x.connected })),
       isDead: (id) => death.isDead(id),
       isAlive: (id) => death.isAlive(id),
+    });
+    this.reviveSys = new ReviveSystem({
+      get tick() { return sim.tick; },
+      people: () => sim.senses().filter((s) => s.roomId !== null).map((s) => ({
+        id: s.id, room: s.roomId!, x: s.x, y: s.y, use: s.use, connected: s.connected, alive: death.isAlive(s.id), hidden: this.catchSys?.isHidden(s.id) ?? false,
+      })),
+      bodies: () => death.bodies().map((b) => ({ id: b.id, name: b.name, room: b.room, x: b.x, y: b.y })),
+      carriesCell: (id) => engine.carriesKind(id, 'revive_cell'),
+      spendCell: (id) => engine.spendCarried(id, 'revive_cell'),
+      canRevive: (bodyId) => death.canRevive(bodyId),
+      revive: (bodyId, by) => death.revive(bodyId, by),
+      say: (text, tone, room) => engine.announce(text, tone, room),
     });
     const causeOf = (ev?: GhostCatchEvent): KillCause => ({
       how: ev?.how ?? 'touch', ghost: ev?.ghost ?? 'g0', ghostKind: ev?.ghostKind ?? null, because: ev ? [...ev.because] : [],
@@ -361,6 +375,7 @@ export class Room {
     this.catchSys?.remove(id);
     this.death?.removePlayer(id);
     this.spectate?.remove(id);
+    this.reviveSys?.remove(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -462,6 +477,7 @@ export class Room {
         this.gun?.step();
         this.ghost?.step();
         this.death?.step();
+        this.reviveSys?.step();
         this.spectate?.step();
         this.syncSpectatorLayouts();
       }
@@ -541,9 +557,11 @@ export class Room {
       const t = sp.targetOf(id);
       const room = t ? sim.roomOf(t) : null;
       const key = t && room ? `${t}|${room}` : '';
-      if (this.specLayouts.get(id) === key) continue;
+      const was = this.specLayouts.get(id);
+      if (was === key) continue;
       this.specLayouts.set(id, key);
       if (t && room) this.queueLayout(id, room);
+      else if (was) { const mine = sim.roomOf(id); if (mine) this.queueLayout(id, mine); } // no longer a spectator (revived): learn the walls of the room they stand in again
     }
   }
 
@@ -568,6 +586,8 @@ export class Room {
       watchable: dead ? sp.watchable(id) : [],
       pingReadyIn: dead ? sp.pingReadyIn(id) : 0,
       reviveLeft: body ? Math.max(0, body.reviveUntil - this.sim.tick) : 0,
+      reviving: (() => { const w = this.reviveSys?.progress().find((x) => x.reviver === id); const b = w ? d.bodies().find((x) => x.id === w.body) : undefined; return w && b ? { id: b.id, name: b.name, progress: w.progress } : null; })(),
+      beingRevived: this.reviveSys?.progress().find((x) => x.body === id)?.progress ?? null,
     };
   }
 

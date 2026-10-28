@@ -6,7 +6,7 @@ import { StageDefSchema, type StageDef } from '../systems/stageDef';
 import { validateStageDef } from '../systems/validate';
 import type { EscapeSpec, Lock } from './escapeSpec';
 import { bareEscapeStage } from './stageBase';
-import { requireGhostLevel, requireGun } from './escapeValidate';
+import { requireGhostLevel, requireGun, requireRevive } from './escapeValidate';
 
 /** P3E step 4: from this stage the Pulse Gun is in a SAFE (a 3-digit combination found on notes in the start room); before it, in a plain locker. */
 export const GUN_SAFE_FROM_STAGE = 5;
@@ -137,8 +137,10 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
   const switches: EscapeSpec['switches'] = [];
   const decoys = decoysForStage(stage);
   const gunOn = opts.ghost === true && ghostPresentOnStage(stage);
+  // P4 step 3: one rare Revive Cell on a ghost stage, never on Hardcore (a Hardcore death is final)
+  const reviveOn = gunOn && (opts.difficulty ?? 'easy') !== 'hardcore';
   // the Pulse Gun is one more part of the stage: it is counted before the decoys are, so the 12-part cap always leaves room for it
-  let decoyBudget = ITEM_LIMITS.maxItemsPerStage - types.filter((t) => t === 'key_item' || t === 'power' || t === 'safe').length - (gunOn ? 1 : 0);
+  let decoyBudget = ITEM_LIMITS.maxItemsPerStage - types.filter((t) => t === 'key_item' || t === 'power' || t === 'safe').length - (gunOn ? 1 : 0) - (reviveOn ? 1 : 0);
 
   types.forEach((type, i) => {
     const room = plans[i]!;                       // the room of the door's near side
@@ -265,6 +267,16 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
     }
   }
 
+  // ---- P4 step 3: the Revive Cell. ONE per stage on Easy and Intermediate, lying in the open on a floor spot of a random room of this seed (so a team may have to
+  //      go and get it). Drawn from the same generator AFTER the gun and the evidence, so every earlier draw of a stage keeps its place.
+  if (reviveOn) {
+    const withFloor = plans.filter((p) => spots(p, 'floor').length > 0);
+    if (withFloor.length > 0) {
+      const p = rng.pick(withFloor), s = take(p, rng, 'floor');
+      items.push({ id: `${prefix}_revive`, kind: 'revive_cell', x: s.x, y: s.y, room: p.id });
+    }
+  }
+
   // ---- the exit: in the alcove behind the gate, or in the last room
   const last = plans[count - 1]!;
   const exit = single ? { room: last.id, x: GATE.exitX, y: FLOOR_Y } : { room: last.id, x: last.width - 300, y: FLOOR_Y };
@@ -298,7 +310,7 @@ export function generateEscapeStageDetailed(stage: number, seed: number, opts: G
       const def = attemptEscapeStage(stage, seed, tryNo, opts);
       const start = def.rooms!.rooms.find((r) => r.id === def.rooms!.start)!.arena;
       const errs = validateStageDef(def, start);
-      if (opts.ghost === true && ghostPresentOnStage(stage)) errs.push(...requireGun(def), ...requireGhostLevel(def, stage, seed));
+      if (opts.ghost === true && ghostPresentOnStage(stage)) errs.push(...requireGun(def), ...requireGhostLevel(def, stage, seed), ...requireRevive(def, opts.difficulty ?? 'easy'));
       if (errs.length === 0) return { def, attempts: tryNo + 1 };
       lastError = errs.join('; ');
     } catch (e) { lastError = e instanceof Error ? e.message : String(e); }
