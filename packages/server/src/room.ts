@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type EscapeAction, type GhostAction, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -19,7 +19,7 @@ import { CatchSystem, GhostSystem, PulseGun, type CatchHost, type GunHost, type 
 import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
-import { DeathSystem, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
+import { DeathSystem, SpectateSystem, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -53,6 +53,12 @@ export class Room {
   private gun: PulseGun | null = null;
   /** P4: who is alive, a body or eliminated on the current stage (exists exactly when `ghost` does: only a ghost kills). */
   private death: DeathSystem | null = null;
+  /** P4 step 2: whom each dead player watches, and the ghost-here ping (exists exactly when `death` does). */
+  private spectate: SpectateSystem | null = null;
+  /** P4 step 2: pings waiting to be sent, each to the players it concerns. Bounded. */
+  private pings: { to: string[]; ping: GhostPing }[] = [];
+  /** P4 step 2: the (target, room) each spectator was last sent a layout for, so they learn the walls of the room they are watching and nothing else. */
+  private specLayouts = new Map<string, string>();
 
   /**
    * `runSeed` is the root of every stage seed of this run (server-side only). It defaults to a pure function of the
@@ -146,12 +152,17 @@ export class Room {
     const e = this.engine, snapshot = this.gameSnapshot();
     if (!e || !snapshot || !e.def.escape || !e.def.rooms) return null;
     const ghosts = this.ghost?.publicGhosts();
-    // P4: a dead player is shown nothing but themselves and the team list (fail closed; the spectator view of step 2 replaces this): never items, doors or codes
+    // P4: a dead player watches through a living teammate's eyes and is shown the ghosts and the teammates that teammate can see, and nothing else
+    // (no items, codes, doors, safes, clues or other rooms). With nobody to watch they are shown the team list only.
     if (this.death?.isDead(playerId)) {
-      return restrictedView({ snapshot, stage: e.state(), graph: e.def.rooms, radius: 0 }, { eyes: '', self: playerId });
+      const target = this.spectate?.targetOf(playerId) ?? null;
+      return restrictedView(
+        { snapshot, stage: e.state(), graph: e.def.rooms, radius: target ? this.radiusIn(this.sim?.roomOf(target) ?? '') : 0, ...(ghosts ? { ghosts } : {}), ...(this.catchSys ? { hidden: this.catchSys.hiddenIds() } : {}), ...(this.death ? { lives: this.livesMap() } : {}) },
+        { eyes: target ?? '', self: null, spectator: true, ...(target && this.coneVision ? { aim: this.sim?.aimOf(target) ?? null } : {}) },
+      );
     }
     return restrictedView(
-      { snapshot, stage: e.state(), graph: e.def.rooms, radius: this.radiusIn(this.sim?.roomOf(playerId) ?? ''), ...(ghosts ? { ghosts } : {}), ...(this.catchSys ? { hidden: this.catchSys.hiddenIds() } : {}) },
+      { snapshot, stage: e.state(), graph: e.def.rooms, radius: this.radiusIn(this.sim?.roomOf(playerId) ?? ''), ...(ghosts ? { ghosts } : {}), ...(this.catchSys ? { hidden: this.catchSys.hiddenIds() } : {}), ...(this.death ? { lives: this.livesMap() } : {}) },
       { eyes: playerId, self: playerId, ...(this.coneVision ? { aim: this.sim?.aimOf(playerId) ?? null } : {}) },
     );
   }
@@ -186,7 +197,7 @@ export class Room {
 
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
-    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.lightsOut = new Map();
+    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.pings = []; this.specLayouts = new Map(); this.lightsOut = new Map();
     this.sim?.clearFrozen();
     const graph = engine.def.rooms;
     if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
@@ -217,6 +228,12 @@ export class Room {
     const death = new DeathSystem({ difficulty: this.difficulty, stage: this.stage }, deathHost);
     for (const m of this.members.keys()) death.addPlayer(m);
     this.death = death;
+    this.spectate = new SpectateSystem({
+      get tick() { return sim.tick; },
+      roster: () => sim.senses().map((x) => ({ id: x.id, name: x.name, connected: x.connected })),
+      isDead: (id) => death.isDead(id),
+      isAlive: (id) => death.isAlive(id),
+    });
     const causeOf = (ev?: GhostCatchEvent): KillCause => ({
       how: ev?.how ?? 'touch', ghost: ev?.ghost ?? 'g0', ghostKind: ev?.ghostKind ?? null, because: ev ? [...ev.because] : [],
     });
@@ -343,6 +360,7 @@ export class Room {
     this.engine?.removePlayer(id);
     this.catchSys?.remove(id);
     this.death?.removePlayer(id);
+    this.spectate?.remove(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -444,6 +462,8 @@ export class Room {
         this.gun?.step();
         this.ghost?.step();
         this.death?.step();
+        this.spectate?.step();
+        this.syncSpectatorLayouts();
       }
       for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       if (cleared) {
@@ -489,6 +509,7 @@ export class Room {
   /** Host-only: restore the known initial arena state, dropping disconnected players. */
   resetArena(id: string): Result {
     if (id !== this.hostId) return fail('Only the host can reset the arena');
+    if (this.death?.isDead(id)) return fail('You are dead. You can only watch.'); // P4: a dead host cannot reset the living world
     if (this.phase !== 'playing' || !this.sim) return fail('Arena can only be reset during play');
     for (const m of [...this.members.values()]) {
       if (!m.connected) { this.members.delete(m.id); this.sim.removePlayer(m.id); }
@@ -511,6 +532,72 @@ export class Room {
     if (this.catchSys?.isHidden(id)) return 'Not while hiding. Press E to come out.';
     return null;
   }
+
+  /** P4 step 2: a spectator is sent the layout (walls and doorways) of the room their target is in, when the target or the target's room changes. */
+  private syncSpectatorLayouts(): void {
+    const sp = this.spectate, sim = this.sim;
+    if (!sp || !sim) return;
+    for (const id of this.members.keys()) {
+      const t = sp.targetOf(id);
+      const room = t ? sim.roomOf(t) : null;
+      const key = t && room ? `${t}|${room}` : '';
+      if (this.specLayouts.get(id) === key) continue;
+      this.specLayouts.set(id, key);
+      if (t && room) this.queueLayout(id, room);
+    }
+  }
+
+  /** P4: every player's life, for the team list (null on a stage without death). */
+  private livesMap(): Map<string, PlayerLife> {
+    const m = new Map<string, PlayerLife>();
+    const d = this.death;
+    if (d) for (const id of this.members.keys()) { const l = d.lifeOf(id); if (l) m.set(id, l); }
+    return m;
+  }
+
+  /** P4 step 2: what one player is told about their life and whom they watch. Null when this stage has no death. */
+  deathState(id: string): DeathState | null {
+    const d = this.death, sp = this.spectate;
+    if (!d || !sp || !this.sim || !d.lifeOf(id)) return null;
+    const life = d.lifeOf(id)!;
+    const dead = life !== 'alive';
+    const body = d.bodies().find((b) => b.id === id);
+    return {
+      tick: this.sim.tick, life,
+      following: dead ? sp.following(id) : null,
+      watchable: dead ? sp.watchable(id) : [],
+      pingReadyIn: dead ? sp.pingReadyIn(id) : 0,
+      reviveLeft: body ? Math.max(0, body.reviveUntil - this.sim.tick) : 0,
+    };
+  }
+
+  /** P4 step 2: a dead player picks whom to watch. */
+  spectateFollow(id: string, req: SpectateFollow): { ok: true; message: string } | { ok: false; error: string } {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    if (!this.spectate) return { ok: false, error: 'You are not dead.' };
+    return this.spectate.request(id, req.target);
+  }
+
+  /** P4 step 2: "ghost here". The position is the server's: the nearest ghost in the spectator's own view. Sent to the living in that room and the other spectators. */
+  spectatePing(id: string): { ok: true; message: string } | { ok: false; error: string } {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    const sp = this.spectate, d = this.death;
+    if (!sp || !d) return { ok: false, error: 'You are not dead.' };
+    const target = sp.targetOf(id);
+    const eyes = target ? this.sim?.positionOf(target) : undefined;
+    const seen = [...(this.viewFor(id)?.snapshot.ghosts ?? [])].sort((a, b) => Math.hypot(a.x - (eyes?.x ?? 0), a.y - (eyes?.y ?? 0)) - Math.hypot(b.x - (eyes?.x ?? 0), b.y - (eyes?.y ?? 0)));
+    const r = sp.ping(id, seen);
+    if (!r.ok) return r;
+    const sim = this.sim!;
+    const to = sim.senses().filter((x) => x.connected && (d.isAlive(x.id) ? x.roomId === r.ping.room : d.isDead(x.id) && sim.roomOf(sp.targetOf(x.id) ?? '') === r.ping.room)).map((x) => x.id);
+    this.pings.push({ to, ping: r.ping });
+    if (this.pings.length > 16) this.pings.splice(0, this.pings.length - 16);
+    return { ok: true, message: 'Ghost here.' };
+  }
+  /** P4 step 2: pings waiting to be sent (taken once). */
+  drainPings(): { to: string[]; ping: GhostPing }[] { const p = this.pings; this.pings = []; return p; }
 
   /** P3E step 3: hide in the hiding spot in reach, or come out. */
   ghostAction(id: string, action: GhostAction): { ok: true; message: string } | { ok: false; error: string } {

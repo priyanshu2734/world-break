@@ -1,6 +1,6 @@
 import {
   EYE_HEIGHT, POINT_HEIGHT, inLitRegion, pointVisible, roomById,
-  type GameSnapshot, type GhostPublic, type Pt, type RoomDef, type RoomGraph, type StageState,
+  type GameSnapshot, type GhostPublic, type PlayerLife, type Pt, type RoomDef, type RoomGraph, type StageState,
 } from '@wb/shared';
 
 /**
@@ -25,12 +25,22 @@ export interface ViewSource {
   ghosts?: readonly GhostPublic[];
   /** P3E step 3: players hiding in a hiding spot. They are in nobody's snapshot but their own. */
   hidden?: ReadonlySet<string>;
+  /** P4: each player's life, so the team list can say who is dead. Absent = nobody is told. */
+  lives?: ReadonlyMap<string, PlayerLife>;
 }
 /**
  * `eyes` is whose position and line of sight the view is cut from, `self` whose hands are shown. P3E: `aim` (radians) is where the eyes' owner points the
  * flashlight; when given, everything is also cut down to the lit region (the small light plus the cone). Absent (null or omitted) = the whole radius, as in P3D.
  */
-export interface Viewer { eyes: string; self: string | null; aim?: number | null }
+export interface Viewer {
+  eyes: string; self: string | null; aim?: number | null;
+  /**
+   * P4: a DEAD player watching through `eyes` (a living teammate). They are shown the ghosts and the teammates that the eyes' owner can see, the
+   * team list, and nothing else: no items, doors, keypads, safes, clues, switches, exit, objectives, tools or entities, and no other room.
+   * `self` must be null.
+   */
+  spectator?: boolean;
+}
 export interface RestrictedView { snapshot: GameSnapshot; stage: StageState }
 
 const doorCentre = (d: { x: number; y: number; w: number; h: number }): Pt => ({ x: d.x + d.w / 2, y: d.y + d.h / 2 });
@@ -39,11 +49,21 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
   const { snapshot, stage, graph, radius } = src;
   const eyesAt = snapshot.players.find((p) => p.id === viewer.eyes);
   const room: RoomDef | undefined = eyesAt?.roomId ? roomById(graph, eyesAt.roomId) : undefined;
-  const team = snapshot.players.map((p) => ({ id: p.id, name: p.name, slot: p.slot, connected: p.connected }));
+  const team = snapshot.players.map((p) => ({ id: p.id, name: p.name, slot: p.slot, connected: p.connected, ...(src.lives?.has(p.id) ? { life: src.lives.get(p.id)! } : {}) }));
   const showSelf = (id: string) => id === viewer.self;
+
+  // P4: a spectator is told nothing of the stage itself. The stage state is blanked (not merely filtered), so nothing the living know leaks.
+  const blank = (): StageState => ({
+    rev: stage.rev, stageId: stage.stageId, name: stage.name, status: stage.status, tick: stage.tick, deadlineTick: stage.deadlineTick, expired: stage.expired,
+    score: stage.score, objectives: [], symptoms: [], breakpoints: [], entities: [], power: { capacity: 0, load: 0, nodes: [], conduits: [] },
+    hazards: [], effects: [], channels: [], players: [], clues: [], feed: [],
+  });
+
+  const specBase = (): GameSnapshot => { const b: GameSnapshot = { ...snapshot }; delete b.world; delete b.ghosts; return b; }; // a spectator is told no world props and no ghost but the ones in view
 
   // No eyes (an unknown viewer, or one outside every room): the viewer sees nothing at all, only the team list.
   if (!eyesAt || !room) {
+    if (viewer.spectator) return { snapshot: { ...specBase(), players: [], team }, stage: blank() };
     const bare: StageState = { ...stage, players: stage.players.filter((p) => showSelf(p.id)), feed: stage.feed.filter((f) => f.room === undefined) };
     delete bare.items; delete bare.escape;
     return { snapshot: { ...snapshot, players: snapshot.players.filter((p) => showSelf(p.id)), team }, stage: bare };
@@ -55,6 +75,13 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
   const see = (x: number, y: number, ignoreDoor?: string): boolean =>
     pointVisible(room, eye, { x, y }, open, radius, ignoreDoor) && (aim === null || inLitRegion(eye, aim, { x, y }, radius));
   const here = (r: string | undefined): boolean => r === room.id;
+
+  if (viewer.spectator) {
+    // the eyes' owner and the teammates they can see; and the ghosts they can see. A hidden teammate stays hidden from a spectator too.
+    const seen = snapshot.players.filter((p) => p.id === viewer.eyes || (!(src.hidden?.has(p.id)) && here(p.roomId) && see(p.x, p.y - POINT_HEIGHT.player)));
+    const ghostsSeen = (src.ghosts ?? []).filter((g) => here(g.room) && see(g.x, g.y - POINT_HEIGHT.ghost));
+    return { snapshot: { ...specBase(), players: seen, team, ...(ghostsSeen.length > 0 ? { ghosts: ghostsSeen } : {}) }, stage: blank() };
+  }
 
   // ---- the game snapshot: yourself, your eyes' owner, and teammates in view (their positions, never their inventories)
   const players = snapshot.players.filter((p) =>

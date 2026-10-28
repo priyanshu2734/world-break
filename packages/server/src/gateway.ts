@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -139,6 +139,23 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
+    // P4 step 2: a dead player picks whom to watch, or says "ghost here". Zod here, rules in the spectate system (every refusal comes from there).
+    socket.on('spectate:follow', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = SpectateFollowSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const r = rooms.get(s.roomCode)?.spectateFollow(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
+    socket.on('spectate:ping', (_payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const r = rooms.get(s.roomCode)?.spectatePing(s.playerId);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
     // P3A: host advances to the next stage (endless loop). Uses the existing NEXT_STAGE room transition.
     socket.on('room:nextStage', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.nextStage(pid));
@@ -165,6 +182,8 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   const views = new WeakMap<Room, Map<string, { key: string; rev: number }>>();
   /** P3E: the last ghost cue each player was sent (key without the tick, and the tick it was sent at). */
   const cues = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
+  /** P4: the last death state each player was sent (key without the countdowns, and the tick it was sent at). */
+  const lifeSent = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
   const onTick = () => {
     rooms.forEach((room) => {
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
@@ -192,6 +211,24 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
           if (!due) continue;
           sentCues.set(sess.playerId, { key, tick: cue.tick });
           io.to(sid).emit('ghost:cue', cue);
+        }
+      }
+      // P4 step 2: each player's life and whom they watch (to that player only), when it changes and once a second; and the pings, to the players they concern.
+      if (room.phase === 'playing') {
+        let sentLife = lifeSent.get(room);
+        if (!sentLife) lifeSent.set(room, (sentLife = new Map()));
+        for (const [sid, sess] of sessions) {
+          if (sess.roomCode !== room.code) continue;
+          const ds = room.deathState(sess.playerId);
+          if (!ds) continue;
+          const key = JSON.stringify({ l: ds.life, f: ds.following?.id ?? null, w: ds.watchable.map((x) => x.id), p: ds.pingReadyIn > 0 });
+          const last = sentLife.get(sess.playerId);
+          if (last && last.key === key && ds.tick - last.tick < SERVER_TICK_HZ && ds.tick >= last.tick) continue;
+          sentLife.set(sess.playerId, { key, tick: ds.tick });
+          io.to(sid).emit('death:state', ds);
+        }
+        for (const { to, ping } of room.drainPings()) {
+          for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:ping', ping);
         }
       }
       // P3E step 4: Pulse Gun shots, each to the players who can see where it was fired (and its shooter) only.
