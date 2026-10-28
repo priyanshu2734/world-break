@@ -28,7 +28,11 @@ function catchP0(r: Room): void {
   const g = r.ghostSystem!;
   const p = me(r, 'p0');
   g.placeForTest('g0', { room: roomOf(r), x: p.x - 60, y: p.y - 22, angle: 0, state: 'hunting' });
-  for (let i = 0; i < 200 && !r.catchSystem!.isCaptured('p0'); i++) { input(r, 'p0', 0); tick(r); }
+  // P4: no kill in the first 20 s of a stage (spawn grace), and a touch has to last: run past both, putting the ghost back on top of them when it wanders off
+  for (let i = 0; i < 900 && !r.catchSystem!.isCaptured('p0'); i++) {
+    if (i % 100 === 0) { const q = me(r, 'p0'); g.placeForTest('g0', { room: roomOf(r), x: q.x - 60, y: q.y - 22, angle: 0, state: 'hunting' }); }
+    input(r, 'p0', 0); tick(r);
+  }
   expect(r.catchSystem!.isCaptured('p0')).toBe(true);
 }
 
@@ -90,18 +94,19 @@ describe('P3E hiding through the Room', () => {
   });
 });
 
-describe('P3E the catch through the Room', () => {
-  it('a real catch captures where they stand, they cannot move, and they are told how long', () => {
+describe('P4 the kill through the Room (was the P3E capture)', () => {
+  it('a real touch kills where they stand: a body (Easy), frozen, and every input is refused', () => {
     const r = mk();
     at(r, 'p0', 600); at(r, 'p1', 300);
     catchP0(r);
+    const d = r.deathSystem!;
+    expect(d.lifeOf('p0')).toBe('downed');
+    expect(d.isDead('p0')).toBe(true);
     const x0 = me(r, 'p0').x;
     for (let i = 0; i < 20; i++) { input(r, 'p0', 1); tick(r); }
     expect(me(r, 'p0').x).toBe(x0);
-    const st = status(r, 'p0');
-    expect(st.caught?.secondsLeft).toBeGreaterThan(40);
-    expect(r.itemAction('p0', { action: 'drop', itemId: 'x' })).toEqual({ ok: false, error: 'You are caught. Wait for a teammate.' });
-    expect(r.phase).toBe('playing'); // nobody is eliminated
+    expect(r.itemAction('p0', { action: 'drop', itemId: 'x' })).toEqual({ ok: false, error: 'You are dead. You can only watch.' });
+    expect(r.phase).toBe('playing'); // p1 is alive: the stage goes on
     expect(r.drainGhostEvents().some((e) => e.kind === 'catch')).toBe(true);
   });
   it('what they carry is dropped where they stand', () => {
@@ -117,51 +122,31 @@ describe('P3E the catch through the Room', () => {
     expect(k.state).toBe('in_world');
     expect(Math.abs(k.x - me(r, 'p0').x)).toBeLessThan(5);
   });
-  it('a teammate holding E next to them frees them in about four seconds, at no cost', () => {
+  it('holding E next to a body does nothing in P4 step 1 (the Revive Cell is step 3): the rescue rule is gone', () => {
     const r = mk();
     at(r, 'p0', 600); at(r, 'p1', 300);
     catchP0(r);
     at(r, 'p1', 640);
-    const before = r.peekStageState()!.score.total;
-    for (let i = 0; i < CATCH_LIMITS.rescueTicks + 4; i++) { input(r, 'p1', 0, { use: true }); tick(r); }
-    expect(r.catchSystem!.isCaptured('p0')).toBe(false);
-    const x0 = me(r, 'p0').x;
-    for (let i = 0; i < 10; i++) { input(r, 'p0', 1); tick(r); }
-    expect(me(r, 'p0').x).toBeGreaterThan(x0 + 40);
-    expect(r.peekStageState()!.score.total).toBeGreaterThanOrEqual(before);
-    expect(r.peekStageState()!.score.breakdown['caught']).toBeUndefined();
+    for (let i = 0; i < 120; i++) { input(r, 'p1', 0, { use: true }); tick(r); }
+    expect(r.deathSystem!.isDead('p0')).toBe(true);
   });
-  it('the rescuer must keep E held: tapping once does nothing', () => {
-    const r = mk();
-    at(r, 'p0', 600); at(r, 'p1', 300);
-    catchP0(r);
-    at(r, 'p1', 640);
-    input(r, 'p1', 0, { use: true }); tick(r);
-    for (let i = 0; i < CATCH_LIMITS.rescueTicks * 2; i++) { input(r, 'p1', 0, { use: false }); tick(r); }
-    expect(r.catchSystem!.isCaptured('p0')).toBe(true);
-  });
-  it('after about 45 seconds with no rescue: released at the room entry, with a score penalty, and can move', () => {
+  it('Easy: the body is revivable for about 45 s, then eliminated (a spectator stays a spectator); there is no entry release and no score penalty', () => {
     const r = mk();
     at(r, 'p0', 600); at(r, 'p1', 1500);
     catchP0(r);
-    for (let i = 0; i < CATCH_LIMITS.captureTicks + 5; i++) { input(r, 'p1', 0); tick(r); if (!r.catchSystem!.isCaptured('p0')) break; }
-    expect(r.catchSystem!.isCaptured('p0')).toBe(false);
-    expect(Math.abs(me(r, 'p0').x - 300)).toBeLessThan(2); // the start room's entry (slot 0 spawn)
-    expect(r.peekStageState()!.score.breakdown['caught']).toBe(-CATCH_LIMITS.releasePenalty);
-    expect(r.drainLayouts().some((l) => l.playerId === 'p0')).toBe(true); // the client restarts prediction from here
     const x0 = me(r, 'p0').x;
-    for (let i = 0; i < 10; i++) { input(r, 'p0', 1); tick(r); }
-    expect(me(r, 'p0').x).toBeGreaterThan(x0 + 40);
-    expect(r.phase).toBe('playing');
+    for (let i = 0; i < 1200 && r.deathSystem!.isBody('p0') && r.phase === 'playing'; i++) { input(r, 'p1', 0); tick(r); }
+    expect(r.deathSystem!.lifeOf('p0')).toBe('eliminated');
+    expect(Math.abs(me(r, 'p0').x - x0)).toBeLessThan(2); // never moved to the entry
+    expect(r.peekStageState()!.score.breakdown['caught']).toBeUndefined();
   });
-  it('a caught hider is caught where they hid, and the spot is free again', () => {
+  it('a hider killed in the spot is killed where they hid, and the spot is free again', () => {
     const r = mk();
     at(r, 'p0', spot(r).x); at(r, 'p1', 300);
     r.ghostAction('p0', { action: 'hide' });
-    r.catchSystem!.capture('p0');
+    r.catchSystem!.capture('p0'); // the ghost opened the spot (its own path is tested in ghost/hiding.test.ts)
     expect(r.catchSystem!.isHidden('p0')).toBe(false);
     expect(r.catchSystem!.occupantOf(spot(r).id)).toBeNull();
-    expect(view(r, 'p1').players.map((p) => p.id)).toContain('p0'); // a caught player is in plain view again
   });
 });
 

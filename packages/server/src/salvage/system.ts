@@ -4,6 +4,7 @@ import {
 } from '@wb/shared';
 import type { ItemDef, NeedDef, StashDef } from '../systems/stageDef';
 import { clampX, hasFooting, restY } from './rest';
+import { dropRest } from './dropRest';
 
 export type ItemResult = { ok: true; message: string } | { ok: false; error: string };
 const fail = (error: string): ItemResult => ({ ok: false, error });
@@ -294,8 +295,15 @@ export class ItemSystem {
     const it = this.items.get(itemId)!;
     this.detach(it);
     const a = this.arenaFor(room);
-    const cx = clampX(a, x);
-    it.x = cx; it.y = restY(a, cx, y);
+    // P4: on a multi-room (escape) stage an item never comes to rest where no teammate can take it (over a pit, on an unreachable ledge): it is moved to the
+    // nearest reachable platform. Other stages keep the old rule exactly (the room map is what tells the two apart).
+    if (this.arenaOfRoom !== null) {
+      const r = dropRest(a, x, y);
+      it.x = r.x; it.y = r.y;
+    } else {
+      const cx = clampX(a, x);
+      it.x = cx; it.y = restY(a, cx, y);
+    }
     it.room = room;
     it.state = 'in_world';
     it.targetId = null;

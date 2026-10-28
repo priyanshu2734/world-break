@@ -98,7 +98,7 @@ export class Bot {
         // same surface, or the goal is level or below: walk toward it (walking off an edge is a fall)
         let aimX = x;
         // the goal is right under the platform we stand on: walk off its nearer edge first
-        if (b.grounded && here && here !== goal && goal.y > here.y && x >= here.x && x <= here.x + here.w) {
+        if (b.grounded && here && here !== goal && goal.y > here.y && x >= here.x - 20 && x <= here.x + here.w + 20) { // P4: +-20 = the body overhangs an edge, so a goal just outside it is still "under" the platform
           aimX = Math.abs(b.x - (here.x - 20)) <= Math.abs(b.x - (here.x + here.w + 20)) ? here.x - 20 : here.x + here.w + 20;
         }
         // in the air keep going the way we were going (turning back in mid-fall can land us right back where we left)

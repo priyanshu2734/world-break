@@ -15,6 +15,9 @@ function playStage(stage: number, seed: number, players: number, difficulty: Dif
   ids.forEach((id, i) => { room.join(id, `P${i}`); if (i > 0) room.setReady(id, true); });
   if (!room.start('p0').ok) throw new Error('start refused');
   for (let i = 0; i < 20 && room.phase !== 'playing'; i++) room.tick();
+  // P4: these tests measure that the GENERATED STAGE can be solved with the gun in hand, not that a bot survives the ghost (touch is death now;
+  // test/death/solve.test.ts is where the lethal solver lives). The ghost is still present, hunts and is seen: it just cannot kill here.
+  room.deathSystem?.setLethal(false);
   const rec = room.stageRecord!;
   const def = generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty });
   if (def.id !== rec.defId) throw new Error('room and generator disagree');

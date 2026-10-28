@@ -15,10 +15,11 @@ import { LOCK_SAMPLER_STAGE, ROOMS_DEMO_STAGE } from './rooms/demoStage';
 import { generateEscapeStage } from './rooms/generate';
 import type { EscapeResult } from './rooms/escape';
 import { restrictedView, type RestrictedView } from './rooms/view';
-import { CatchSystem, GhostSystem, PulseGun, type CatchHost, type GunHost, type ShotDelivery, type GhostEvent, type GhostPlayer } from './ghost';
+import { CatchSystem, GhostSystem, PulseGun, type CatchHost, type GunHost, type ShotDelivery, type GhostEvent, type GhostPlayer, type GhostCatchEvent } from './ghost';
 import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
+import { DeathSystem, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -50,6 +51,8 @@ export class Room {
   private catchSys: CatchSystem | null = null;
   /** P3E step 4: the Pulse Gun of the current stage (exists exactly when `ghost` does). */
   private gun: PulseGun | null = null;
+  /** P4: who is alive, a body or eliminated on the current stage (exists exactly when `ghost` does: only a ghost kills). */
+  private death: DeathSystem | null = null;
 
   /**
    * `runSeed` is the root of every stage seed of this run (server-side only). It defaults to a pure function of the
@@ -143,6 +146,10 @@ export class Room {
     const e = this.engine, snapshot = this.gameSnapshot();
     if (!e || !snapshot || !e.def.escape || !e.def.rooms) return null;
     const ghosts = this.ghost?.publicGhosts();
+    // P4: a dead player is shown nothing but themselves and the team list (fail closed; the spectator view of step 2 replaces this): never items, doors or codes
+    if (this.death?.isDead(playerId)) {
+      return restrictedView({ snapshot, stage: e.state(), graph: e.def.rooms, radius: 0 }, { eyes: '', self: playerId });
+    }
     return restrictedView(
       { snapshot, stage: e.state(), graph: e.def.rooms, radius: this.radiusIn(this.sim?.roomOf(playerId) ?? ''), ...(ghosts ? { ghosts } : {}), ...(this.catchSys ? { hidden: this.catchSys.hiddenIds() } : {}) },
       { eyes: playerId, self: playerId, ...(this.coneVision ? { aim: this.sim?.aimOf(playerId) ?? null } : {}) },
@@ -179,20 +186,46 @@ export class Room {
 
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
-    this.ghost = null; this.catchSys = null; this.gun = null; this.lightsOut = new Map();
+    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.lightsOut = new Map();
     this.sim?.clearFrozen();
     const graph = engine.def.rooms;
     if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
     const seed = ghostSeedFor(this.stageRec?.seed ?? this.runSeed, this.stage);
     const sim = this.sim;
     const spots = (engine.def.escape.hidingSpots ?? []).map((h) => ({ id: h.id, room: h.room, x: h.x, y: h.y, kind: h.kind }));
+    // P4: the death rules (one PlayerLife per player, items dropped where a player dies). Built before the catch and the ghost, which both call into it.
+    const carriedOf = (id: string): CarriedItem[] =>
+      (engine.state().items?.items ?? []).filter((i) => i.state === 'carried' && i.carrierId === id).map((i) => ({ itemId: i.id, kind: i.kind }));
+    const deathHost: DeathHost = {
+      get tick() { return sim.tick; },
+      who: () => sim.senses().filter((s) => s.roomId !== null).map((s) => ({ id: s.id, name: s.name, slot: s.slot, room: s.roomId!, x: s.x, y: s.y, connected: s.connected })),
+      freeze: (id, on) => sim.setFrozen(id, on),
+      carried: carriedOf,
+      dropOne: (id) => {
+        const before = carriedOf(id);
+        const left = engine.dropOneCarried(id, this.pos);
+        const after = new Set(carriedOf(id).map((c) => c.itemId));
+        const gone = before.find((b) => !after.has(b.itemId));
+        const it = gone ? engine.state().items?.items.find((i) => i.id === gone.itemId) : undefined;
+        const dropped: DroppedItem | null = gone && it ? { itemId: gone.itemId, kind: gone.kind, x: it.x, y: it.y, room: it.roomId ?? null } : null;
+        return { left, dropped };
+      },
+      dropAll: (id) => engine.onDisconnect(id),
+      leaveHiding: (id) => this.catchSys?.remove(id),
+      say: (text, tone, room) => engine.announce(text, tone, room),
+    };
+    const death = new DeathSystem({ difficulty: this.difficulty, stage: this.stage }, deathHost);
+    for (const m of this.members.keys()) death.addPlayer(m);
+    this.death = death;
+    const causeOf = (ev?: GhostCatchEvent): KillCause => ({
+      how: ev?.how ?? 'touch', ghost: ev?.ghost ?? 'g0', ghostKind: ev?.ghostKind ?? null, because: ev ? [...ev.because] : [],
+    });
     const catchHost: CatchHost = {
       get tick() { return sim.tick; },
       who: () => sim.senses().filter((s) => s.roomId !== null).map((s) => ({ id: s.id, name: s.name, room: s.roomId!, x: s.x, y: s.y, connected: s.connected, use: s.use })),
       freeze: (id, on) => sim.setFrozen(id, on),
-      dropOne: (id) => engine.dropOneCarried(id, this.pos),
-      placeAtEntry: (id) => this.placeAtEntry(id),
-      penalty: (points) => engine.penalty('caught', points),
+      kill: (id, ev) => { death.kill(id, causeOf(ev)); },
+      dead: (id) => death.isDead(id),
       say: (text, tone, room) => engine.announce(text, tone, room),
       watched: (id) => this.ghost?.watching(id) ?? false,
       canSee: (id, x, y) => this.roomsHost.canSee(id, x, y),
@@ -202,10 +235,14 @@ export class Room {
       { stage: this.stage, seed, difficulty: this.difficulty, graph, visionRadius: visionRadius(this.difficulty, this.stage), types: ghostLineupForStage(this.stage, ghostPickFor(seed)), hidingSpots: spots },
       {
         get tick() { return sim.tick; },
+        // P4: a touch must last, a kill leaves the ghost satiated, and the death rules may refuse a kill (spawn grace, protection, already dead)
+        contactTicks: death.tuning.contactTicks,
+        satiatedTicks: death.tuning.satiatedTicks,
+        canKill: (id: string) => death.canKill(id),
         players: (): GhostPlayer[] => sim.senses().filter((s) => s.roomId !== null).map((s) => ({
           id: s.id, name: s.name, roomId: s.roomId!, x: s.x, y: s.y, connected: s.connected, moveX: s.moveX,
           crouch: s.sneak && Math.abs(s.moveX) <= 0.4, aim: s.aim, facing: s.facing,
-          hidden: this.catchSys?.isHidden(s.id) ?? false, captured: this.catchSys?.isCaptured(s.id) ?? false,
+          hidden: this.catchSys?.isHidden(s.id) ?? false, captured: death.isDead(s.id), // P4: a dead player is not a target, makes no noise
         })),
         openDoorIds: () => engine.openDoorIds(),
         onCatch: (id, ev) => this.catchSys?.capture(id, ev),
@@ -258,6 +295,8 @@ export class Room {
   get ghostSystem(): GhostSystem | null { return this.ghost; }
   /** P3E step 3: hiding and the catch of the current stage (server side only), for tests. */
   get catchSystem(): CatchSystem | null { return this.catchSys; }
+  /** P4: the life of every player on the current stage (server side only), for tests and the review. */
+  get deathSystem(): DeathSystem | null { return this.death; }
   /** P3E: what one player can HEAR of the ghost (null when this stage has no ghost). The documented exception to the vision invariant: see shared `GHOST_CUE`. */
   ghostCue(playerId: string): GhostCue | null {
     if (!this.ghost || !this.sim) return null;
@@ -303,6 +342,7 @@ export class Room {
     this.sim?.removePlayer(id);
     this.engine?.removePlayer(id);
     this.catchSys?.remove(id);
+    this.death?.removePlayer(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -375,6 +415,15 @@ export class Room {
     return sim?.positionOf(id);
   };
 
+  /**
+   * P4: the positions the stage engine steps with. A dead player is inert to the stage: they are shown to it as NOT CONNECTED, so a body standing in the exit
+   * zone does not clear the stage, no door opens for them, and nothing they stood on counts as a safe spot. Everyone else is as `pos` says.
+   */
+  private enginePos = (id: string) => {
+    const p = this.pos(id);
+    return p && this.death?.isDead(id) ? { ...p, connected: false } : p;
+  };
+
   /** Advance one server tick. Briefing counts down (then BEGIN); playing steps the simulation. */
   tick(): { phaseChanged: boolean } {
     if (!this.sim) return { phaseChanged: false };
@@ -387,13 +436,23 @@ export class Room {
       }
     } else if (this.phase === 'playing') {
       this.sim.step();
-      this.engine?.step(this.pos);
-      this.catchSys?.step();
-      this.gun?.step();
-      this.ghost?.step();
+      this.engine?.step(this.enginePos);
+      // P4: someone reached the exit alive on this tick: the stage is cleared and nobody can be killed on the same tick (the exit wins a tie)
+      const cleared = this.engine?.status === 'stabilized';
+      if (!cleared) {
+        this.catchSys?.step();
+        this.gun?.step();
+        this.ghost?.step();
+        this.death?.step();
+      }
       for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
-      if (this.engine?.status === 'stabilized') {
+      if (cleared) {
         this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
+        return { phaseChanged: true };
+      }
+      // P4: nobody who is alive can act any more (and the dead have put their things down): the team is wiped. REVIEW and RETRY follow in step 4.
+      if (this.death && this.death.noneAlive() && !this.death.dropping) {
+        this.phase = nextRoomPhase(this.phase, 'TEAM_WIPE');
         return { phaseChanged: true };
       }
     }
@@ -405,6 +464,7 @@ export class Room {
     if (this.phase !== 'playing' || !this.sim) return false;
     const m = this.members.get(id);
     if (!m || !m.connected) return false;
+    if (this.death?.isDead(id)) return false; // P4: a dead player cannot move, aim or hold anything (the body stays where it fell)
     return this.sim.queueInput(id, seq, input, extra);
   }
 
@@ -418,6 +478,7 @@ export class Room {
     if (this.phase === 'lobby' || !this.sim) { this.leave(id); return; }
     m.connected = false;
     this.sim.setConnected(id, false);
+    this.death?.disconnect(id);
     this.engine?.onDisconnect(id);
     if (this.hostId === id) {
       const next = [...this.members.values()].find((x) => x.connected);
@@ -446,7 +507,7 @@ export class Room {
 
   /** P3E step 3: a caught or hiding player may do nothing but wait or come out. Null = free to act. */
   private blocked(id: string): string | null {
-    if (this.catchSys?.isCaptured(id)) return 'You are caught. Wait for a teammate.';
+    if (this.death?.isDead(id)) return 'You are dead. You can only watch.';
     if (this.catchSys?.isHidden(id)) return 'Not while hiding. Press E to come out.';
     return null;
   }
@@ -456,6 +517,7 @@ export class Room {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     if (!this.catchSys) return { ok: false, error: 'There is nothing to hide from here.' };
+    if (this.death?.isDead(id)) return { ok: false, error: 'You are dead. You can only watch.' };
     if (action.action === 'fire') {
       const stop = this.blocked(id);
       if (stop) return { ok: false, error: stop };
