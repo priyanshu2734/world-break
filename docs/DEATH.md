@@ -1,6 +1,6 @@
 # DEATH (P4)
 
-Status: **steps 1 to 4 of 5 done** (death core, spectating, revive, stage flow and review). The strict solver is step 5; see `docs/handoffs/P4.md`.
+Status: **P4 complete** (death core, spectating, revive, stage flow and review, solver and docs). What each rule is backed by is in `docs/handoffs/P4.md`; see `docs/handoffs/P4.md`.
 
 ## Rules in force after step 1
 | Rule | Value | Where |
@@ -75,5 +75,29 @@ Each entry carries its tick (shown as m:ss). Rings are bounded (24 notes per pla
 ### Disconnects (honest scope)
 This codebase has no mid-run rejoin (`join` is refused once a run has started), so "reconnect" cannot happen: a player who drops stays in the run as disconnected until the next stage or retry, where they are removed. What IS handled and tested: a dead player who disconnects stays dead and drops nothing twice; living players who all disconnect wipe the team; a host who disconnects during the review hands over to the next connected player, who may retry; a disconnected player cannot retry; the dropped players are gone after the retry and the dead who stayed come back.
 
-## Not done yet
-Strict solver and deterministic recovery of dropped items (step 5).
+## Solvability with death in the game (step 5)
+The solver bot (`test/rooms/solver.ts`) can now lose its lead to a death and carry on: the next living player takes over, waits for the dead player's drops to finish, walks to where each part CAME TO REST and picks it up again (within the 2 slots), and finishes the stage. A run in which nobody dies is unchanged. The drills are in `test/death/solve.test.ts` (helper `test/death/drill.ts`) and take about 45 s.
+
+| Claim | Kind | What is asserted | Where |
+|---|---|---|---|
+| One player, 20 stages (2 to 29 and 1,000,000) x 4 seeds x 3 difficulties, the ghost present but unable to kill: every run clears within 2 slots | STRICT | all 240 runs clear; none dies; none holds more than 2 parts | `STRICT 1` |
+| One player, a LETHAL ghost and a hiding reflex (19 stage/difficulty cells x 6 seeds): every run is `cleared` (nobody died) or `died` (a recorded ghost kill); never stuck, never another error. Two runs of a seed give the same answer | STRICT | exact classification, `stuck` is `[]` | `STRICT 2` |
+| Two to four players: a scripted death right after ANY part is fetched (the first fetch, the last, or every carrier in turn until one is left; on foot or in the air; 2 and 4 players on Easy over 12 stages x 2 seeds, and 3 players with every carrier killed in turn on all three difficulties): the part is recovered from where it rests and EVERY run still clears. Every dropped part is recovered once, every death changes the lead once | STRICT | all runs clear; recovered = kills; lead changes = kills | `STRICT 3` |
+| Where a player can stand on a generated room (more than 20,000 spots on reachable platforms and in the air above them, 20 stages x 2 seeds x 3 difficulties), a dropped part never has to be moved | STRICT | no spot is relocated | `STRICT 4` |
+| Whether a bot that hides when warned survives a LETHAL ghost with 2, 3 or 4 players | STATISTICAL | classification only (cleared, died, or the reflex's own timeout), stage 4 always cleared, `reflex <= 4` and `cleared > 35%` of 126 runs | `STATISTICAL` |
+
+**Why "strict" is the stage and "statistical" is the bot.** The generator can promise that a stage is solvable and that a death never makes it unsolvable (the drills prove it, deterministically, for every grid cell). It cannot promise that a bot with a hiding reflex survives a lethal ghost: that depends on the bot. The statistical test is deterministic too (seeded, so it cannot flake), but it is a SAMPLE: it asserts only what the sample supports (early stages are always cleared; later ones are lost to the ghost more often; a run ends cleared, dead or in the reflex's own timeout), not a guarantee. It is a regression guard on the bot, not a claim about the game.
+
+**What the old loose thresholds were.** The P3E tests in `gun.solve.test.ts` asserted "at least 7 of 10" (stage 29), "8 of 10" (Hardcore) and "4 of 5 / 2 of 5" (co-op) because a caught bot dropped its key and never went back. They are now exact. Making them exact also exposed two bot defects that the thresholds had hidden for a whole phase, both fixed in the test helpers: a bot standing up to 14 px beyond a platform's edge could not find its own goal (`Bot.goTo`), and the hiding reflex could pull a player away from a door in the middle of a crossing (`solver.through` now retries it).
+
+**Mutation check.** With the solver's recovery switched off the strict drill fails ("Locked. Needs a key", "recovered 0 of 1"); with it on it passes.
+
+## Known issues and limits
+* **No mid-run rejoin.** `join` is refused once a run starts, so a "reconnect" cannot happen and was not built. A player who drops stays in the run as disconnected until the next stage or retry. See "Disconnects".
+* **No review for a stage that was cleared with deaths.** The review is built when the team is wiped; a stage the survivors clear shows none. `death:review` is sent once.
+* **`dropRest` knows platforms, not walls or gates.** A part dropped at a spot no player can occupy (inside a wall column) can be moved across a closed gate. On generated stages the only such spots are inside the stage 2 gate wall at the very top (a test lists them, so a change shows). No death position a player can reach is moved at all (`STRICT 4`). If a later phase adds a standable spot beside a gate, give `dropRest` the doors.
+* **The Revive Cell is in the start room.** It is always reachable without solving a lock, at the price of being predictable: it is never somewhere a team must hunt for.
+* **Ghost kind in the review.** `review.cause.ghostKind` and the cue notes name the ghost's type (`wisp`, `shade`, `howler`). Fine while types are visible; P3F's evidence game must stop that before it hides the type.
+* **Hiding bot and a ghost that cannot kill.** In a harness where the ghost cannot kill, a hidden bot is hunted for ever and the reflex times out (`hide detour did not end`); it is the reason `gun.solve` classifies its failures instead of asserting every clear.
+* **Cue notes** are sampled once per tick and worded once per change, so a very short warning inside one tick would not be noted.
+* **Test time.** The server suite now takes about 2.5 minutes on the machine it was measured on (the drills are about 45 s of it).

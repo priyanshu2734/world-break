@@ -91,8 +91,10 @@ export class Bot {
       const b = this.team.body(this.id), arena = this.arena();
       if (plan.length > 0) { this.act(plan.shift()!); continue; }
       const here = b.grounded ? surfaceUnder(arena, b) : undefined;
-      const goal = arena.solids.find((s) => Math.abs(s.y - y) < 1.5 && x >= s.x && x <= s.x + s.w);
+      // P4 step 5: a body can stand up to 14 px beyond a platform's edge (the landing slack), so a goal that close to the edge IS on it; aim at the nearest point of the platform
+      const goal = arena.solids.find((s) => Math.abs(s.y - y) < 1.5 && x >= s.x - 14 && x <= s.x + s.w + 14);
       if (!goal) throw new Error(`no surface at (${x}, ${y}) in ${this.team.roomOf(this.id)}`);
+      x = Math.min(Math.max(x, goal.x), goal.x + goal.w);
       if (b.grounded && here === goal && Math.abs(b.x - x) <= tol) { this.act(NEUTRAL); return; }
       if (!b.grounded || !here || here === goal || goal.y >= here.y) {
         // same surface, or the goal is level or below: walk toward it (walking off an edge is a fall)
