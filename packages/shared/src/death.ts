@@ -50,3 +50,48 @@ export const GhostPingSchema = z.object({
   from: z.string().max(24),
 });
 export type GhostPing = z.infer<typeof GhostPingSchema>;
+
+/** P4 step 4: how long a wipe stays on screen before the review (3 s), and the bounds of a review. Fixed rules, the same at stage 1 and stage 1,000,000. */
+export const WIPE = { beatTicks: 60, maxLines: 8, maxText: 160, maxTeam: MAX_PLAYERS } as const;
+
+/** One line of a review: what the server recorded, and the tick it happened at. Text is written by the server from its own events. */
+export const ReviewLineSchema = z.object({ tick: z.number().int().min(0), text: z.string().max(WIPE.maxText) });
+export type ReviewLine = z.infer<typeof ReviewLineSchema>;
+
+/**
+ * P4 step 4: the review of ONE death, built only from events the server recorded (the ghost's catch reasons, the cues the player was sent, the noises it
+ * logged, the hiding attempts, the death system's drops and the revive attempts). It names no code, no safe, no clue and no item id: parts by what they
+ * are, positions only where they came to rest. Sent to the player it is about, nobody else.
+ */
+export const DeathReviewSchema = z.object({
+  player: z.string().max(64), name: z.string().max(24),
+  /** The tick of death. */
+  tick: z.number().int().min(0),
+  life: PlayerLifeSchema,
+  /** How many times this player died this attempt (a revived player can die again; the review is of the last death). */
+  deaths: z.number().int().min(1).max(20),
+  cause: z.object({
+    how: z.enum(['touch', 'opened_spot']),
+    ghost: z.string().max(24),
+    ghostKind: z.string().max(24).nullable(),
+    because: z.array(z.string().max(WIPE.maxText)).max(WIPE.maxLines),
+  }),
+  warnings: z.array(ReviewLineSchema).max(WIPE.maxLines),
+  noise: z.array(ReviewLineSchema).max(WIPE.maxLines),
+  hiding: z.array(ReviewLineSchema).max(WIPE.maxLines),
+  rescues: z.array(ReviewLineSchema).max(WIPE.maxLines),
+  carried: z.array(z.object({ label: z.string().max(40) })).max(4),
+  dropped: z.array(z.object({ tick: z.number().int().min(0), label: z.string().max(40), room: z.string().max(48).nullable(), x: z.number(), y: z.number(), relocated: z.boolean() })).max(4),
+});
+export type DeathReview = z.infer<typeof DeathReviewSchema>;
+
+/** What each player is sent when the wipe turns into the review: their OWN review (null if they did not die), the stage and the attempt, and who died when. */
+export const DeathReviewMsgSchema = z.object({
+  stage: z.number().int().min(1),
+  attempt: z.number().int().min(0),
+  /** Everyone is out: a retry follows. */
+  wiped: z.boolean(),
+  yours: DeathReviewSchema.nullable(),
+  team: z.array(z.object({ name: z.string().max(24), life: PlayerLifeSchema, diedAt: z.number().int().min(0).nullable() })).max(WIPE.maxTeam),
+});
+export type DeathReviewMsg = z.infer<typeof DeathReviewMsgSchema>;

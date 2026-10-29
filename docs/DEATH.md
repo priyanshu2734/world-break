@@ -1,6 +1,6 @@
 # DEATH (P4)
 
-Status: **steps 1 to 3 of 5 done** (death core, spectating, revive). Stage flow and review are step 4; see `docs/handoffs/P4.md`.
+Status: **steps 1 to 4 of 5 done** (death core, spectating, revive, stage flow and review). The strict solver is step 5; see `docs/handoffs/P4.md`.
 
 ## Rules in force after step 1
 | Rule | Value | Where |
@@ -46,8 +46,34 @@ Client: `ui/death/spectateLogic.ts` (pure, tested) and `ui/death/SpectateView.ts
 
 Logical cases, and what the code does: a revive while the ghost stands on the body works and the protection covers the revived player; two players dying on one tick are both bodies and one cell brings back the nearer; a dead player cannot revive anyone and a cell they carried lies where they fell; dropped things never count against the carrier's 2 slots (they are in the world); a gun dropped by a dead player keeps its recharge (the cooldown belongs to the gun, not to the shooter), so picking it up is no free shot.
 
-## Not done yet
-Retry with a new seed, clear rule, dead return, death review screen (step 4). Strict solver (step 5).
+## Stage flow and review (step 4)
+| Rule | Where |
+|---|---|
+| Solo death, or nobody left alive and connected (and the dead have put their things down): `TEAM_WIPE`. A 3 s beat on the frozen world (`WIPE.beatTicks`), then `REVIEW`; the review waits for the host and does not move on by itself. `phases.ts` is NOT changed: the existing `playing -> team_wiped -> death_review -> briefing` path is used (`TEAM_WIPE`, `REVIEW`, `RETRY`, then `BEGIN`). | `Room.tick`, `Room.retryStage` |
+| With 2 to 4 players the stage goes on while at least one is alive and connected. | `DeathSystem.noneAlive` |
+| RETRY: the SAME stage number restarts on a NEW seed `deriveSeed(runSeed, 'stage', stage, 'retry', attempt)`; attempt 0 keeps the seed it always had. The generator validates every seed (8 derived tries of the same stage, never a different stage), so a retry is a validated stage. The number never goes back to 1 (stage 1,000,000 retries stage 1,000,000). Same difficulty. A fresh death system, items, players and spectators: everyone, the dead included, is alive with empty hands. The next stage number resets the attempt to 0. | `Room.buildEngine`, `Room.retryStage`, `StageRecord.attempt` |
+| Who may retry: the host; anyone connected once the host has left (a host who disconnects hands the role to the next connected player). Disconnected players are dropped at the retry and at the next stage, like before. | `Room.retryStage` |
+| Clear: at least ONE living player at the exit (`STAGE_CLEAR`); a body in the exit does not count (the engine sees the dead as not connected). The dead return for the next stage alive, with empty hands. | `rooms/escape.ts`, `Room.enginePos` |
+| Exit and death on the same tick: the exit wins (the ghost and death step are skipped on a clearing tick). Proved for every offset of the touch (cleared at 0 to 5 ticks of contact, a death from 6). | `Room.tick`, `test/death/flow.test.ts` |
+| Bonus: `no_deaths` (500 points, `DEATH_TABLE.noDeathBonus`) when a stage is cleared and nobody died on it. A revived death still counts as a death. | `DeathSystem.deaths`, `engine.grantBonus` |
+| The Revive Cell lies where a team can reach it WITHOUT SOLVING ANY LOCK: every door of a stage carries a lock, so that is the start room. The generator draws it from the start room only (same draws as before: one pick, one spot) and the validator proves it (`behind a lock` is an error). | `rooms/generate.ts`, `rooms/escapeValidate.ts` |
 
-## Test hooks
-`DeathSystem.setLethal(false)` is used ONLY by `test/ghost/gun.solve.test.ts` to measure that generated stages are solvable (not that a bot survives the ghost).
+### The death review
+Built ONLY from recorded server events (`death/review.ts`). It is words around facts, never a guess: a player with no recorded death has no review.
+
+| Section | Recorded by |
+|---|---|
+| Who or what touched you, and why (the ghost's own reasons), time of death | the ghost's `catch` event (`because`), the death system's `killed` event (tick) |
+| The last warnings you got | the cue stream the player was sent (`Room.recordReview` words each change once: a warning starting, a sound appearing or coming closer, a ghost at a hiding place, a scream) |
+| Noise you made | the ghost's `heard` events for that player (text and tick are the ghost's own) |
+| Your hiding attempts | every hide or leave the player asked for, with the server's answer, and the ghost's `inspect` events that found them |
+| Items carried, and where they dropped | `killed.carrying`, then `item_dropped` events (room, rest position, whether moved to a reachable floor) |
+| Rescues attempted | revive start, give-up and completion, noted for the reviver and for the body |
+
+Each entry carries its tick (shown as m:ss). Rings are bounded (24 notes per player and kind; 8 lines per section). A review names no code, no safe, no clue, no door and no item id: parts by what they are, positions only where they came to rest. Each player is sent THEIR OWN review (`death:review`, one socket) plus a team line of names, lives and times of death; a survivor of a team has none. The review exists only in the `death_review` phase.
+
+### Disconnects (honest scope)
+This codebase has no mid-run rejoin (`join` is refused once a run has started), so "reconnect" cannot happen: a player who drops stays in the run as disconnected until the next stage or retry, where they are removed. What IS handled and tested: a dead player who disconnects stays dead and drops nothing twice; living players who all disconnect wipe the team; a host who disconnects during the review hands over to the next connected player, who may retry; a disconnected player cannot retry; the dropped players are gone after the retry and the dead who stayed come back.
+
+## Not done yet
+Strict solver and deterministic recovery of dropped items (step 5).

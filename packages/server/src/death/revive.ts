@@ -19,6 +19,8 @@ export interface ReviveHost {
   /** The death system's REVIVE transition. */
   revive(bodyId: string, by: string): { ok: boolean };
   say(text: string, tone: 'info' | 'good' | 'warn' | 'bad', room?: string): void;
+  /** P4 step 4 (optional): a revive attempt began, was given up (let go, stepped away, hid, died), or was completed. For the death review. */
+  note?(kind: 'start' | 'stop' | 'done', by: string, body: string): void;
 }
 
 /** What one player is told about a revive in progress (to the reviver and to the body only). */
@@ -48,6 +50,7 @@ export class ReviveSystem {
     const people = this.host.people(), bodies = this.host.bodies();
     const taken = new Set<string>(); // a body somebody is already working on this tick
     const keep = new Map<string, { body: string; ticks: number }>();
+    const finished = new Set<string>(); // reviewers whose hold ended in a revive this tick
     for (const p of people) {
       const prev = this.holds.get(p.id);
       const ready = p.alive && p.connected && !p.hidden && p.use && this.host.carriesCell(p.id);
@@ -65,15 +68,18 @@ export class ReviveSystem {
       if (!body) continue;
       taken.add(body.id);
       const ticks = (prev && prev.body === body.id ? prev.ticks : 0) + 1;
+      if (ticks === 1) this.host.note?.('start', p.id, body.id);
       if (ticks >= REVIVE.holdTicks) {
         if (this.host.canRevive(body.id) && this.host.spendCell(p.id)) {
           const r = this.host.revive(body.id, p.id);
-          if (r.ok) this.host.say(`${body.name} is back on their feet.`, 'good', body.room);
+          if (r.ok) { this.host.say(`${body.name} is back on their feet.`, 'good', body.room); this.host.note?.('done', p.id, body.id); }
         }
+        finished.add(p.id);
         continue; // done (or refused): nothing to carry over, start from nothing next tick
       }
       keep.set(p.id, { body: body.id, ticks });
     }
+    for (const [by, h] of this.holds) if (!keep.has(by) && !finished.has(by)) this.host.note?.('stop', by, h.body); // a hold that was running and is not any more
     this.holds.clear();
     for (const [k, v] of keep) this.holds.set(k, v);
   }

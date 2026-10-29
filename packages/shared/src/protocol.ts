@@ -6,7 +6,7 @@ import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
 import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
-import type { DeathState, GhostPing } from './death';
+import type { DeathReviewMsg, DeathState, GhostPing } from './death';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -118,6 +118,8 @@ export interface ClientToServerEvents {
   'stage:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3A. Host-only: advance from `stage_complete` to stage N+1 (existing NEXT_STAGE transition). Stages are endless. */
   'room:nextStage': (payload: unknown, ack: (r: Ack) => void) => void;
+  /** P4 step 4: from the death review, start the SAME stage again on a new seed (the host; or anyone once the host has left). */
+  'room:retry': (payload: unknown, ack: (r: Ack) => void) => void;
   /** P3B. A player's reality ability intent (gravity well, freeze, duplicate, momentum). The server decides the outcome. */
   'ability:use': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3C. A player's salvage intent (pick up, drop, swap, hand over, install). The server decides the outcome. */
@@ -152,4 +154,6 @@ export interface ServerToClientEvents {
   'death:state': (state: DeathState) => void;
   /** P4 step 2. A spectator saw a ghost here: sent to the living in that room and to the other spectators only. */
   'ghost:ping': (ping: GhostPing) => void;
+  /** P4 step 4. Sent to ONE player when the wipe turns into the review: their own death review and who died when. */
+  'death:review': (review: DeathReviewMsg) => void;
 }

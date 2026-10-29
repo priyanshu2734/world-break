@@ -29,6 +29,7 @@ import { ghostFlags } from '../ui/ghost/ghostParam';
 import { HideView } from '../ui/ghost/HideView';
 import { GunView } from '../ui/ghost/GunView';
 import { SpectateView } from '../ui/death/SpectateView';
+import { ReviewView } from '../ui/death/ReviewView';
 import { bodyInReach, carriesCell, lifeMark, reviveLine } from '../ui/death/reviveLogic';
 import { SPECTATE_HINT, eyesId, isSpectating, switchKey } from '../ui/death/spectateLogic';
 import { canFire, carriesGun, cooldownFraction, cooldownLeftMs } from '../ui/ghost/gunLogic';
@@ -113,6 +114,8 @@ export class GameScene extends Phaser.Scene {
   private gunView!: GunView;
   /** P4 step 2: the dead player's overlay (headline, whom they watch, the keys) and the ghost-here pings. */
   private spectateView!: SpectateView;
+  /** P4 step 4: the wipe banner and the death review. */
+  private reviewView!: ReviewView;
   /** performance.now() of the last dissolve of a ghost I saw (for the "it is coming back" line). */
   private lastDissolveAt: number | null = null;
   private warnTipShown = false;
@@ -169,7 +172,8 @@ export class GameScene extends Phaser.Scene {
     this.hideView = new HideView(this);
     this.gunView = new GunView(this);
     this.spectateView = new SpectateView(this);
-    this.events.once('shutdown', () => this.spectateView.destroy());
+    this.reviewView = new ReviewView(this);
+    this.events.once('shutdown', () => { this.spectateView.destroy(); this.reviewView.destroy(); });
     this.warnTipShown = GameScene.tipSeen();
     this.ghostAudio = new GhostAudio(this.ghostFlags.muted);
     this.muteKey = kb.addKey('M');
@@ -388,6 +392,10 @@ export class GameScene extends Phaser.Scene {
     if (this.keys.R.isDown && isHost && g.phase === 'playing') this.resetHeld += delta; else this.resetHeld = 0;
     // --- P3A: host presses N on the result panel to start the next stage (the game is endless) ---
     if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'stage_complete') void s.nextStage();
+    // --- P4 step 4: after a team wipe the host presses N on the review to try the same stage again (the server decides who may) ---
+    if (room.phase !== 'death_review' && s.review) s.review = null;
+    if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'death_review') void s.retryStage();
+    this.reviewView.update({ phase: room.phase, review: s.review, isHost, stage: g.stage });
     this.holdBar.width = Math.min(1, this.resetHeld / RESET_HOLD_MS) * 200;
     if (this.resetHeld >= RESET_HOLD_MS) { this.resetHeld = 0; void s.resetArena(); }
 

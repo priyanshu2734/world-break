@@ -20,6 +20,8 @@ export const DEATH_TABLE = {
   dropAttempts: 80,
   /** Events kept per stage (a ring: the oldest fall off). */
   maxEvents: 300,
+  /** Score paid when a stage is cleared and nobody died on it (a body that was revived still counts as a death). */
+  noDeathBonus: 500,
 } as const;
 
 export interface DeathTuning {

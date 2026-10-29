@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  DeathStateSchema, GameSnapshotSchema, GhostCueSchema, GhostPingSchema, GhostFxSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
-  type AbilityAction, type Ack, type DeathState, type GhostPing, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
+  DeathReviewMsgSchema, DeathStateSchema, GameSnapshotSchema, GhostCueSchema, GhostPingSchema, GhostFxSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
+  type AbilityAction, type Ack, type DeathReviewMsg, type DeathState, type GhostPing, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
   type EscapeAction, type EscapeAck, type GhostAction, type GhostCue, type GhostFx, type GhostShot, type GhostStatus, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { addNote } from '../ui/escapeUse';
@@ -45,6 +45,8 @@ export class Session {
   /** P4 step 2: am I alive, a body or eliminated, whom do I watch (null until the server says; always null on a stage without death). */
   death: DeathState | null = null;
   deathAt = 0;
+  /** P4 step 4: my review of the last wipe (null outside the review phase). */
+  review: DeathReviewMsg | null = null;
   /** P4 step 2: "ghost here" pings the server sent me, with their arrival time (performance.now). Old ones are dropped. */
   ghostPings: { ping: GhostPing; at: number }[] = [];
   playerId = '';
@@ -84,6 +86,10 @@ export class Session {
     this.socket.on('death:state', (raw) => {
       const parsed = DeathStateSchema.safeParse(raw);
       if (parsed.success) { this.death = parsed.data; this.deathAt = performance.now(); }
+    });
+    this.socket.on('death:review', (raw) => {
+      const parsed = DeathReviewMsgSchema.safeParse(raw);
+      if (parsed.success) this.review = parsed.data;
     });
     this.socket.on('ghost:ping', (raw) => {
       const parsed = GhostPingSchema.safeParse(raw);
@@ -169,5 +175,7 @@ export class Session {
   async resetArena() { this.report(await this.call('game:reset', {})); }
   /** P3A: host-only. Asks the server to advance from a completed stage to the next one (stages are endless). */
   async nextStage() { this.report(await this.call('room:nextStage', {})); }
+  /** P4 step 4: from the review, the same stage again on a new layout (the server decides who may). */
+  async retryStage() { this.report(await this.call('room:retry', {})); }
   private report(r: Ack<any>) { this.error = r.ok ? '' : r.error; }
 }

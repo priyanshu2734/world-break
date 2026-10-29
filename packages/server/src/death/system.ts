@@ -35,6 +35,8 @@ export class DeathSystem {
   private readonly rt = new Map<string, Rt>();
   private readonly log: DeathEvent[] = [];
   private pending: DeathEvent[] = [];
+  /** Deaths on this stage so far (a revived player who dies again counts twice). Not a ring: it never forgets. */
+  private killCount = 0;
   /** Test and tooling switch: false = the ghost's touch never kills (solvability tests that measure the GENERATOR, not the ghost). Always true in a game. */
   private lethal = true;
 
@@ -96,6 +98,9 @@ export class DeathSystem {
   setLethal(on: boolean): void { this.lethal = on; }
   get isLethal(): boolean { return this.lethal; }
 
+  /** How many deaths this stage has seen (revived or not). */
+  get deaths(): number { return this.killCount; }
+
   /** The events logged so far (a ring). Read-only. */
   get events(): readonly DeathEvent[] { return this.log; }
   /** Events logged since the last call (for a consumer that forwards them, e.g. the death review). */
@@ -128,6 +133,7 @@ export class DeathSystem {
     r.dropping = true; r.attempts = 0;
     this.host.leaveHiding(id);
     this.host.freeze(id, true);
+    this.killCount++;
     this.record({ tick: t, kind: 'killed', player: id, name: w.name, life: r.life, cause, room: w.room, x: w.x, y: w.y, carrying: this.host.carried(id), reviveUntil: r.life === 'downed' ? r.reviveUntil : null });
     this.host.say(`${w.name} was killed.`, 'bad', w.room);
     return { ok: true, life: r.life };

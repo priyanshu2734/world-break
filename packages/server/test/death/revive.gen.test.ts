@@ -60,6 +60,38 @@ describe('P4 step 3: the generator places at most one Revive Cell, only on Easy 
   });
 });
 
+describe('P4 step 4: the cell is never behind a lock', () => {
+  it('on every stage, seed and mode it lies in the START room (every door of a stage carries a lock), on a floor a player reaches without opening anything', () => {
+    let multi = 0;
+    for (const stage of STAGES) for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) for (const d of ['easy', 'intermediate'] as const) {
+      const def = generateEscapeStage(stage, seed, { ghost: true, difficulty: d });
+      expect(cellsOf(def)[0]!.room, `stage ${stage} seed ${seed}`).toBe(def.rooms!.start);
+      if (def.rooms!.rooms.length > 1) multi++;
+    }
+    expect(multi).toBeGreaterThan(20); // the check ran on many multi-room stages, not only single rooms
+  });
+  it('the validator rejects a cell moved into a room behind a lock, and accepts it back in the start room', () => {
+    const def = generateEscapeStage(12, 3, { ghost: true, difficulty: 'easy' });
+    expect(def.rooms!.rooms.length).toBeGreaterThan(1);
+    const cell = cellsOf(def)[0]!;
+    const other = def.rooms!.rooms.find((r) => r.id !== def.rooms!.start)!;
+    const floor = other.arena.solids.find((s) => s.w >= 300)!;
+    const moved: StageDef = { ...def, items: (def.items ?? []).map((i) => (i.id === cell.id ? { ...i, room: other.id, x: floor.x + 100, y: floor.y } : i)) };
+    expect(validateEscape(moved.escape!, moved.rooms!, moved).join(' ')).toContain('behind a lock');
+    expect(validateEscape(def.escape!, def.rooms!, def)).toEqual([]);
+  });
+  it('the rejection comes from the reachability rule itself, not from a side effect such as a missing lock or a bad position', () => {
+    const def = generateEscapeStage(12, 3, { ghost: true, difficulty: 'easy' });
+    const cell = cellsOf(def)[0]!;
+    const other = def.rooms!.rooms.find((r) => r.id !== def.rooms!.start)!;
+    const floor = other.arena.solids.find((s) => s.w >= 300)!;
+    const moved: StageDef = { ...def, items: (def.items ?? []).map((i) => (i.id === cell.id ? { ...i, room: other.id, x: floor.x + 100, y: floor.y } : i)) };
+    const errs = validateEscape(moved.escape!, moved.rooms!, moved);
+    expect(errs.some((e) => e.includes('behind a lock'))).toBe(true);
+    expect(errs.some((e) => e.includes('has no lock'))).toBe(false); // and it is the lock rule, not a side effect, that rejects it
+  });
+});
+
 describe('P4 step 3: the validator proves it', () => {
   const base = () => generateEscapeStage(8, 3, { ghost: true, difficulty: 'easy' });
   const withItems = (def: StageDef, f: (items: NonNullable<StageDef['items']>) => NonNullable<StageDef['items']>): StageDef => ({ ...def, items: f([...(def.items ?? [])]) });

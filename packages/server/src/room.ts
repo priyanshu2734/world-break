@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -19,7 +19,7 @@ import { CatchSystem, GhostSystem, PulseGun, type CatchHost, type GunHost, type 
 import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
-import { DeathSystem, ReviveSystem, SpectateSystem, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
+import { DEATH_TABLE, DeathSystem, ReviveSystem, ReviewLog, SpectateSystem, buildMessage, cueNotes, type ReviewCueSig, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
 export const BRIEFING_TICKS = 3 * SERVER_TICK_HZ;
@@ -30,13 +30,15 @@ const fail = (error: string): Result => ({ ok: false, error });
 interface Member { id: string; name: string; ready: boolean; connected: boolean }
 
 /** Server-side record of the stage being played. Never sent to clients (the seed derives hidden layouts). */
-export interface StageRecord { stage: number; seed: number; defId: string; fallback: boolean }
+export interface StageRecord { stage: number; seed: number; defId: string; fallback: boolean; /** P4 step 4: 0 for the first try of this stage number, 1 for the first retry, and so on. */ attempt: number }
 
 /** Pure, socket-free room state. All mutations are validated here. */
 export class Room {
   phase: RoomPhase = 'lobby';
   difficulty: Difficulty = 'easy';
   stage = 1;
+  /** P4 step 4: how many times this stage number has been retried after a team wipe (0 = the first try). Back to 0 on the next stage. */
+  private attempt = 0;
   /** Team progression. Persistence arrives with the progression phase. */
   highestStage = 1;
   hostId = '';
@@ -61,6 +63,13 @@ export class Room {
   private pings: { to: string[]; ping: GhostPing }[] = [];
   /** P4 step 2: the (target, room) each spectator was last sent a layout for, so they learn the walls of the room they are watching and nothing else. */
   private specLayouts = new Map<string, string>();
+  /** P4 step 4: what happened around each player (warnings, noise, hiding, rescues), noted as it happens; and what the cue stream last said, per player. */
+  private reviewLog = new ReviewLog();
+  private reviewSeen = new WeakSet<GhostEvent>();
+  private cueSigs = new Map<string, ReviewCueSig>();
+  /** P4 step 4: the reviews of the last wipe, each for ONE player (built when the wipe turns into the review), and the ticks left of the wipe beat. */
+  private reviews = new Map<string, DeathReviewMsg>();
+  private wipeLeft = 0;
 
   /**
    * `runSeed` is the root of every stage seed of this run (server-side only). It defaults to a pure function of the
@@ -92,7 +101,8 @@ export class Room {
    * If a generated stage ever fails validation, fall back to the deterministic fallback stage (never "no stage").
    */
   private buildEngine(stage: number, opts: { revBase?: number } = {}): StageEngine {
-    const seed = deriveSeed(this.runSeed, 'stage', stage);
+    // P4 step 4: a retry of the SAME stage number gets a NEW seed (derived from the run seed, the stage and the attempt); the first try keeps the seed it always had
+    const seed = this.attempt === 0 ? deriveSeed(this.runSeed, 'stage', stage) : deriveSeed(this.runSeed, 'stage', stage, 'retry', this.attempt);
     const ids = [...this.members.keys()];
     let fallback = false;
     let engine: StageEngine;
@@ -113,7 +123,7 @@ export class Room {
       const fb = this.opts.escape === true ? generateEscapeStage(1, deriveSeed(seed, 'recovery')) : fallbackStageDef(stage);
       engine = new StageEngine(fb.escape ? fb : withDefaultAbilities(fb, stage), ids, { ...opts, arena: this.stageArena(fb), difficulty: this.difficulty, stage, rooms: this.roomsHost });
     }
-    this.stageRec = { stage, seed, defId: engine.def.id, fallback };
+    this.stageRec = { stage, seed, defId: engine.def.id, fallback, attempt: this.attempt };
     return engine;
   }
 
@@ -199,7 +209,7 @@ export class Room {
 
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
-    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.reviveSys = null; this.pings = []; this.specLayouts = new Map(); this.lightsOut = new Map();
+    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.reviveSys = null; this.pings = []; this.reviewLog = new ReviewLog(); this.reviewSeen = new WeakSet(); this.cueSigs = new Map(); this.reviews = new Map(); this.wipeLeft = 0; this.specLayouts = new Map(); this.lightsOut = new Map();
     this.sim?.clearFrozen();
     const graph = engine.def.rooms;
     if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
@@ -247,6 +257,14 @@ export class Room {
       canRevive: (bodyId) => death.canRevive(bodyId),
       revive: (bodyId, by) => death.revive(bodyId, by),
       say: (text, tone, room) => engine.announce(text, tone, room),
+      note: (kind, by, body) => {
+        const t = sim.tick, nameOf = (id: string): string => this.members.get(id)?.name ?? 'A teammate';
+        const [mine, theirs] = kind === 'start' ? [`Started reviving ${nameOf(body)}.`, `${nameOf(by)} started reviving you.`]
+          : kind === 'stop' ? [`Stopped reviving ${nameOf(body)} before it was done.`, `${nameOf(by)} stopped reviving you before it was done.`]
+          : [`Brought ${nameOf(body)} back.`, `${nameOf(by)} brought you back.`];
+        this.reviewLog.add(by, 'rescue', t, mine);
+        this.reviewLog.add(body, 'rescue', t, theirs);
+      },
     });
     const causeOf = (ev?: GhostCatchEvent): KillCause => ({
       how: ev?.how ?? 'touch', ghost: ev?.ghost ?? 'g0', ghostKind: ev?.ghostKind ?? null, because: ev ? [...ev.because] : [],
@@ -376,6 +394,7 @@ export class Room {
     this.death?.removePlayer(id);
     this.spectate?.remove(id);
     this.reviveSys?.remove(id);
+    this.reviewLog.remove(id);
     if (this.hostId === id) this.hostId = this.members.keys().next().value ?? '';
   }
 
@@ -426,6 +445,7 @@ export class Room {
     const revBase = (this.engine?.state().rev ?? 0) + 1; // revisions keep increasing across stages
     const engine = this.buildEngine(next, { revBase }); // built before any mutation; N >= 2 falls back instead of throwing
     this.phase = nextRoomPhase(this.phase, 'NEXT_STAGE');
+    this.attempt = 0; this.reviews = new Map(); // a new stage number: back to the first try
     this.stage = next;
     this.highestStage = Math.max(this.highestStage, next);
     this.sim.loadArena(this.arenaOf(engine)); // a stage may play on its own arena (the Lab); back to Relay Platform 01 afterwards
@@ -480,15 +500,28 @@ export class Room {
         this.reviveSys?.step();
         this.spectate?.step();
         this.syncSpectatorLayouts();
+        this.recordReview();
       }
       for (const t of this.sim.drainTransitions()) this.queueLayout(t.playerId, t.to); // each player learns the room they just entered
       if (cleared) {
+        // P4 step 4: everyone, the dead included, goes on to the next stage; a team that lost nobody is paid a bonus (a revived death still counts)
+        if (this.death && this.death.deaths === 0) this.engine?.grantBonus('no_deaths', DEATH_TABLE.noDeathBonus);
         this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
         return { phaseChanged: true };
       }
       // P4: nobody who is alive can act any more (and the dead have put their things down): the team is wiped. REVIEW and RETRY follow in step 4.
       if (this.death && this.death.noneAlive() && !this.death.dropping) {
         this.phase = nextRoomPhase(this.phase, 'TEAM_WIPE');
+        this.wipeLeft = WIPE.beatTicks;
+        return { phaseChanged: true };
+      }
+    } else if (this.phase === 'team_wiped') {
+      // P4 step 4: a short beat on the wipe (the world is frozen), then the review of every death, built from the log
+      this.wipeLeft--;
+      if (this.wipeLeft <= 0) {
+        this.wipeLeft = 0;
+        this.buildReviews();
+        this.phase = nextRoomPhase(this.phase, 'REVIEW');
         return { phaseChanged: true };
       }
     }
@@ -591,6 +624,75 @@ export class Room {
     };
   }
 
+  /** P4 step 4: note what the server records around each player (the ghost's sounds and hiding checks, and the cues each player is sent). */
+  private recordReview(): void {
+    const g = this.ghost, d = this.death, sim = this.sim;
+    if (!g || !d || !sim) return;
+    const log = g.events, fresh: GhostEvent[] = [];
+    for (let i = log.length - 1; i >= 0; i--) { const e = log[i]!; if (this.reviewSeen.has(e)) break; fresh.push(e); }
+    for (const e of fresh.reverse()) {
+      this.reviewSeen.add(e);
+      if (e.kind === 'heard') this.reviewLog.add(e.player, 'noise', e.tick, e.text);
+      else if (e.kind === 'inspect' && e.player && e.phase === 'found') this.reviewLog.add(e.player, 'hiding', e.tick, e.text);
+    }
+    for (const m of this.members.keys()) {
+      if (!d.isAlive(m)) { this.cueSigs.delete(m); continue; }
+      const cue = this.ghostCue(m);
+      if (!cue) continue;
+      const r = cueNotes(this.cueSigs.get(m) ?? null, cue);
+      this.cueSigs.set(m, r.sig);
+      for (const n of r.notes) this.reviewLog.add(m, 'warning', sim.tick, n);
+    }
+  }
+
+  /** P4 step 4: the wipe turns into the review: each player gets THEIR OWN review (null if they did not die) and the list of who died when. */
+  private buildReviews(): void {
+    const d = this.death;
+    this.reviews = new Map();
+    if (!d) return;
+    const roster = [...this.members.values()].map((m) => ({ id: m.id, name: m.name }));
+    for (const m of roster) {
+      this.reviews.set(m.id, buildMessage({
+        stage: this.stage, attempt: this.attempt, wiped: true, viewer: m.id, roster, lifeOf: (id) => d.lifeOf(id), events: d.events, log: this.reviewLog,
+      }));
+    }
+  }
+
+  /** P4 step 4: the review of the last wipe, for one player only (null outside the review, or for a player who is not in the run). */
+  reviewFor(id: string): DeathReviewMsg | null { return this.phase === 'death_review' ? this.reviews.get(id) ?? null : null; }
+
+  /**
+   * P4 step 4: from the review, start the SAME stage number again on a NEW seed (death_review -> briefing, the existing RETRY transition). The host does it; if the
+   * host has left the run, any connected player may. Everyone returns, the dead included, alive and with empty hands (a new stage builds new players and items).
+   * Disconnected players are dropped, like on the next stage. Never goes back to stage 1: the number is kept.
+   */
+  retryStage(id: string): Result {
+    if (this.phase !== 'death_review' || !this.sim) return fail('There is no review to retry from');
+    const m = this.members.get(id);
+    if (!m) return fail('Not in room');
+    const host = this.members.get(this.hostId);
+    if (id !== this.hostId && host?.connected) return fail('Only the host can retry the stage');
+    if (!m.connected) return fail('You are offline');
+    for (const x of [...this.members.values()]) {
+      if (!x.connected) { this.members.delete(x.id); this.sim.removePlayer(x.id); }
+    }
+    const before = this.attempt;
+    this.attempt = before + 1;
+    const revBase = (this.engine?.state().rev ?? 0) + 1;
+    let engine: StageEngine;
+    try { engine = this.buildEngine(this.stage, { revBase }); } catch (e) { this.attempt = before; throw e; } // built before any mutation
+    this.phase = nextRoomPhase(this.phase, 'RETRY');
+    this.reviews = new Map();
+    this.sim.loadArena(this.arenaOf(engine));
+    this.sim.loadRooms(null);
+    this.sim.reset();
+    this.engine = engine;
+    this.bindWorld(engine);
+    this.bindRooms(engine);
+    this.briefingTicksLeft = this.briefingTicks;
+    return { ok: true };
+  }
+
   /** P4 step 2: a dead player picks whom to watch. */
   spectateFollow(id: string, req: SpectateFollow): { ok: true; message: string } | { ok: false; error: string } {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
@@ -630,7 +732,10 @@ export class Room {
       if (stop) return { ok: false, error: stop };
       return this.gun ? this.gun.fire(id) : { ok: false, error: 'There is nothing to shoot here.' };
     }
-    return action.action === 'hide' ? this.catchSys.hide(id) : this.catchSys.leave(id);
+    const r = action.action === 'hide' ? this.catchSys.hide(id) : this.catchSys.leave(id);
+    // P4 step 4: the attempt is noted for the review, with what the server answered
+    this.reviewLog.add(id, 'hiding', this.sim?.tick ?? 0, `${action.action === 'hide' ? 'Tried to hide' : 'Came out of hiding'}: ${r.ok ? r.message : r.error}`);
+    return r;
   }
 
   /** A player's stage action. The engine validates range, tools, cooldowns and prerequisites. */

@@ -267,12 +267,13 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
     }
   }
 
-  // ---- P4 step 3: the Revive Cell. ONE per stage on Easy and Intermediate, lying in the open on a floor spot of a random room of this seed (so a team may have to
-  //      go and get it). Drawn from the same generator AFTER the gun and the evidence, so every earlier draw of a stage keeps its place.
+  // ---- P4 step 3/4: the Revive Cell. ONE per stage on Easy and Intermediate, lying in the open on a floor spot of a room a team can reach WITHOUT SOLVING ANY LOCK
+  //      (every door of a stage carries a lock, so that is the start room: a body has only 45 s, so the cell may never be behind a lock). Drawn AFTER the gun and the
+  //      evidence from the same generator, with the same draws as before (one pick, one spot), so every earlier draw of a stage keeps its place.
   if (reviveOn) {
-    const withFloor = plans.filter((p) => spots(p, 'floor').length > 0);
-    if (withFloor.length > 0) {
-      const p = rng.pick(withFloor), s = take(p, rng, 'floor');
+    const open = plans.filter((p, i) => i === 0 && spots(p, 'floor').length > 0);
+    if (open.length > 0) {
+      const p = rng.pick(open), s = take(p, rng, 'floor');
       items.push({ id: `${prefix}_revive`, kind: 'revive_cell', x: s.x, y: s.y, room: p.id });
     }
   }

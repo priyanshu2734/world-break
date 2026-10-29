@@ -160,6 +160,10 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
     socket.on('room:nextStage', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.nextStage(pid));
     });
+    // P4 step 4: from the death review, the SAME stage again on a new seed (the host; anyone once the host has left)
+    socket.on('room:retry', (_payload, ack) => {
+      run(socket.id, ack, (pid, code) => rooms.get(code)!.retryStage(pid));
+    });
     socket.on('game:reset', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.resetArena(pid));
     });
@@ -186,6 +190,19 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   const lifeSent = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
   const onTick = () => {
     rooms.forEach((room) => {
+      // P4 step 4: a team wipe holds for a short beat, then turns into the review: each player is sent their OWN review (to that player's socket only)
+      if (room.phase === 'team_wiped') {
+        const { phaseChanged } = room.tick();
+        if (phaseChanged) {
+          broadcast(room.code);
+          for (const [sid, sess] of sessions) {
+            if (sess.roomCode !== room.code) continue;
+            const review = room.reviewFor(sess.playerId);
+            if (review) io.to(sid).emit('death:review', review);
+          }
+        }
+        return;
+      }
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
       const { phaseChanged } = room.tick();
       if (phaseChanged) broadcast(room.code);
