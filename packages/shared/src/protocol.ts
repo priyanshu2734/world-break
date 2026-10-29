@@ -6,6 +6,7 @@ import type { AbilityAction } from './abilities/public';
 import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
 import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
+import type { DeathReviewMsg, DeathState, GhostPing } from './death';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -96,7 +97,7 @@ export const GameSnapshotSchema = z.object({
    * P3D step 4 (additive, optional): on an escape stage `players` holds only the viewer and the teammates the viewer can see, so the
    * team panel reads this instead: every teammate's name, slot and connection, never a position or an inventory. Absent on other stages.
    */
-  team: z.array(z.object({ id: z.string(), name: z.string(), slot: z.number().int().min(0), connected: z.boolean() })).max(MAX_PLAYERS).optional(),
+  team: z.array(z.object({ id: z.string(), name: z.string(), slot: z.number().int().min(0), connected: z.boolean(), /** P4 (additive, optional): alive, a body, or eliminated. Absent on stages without death. */ life: z.enum(['alive', 'downed', 'eliminated']).optional() })).max(MAX_PLAYERS).optional(),
   /** P3E (additive, optional): the ghosts THIS player can see (at most 2). Absent = none in view (a ghost out of view is never in the message). */
   ghosts: z.array(GhostPublicSchema).max(2).optional(),
 });
@@ -117,6 +118,8 @@ export interface ClientToServerEvents {
   'stage:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3A. Host-only: advance from `stage_complete` to stage N+1 (existing NEXT_STAGE transition). Stages are endless. */
   'room:nextStage': (payload: unknown, ack: (r: Ack) => void) => void;
+  /** P4 step 4: from the death review, start the SAME stage again on a new seed (the host; or anyone once the host has left). */
+  'room:retry': (payload: unknown, ack: (r: Ack) => void) => void;
   /** P3B. A player's reality ability intent (gravity well, freeze, duplicate, momentum). The server decides the outcome. */
   'ability:use': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3C. A player's salvage intent (pick up, drop, swap, hand over, install). The server decides the outcome. */
@@ -125,6 +128,10 @@ export interface ClientToServerEvents {
   'escape:action': (payload: unknown, ack: (r: Ack<EscapeAck>) => void) => void;
   /** P3E step 3: hide in the hiding spot in reach, or come out. The server decides. */
   'ghost:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P4 step 2: a dead player picks whom to watch (a teammate's id, or 'next' / 'prev'). The server decides. */
+  'spectate:follow': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P4 step 2: a dead player says "ghost here". No payload: the server uses the ghost the spectator can see. */
+  'spectate:ping': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;
@@ -143,4 +150,10 @@ export interface ServerToClientEvents {
   'ghost:shot': (shot: GhostShot) => void;
   /** P3E step 5: a ghost dissolved (Pulse Gun hit) or a Howler screamed. Only to players who can see the spot. */
   'ghost:fx': (fx: GhostFx) => void;
+  /** P4 step 2. Sent to ONE player: alive, a body or eliminated, whom they watch, and who they can watch. */
+  'death:state': (state: DeathState) => void;
+  /** P4 step 2. A spectator saw a ghost here: sent to the living in that room and to the other spectators only. */
+  'ghost:ping': (ping: GhostPing) => void;
+  /** P4 step 4. Sent to ONE player when the wipe turns into the review: their own death review and who died when. */
+  'death:review': (review: DeathReviewMsg) => void;
 }

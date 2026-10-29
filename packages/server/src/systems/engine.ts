@@ -336,6 +336,8 @@ export class StageEngine {
     if (this.feed.length > MAX_FEED) this.feed.shift();
     this.dirty = true;
   }
+  /** P4 step 4: a bonus the Room pays when a stage is cleared (no deaths). Same ledger as every other award. */
+  grantBonus(category: string, points: number): void { this.award(category, points); }
   private award(category: string, points: number) {
     if (points === 0) return;
     this.score.total = Math.max(0, this.score.total + points);

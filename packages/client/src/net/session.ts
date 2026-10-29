@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import {
-  GameSnapshotSchema, GhostCueSchema, GhostFxSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
-  type AbilityAction, type Ack, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
+  DeathReviewMsgSchema, DeathStateSchema, GameSnapshotSchema, GhostCueSchema, GhostPingSchema, GhostFxSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
+  type AbilityAction, type Ack, type DeathReviewMsg, type DeathState, type GhostPing, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
   type EscapeAction, type EscapeAck, type GhostAction, type GhostCue, type GhostFx, type GhostShot, type GhostStatus, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { addNote } from '../ui/escapeUse';
@@ -42,13 +42,20 @@ export class Session {
   inputExtra: { aim?: number; sneak?: boolean; use?: boolean } = {};
   /** P3E step 3: what the server told this player about hiding and being caught (from the latest cue). Null until a cue with a status arrives. */
   get ghostStatus(): GhostStatus | null { return this.ghostCue?.status ?? null; }
+  /** P4 step 2: am I alive, a body or eliminated, whom do I watch (null until the server says; always null on a stage without death). */
+  death: DeathState | null = null;
+  deathAt = 0;
+  /** P4 step 4: my review of the last wipe (null outside the review phase). */
+  review: DeathReviewMsg | null = null;
+  /** P4 step 2: "ghost here" pings the server sent me, with their arrival time (performance.now). Old ones are dropped. */
+  ghostPings: { ping: GhostPing; at: number }[] = [];
   playerId = '';
   connected = false;
   error = '';
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.ghostShots = []; this.ghostFx = []; this.layouts.clear(); this.buffer.clear(); });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.death = null; this.ghostPings = []; this.ghostShots = []; this.ghostFx = []; this.layouts.clear(); this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
@@ -75,6 +82,20 @@ export class Session {
       const now = performance.now();
       this.ghostFx = [...this.ghostFx.filter((f) => now - f.at < 3000), { fx: parsed.data, at: now }].slice(-8);
       this.onGhostFx?.(parsed.data);
+    });
+    this.socket.on('death:state', (raw) => {
+      const parsed = DeathStateSchema.safeParse(raw);
+      if (parsed.success) { this.death = parsed.data; this.deathAt = performance.now(); }
+    });
+    this.socket.on('death:review', (raw) => {
+      const parsed = DeathReviewMsgSchema.safeParse(raw);
+      if (parsed.success) this.review = parsed.data;
+    });
+    this.socket.on('ghost:ping', (raw) => {
+      const parsed = GhostPingSchema.safeParse(raw);
+      if (!parsed.success) return;
+      const now = performance.now();
+      this.ghostPings = [...this.ghostPings.filter((p) => now - p.at < 6000), { ping: parsed.data, at: now }].slice(-6);
     });
     this.socket.on('ghost:cue', (raw) => {
       const parsed = GhostCueSchema.safeParse(raw);
@@ -141,8 +162,20 @@ export class Session {
     const r = await this.call<Ack<{ message: string }>>('ghost:action', action);
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
+  /** P4 step 2: a dead player picks whom to watch (a teammate's id, or 'next' / 'prev'). The server's verdict shows in the HUD. */
+  async spectateFollow(target: string): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('spectate:follow', { target });
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
+  /** P4 step 2: "ghost here". The position comes from the server; nothing but the request is sent. */
+  async spectatePing(): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('spectate:ping', {});
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
   async resetArena() { this.report(await this.call('game:reset', {})); }
   /** P3A: host-only. Asks the server to advance from a completed stage to the next one (stages are endless). */
   async nextStage() { this.report(await this.call('room:nextStage', {})); }
+  /** P4 step 4: from the review, the same stage again on a new layout (the server decides who may). */
+  async retryStage() { this.report(await this.call('room:retry', {})); }
   private report(r: Ack<any>) { this.error = r.ok ? '' : r.error; }
 }

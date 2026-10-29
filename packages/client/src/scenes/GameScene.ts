@@ -28,6 +28,10 @@ import { brokenLightScale, lightScale, lightsOutActive } from '../ui/ghost/flick
 import { ghostFlags } from '../ui/ghost/ghostParam';
 import { HideView } from '../ui/ghost/HideView';
 import { GunView } from '../ui/ghost/GunView';
+import { SpectateView } from '../ui/death/SpectateView';
+import { ReviewView } from '../ui/death/ReviewView';
+import { bodyInReach, carriesCell, lifeMark, reviveLine } from '../ui/death/reviveLogic';
+import { SPECTATE_HINT, eyesId, isSpectating, switchKey } from '../ui/death/spectateLogic';
 import { canFire, carriesGun, cooldownFraction, cooldownLeftMs } from '../ui/ghost/gunLogic';
 import { canMove, captiveInReach, modeOf, nearestSpot, onEPressed, shouldShowTip } from '../ui/ghost/hideLogic';
 
@@ -108,6 +112,10 @@ export class GameScene extends Phaser.Scene {
   /** P3E step 3: hiding places, the caught prompt, the rescue bars and the first-warning line. */
   private hideView!: HideView;
   private gunView!: GunView;
+  /** P4 step 2: the dead player's overlay (headline, whom they watch, the keys) and the ghost-here pings. */
+  private spectateView!: SpectateView;
+  /** P4 step 4: the wipe banner and the death review. */
+  private reviewView!: ReviewView;
   /** performance.now() of the last dissolve of a ghost I saw (for the "it is coming back" line). */
   private lastDissolveAt: number | null = null;
   private warnTipShown = false;
@@ -163,6 +171,9 @@ export class GameScene extends Phaser.Scene {
     this.ghostView = new GhostView(this);
     this.hideView = new HideView(this);
     this.gunView = new GunView(this);
+    this.spectateView = new SpectateView(this);
+    this.reviewView = new ReviewView(this);
+    this.events.once('shutdown', () => { this.spectateView.destroy(); this.reviewView.destroy(); });
     this.warnTipShown = GameScene.tipSeen();
     this.ghostAudio = new GhostAudio(this.ghostFlags.muted);
     this.muteKey = kb.addKey('M');
@@ -328,11 +339,15 @@ export class GameScene extends Phaser.Scene {
     this.lost.setVisible(!s.connected); // the session clears its snapshots when the socket drops
     if (!g || !room) { this.bannerBg.setVisible(false); this.banner.setVisible(false); this.bannerSub.setVisible(false); return; }
 
-    const me = g.players.find((p) => p.id === s.playerId);
+    // P4 step 2: a dead player is a spectator. They are not simulated (no prediction), and the camera, the room and the light follow the teammate they watch.
+    if (g.phase !== 'playing' && s.death) s.death = null; // a new stage (briefing) or a result: the old life no longer applies
+    const spectating = isSpectating(s.death);
+    const eyes = spectating ? g.players.find((p) => p.id === eyesId(s.death)) : undefined;
+    const me = spectating ? undefined : g.players.find((p) => p.id === s.playerId);
 
     // --- P3B/P3D: the arena the local player is simulated in. The server may switch arena between stages (the Ability Lab), and on a
     //     multi-room stage each player is in one room, whose layout the server sent to this player only. Unknown yet = wait, do not guess. ---
-    const myRoom = me?.roomId;
+    const myRoom = spectating ? eyes?.roomId : me?.roomId;
     if (this.layoutSeenSeq !== s.layoutSeq) { // a door just moved the player (a gate moves them within one room): predict afresh from the server's position
       this.layoutSeenSeq = s.layoutSeq;
       if (myRoom !== undefined) this.predictor.stop();
@@ -377,6 +392,10 @@ export class GameScene extends Phaser.Scene {
     if (this.keys.R.isDown && isHost && g.phase === 'playing') this.resetHeld += delta; else this.resetHeld = 0;
     // --- P3A: host presses N on the result panel to start the next stage (the game is endless) ---
     if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'stage_complete') void s.nextStage();
+    // --- P4 step 4: after a team wipe the host presses N on the review to try the same stage again (the server decides who may) ---
+    if (room.phase !== 'death_review' && s.review) s.review = null;
+    if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'death_review') void s.retryStage();
+    this.reviewView.update({ phase: room.phase, review: s.review, isHost, stage: g.stage });
     this.holdBar.width = Math.min(1, this.resetHeld / RESET_HOLD_MS) * 200;
     if (this.resetHeld >= RESET_HOLD_MS) { this.resetHeld = 0; void s.resetArena(); }
 
@@ -399,6 +418,9 @@ export class GameScene extends Phaser.Scene {
       v.glow.setAlpha(p.connected ? 0.28 : 0.05);
       v.label.setText(p.connected ? p.name : `${p.name} (offline)`);
       v.marker.setText(isMe ? '▼ you' : '').setColor('#ffffff');
+      // P4 step 3: a body is drawn faint and marked (the team list says who is dead); a teammate with the Revive Cell can bring it back
+      const life = g.team?.find((t) => t.id === p.id)?.life;
+      if (life && life !== 'alive') { v.box.setAlpha(life === 'downed' ? 0.5 : 0.3); v.marker.setText(`${isMe ? '▼ you  ' : ''}${lifeMark(life)}`).setColor('#ff8c8c'); }
       // P3E step 3: a player hiding is drawn faint to themselves (nobody else is sent them at all); a caught player carries a red mark
       const gs = s.ghostStatus;
       const caught = isMe ? !!gs?.caught : !!gs?.captives.some((c) => c.id === p.id);
@@ -432,7 +454,7 @@ export class GameScene extends Phaser.Scene {
     const itemLine = stHere && meNow ? itemPrompt(stHere, s.playerId, meNow) : null;
     const goal = goalLine(st?.escape, myRoom, carriedItems(st, s.playerId).map((i) => i.kind), s.notes.length);
     this.escapeView.update(myRoom, st?.escape, st?.tick ?? 0, this.escapeNearest, g.phase === 'playing' && !this.pad.isOpen && !itemLine, s.notes, goal);
-    const keysText = st?.escape ? `${ESCAPE_KEYS_HINT}  Shift sneak  M mute ghost` : this.defaultHint;
+    const keysText = spectating ? SPECTATE_HINT : st?.escape ? `${ESCAPE_KEYS_HINT}  Shift sneak  M mute ghost` : this.defaultHint;
     if (this.hint.text !== keysText) this.hint.setText(keysText);
     this.pad.update(g.phase === 'playing' ? meNow : null);
     this.stageView.update(stHere ?? EMPTY_STAGE, g.tick, stHere ? meNow : null);
@@ -463,6 +485,18 @@ export class GameScene extends Phaser.Scene {
       status, me: meNow, where: this.where, nameOf: (id) => g.team?.find((p) => p.id === id)?.name ?? g.players.find((p) => p.id === id)?.name ?? 'your teammate',
       otherPrompt: !!itemLine || this.escapeNearest !== null, now: nowMs,
     });
+    this.spectateView.update({ death: s.death, arrivedMs: s.deathAt, pings: s.ghostPings, room: myRoom, nowMs });
+    // P4 step 3: the revive prompt for a carrier next to a body, the bar while holding, and what a body is told
+    const carried = st?.items ? carriedItems(st, s.playerId) : [];
+    const nearBody = !spectating && me ? bodyInReach(meNow ?? me, g.team, this.where) : null;
+    this.spectateView.setRevive(reviveLine(s.death, nearBody, carriesCell(carried)));
+    // P4 step 2: a spectator's keys. Read before the stage keys (which consume key presses); the server decides everything.
+    if (spectating && g.phase === 'playing') {
+      const J = Phaser.Input.Keyboard.JustDown;
+      const sw = switchKey(J(this.cursors.left), J(this.cursors.right));
+      if (sw) void s.spectateFollow(sw);
+      if (J(this.stageKeys.G)) void s.spectatePing();
+    }
     const ptrG = this.input.activePointer;
     const cueLeft = cooldownLeftMs(s.ghostCue?.gun, s.ghostCueAt, nowMs);
     this.gunView.update({
@@ -477,8 +511,9 @@ export class GameScene extends Phaser.Scene {
     this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
 
     // --- P3D: the camera follows the local player inside the room (a room no bigger than the screen never scrolls) ---
-    if (meNow) {
-      const sc = cameraScroll({ x: meNow.x, y: meNow.y - PLAYER_HEIGHT / 2 }, this.arena);
+    const focus = meNow ?? (eyes ? (sampled.get(eyes.id) ?? eyes) : null); // a spectator's camera is on the teammate they watch
+    if (focus) {
+      const sc = cameraScroll({ x: focus.x, y: focus.y - PLAYER_HEIGHT / 2 }, this.arena);
       this.cameras.main.setScroll(sc.x, sc.y);
     }
     this.pinHud();
@@ -490,7 +525,7 @@ export class GameScene extends Phaser.Scene {
         brokenLightScale(g.phase === 'playing' && lightsOutActive(s.ghostCue?.lightsOut, s.ghostCueAt, nowMs), nowMs, this.ghostFlags.reduceFlash), // a Howler's scream broke the lights
       ); // never above the server's radius
       this.darkness.update({
-        me: g.phase === 'playing' ? meNow : null,
+        me: g.phase === 'playing' ? focus : null,
         pointer: this.pointerSeen ? { x: ptr.worldX, y: ptr.worldY } : null,
         facing: me?.facing ?? 1,
         ambient: resolveAmbient(st?.darkness?.ambient, room.difficulty, g.stage) * flick,
@@ -555,9 +590,11 @@ export class GameScene extends Phaser.Scene {
         // P3E step 3: a hiding place in reach (E hides) or a caught teammate in reach (HOLD E: the hold rides on the input stream, a tap sends nothing)
         const captive = ghostSt ? captiveInReach(me, ghostSt.captives, this.where) : null;
         const spot = ghostSt ? nearestSpot(me, ghostSt.spots) : null;
-        const key = onEPressed({ status: ghostSt, spot, captive: captive !== null, otherUse: false });
+        // P4 step 3: with the Revive Cell in hand next to a body, E is the revive HOLD (it rides on the input stream): a tap hides nobody and uses nothing
+        const reviving = bodyInReach(me, this.session.game?.team, this.where) !== null && carriesCell(carriedItems(st, this.session.playerId));
+        const key = onEPressed({ status: ghostSt, spot, captive: captive !== null || reviving, otherUse: false });
         if (key === 'hide') void this.session.ghostAction({ action: 'hide' });
-        else if (captive === null) {
+        else if (captive === null && !reviving) {
           const id = nearestInteractable(st, me);
           if (id) send({ kind: 'interact', targetId: id });
           else this.session.notice = { text: 'Nothing to use here.', ok: false, at: performance.now() };

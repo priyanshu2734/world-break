@@ -194,6 +194,20 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
       if (digitsOf(safe.clueIds) !== safe.code) err(`gun safe ${safe.id}: its clues do not spell its combination`);
     } else if (!stash || stashRoom(stash) !== graph.start) err(`gun ${g.id} must lie in a locker of the start room`);
   }
+  // P4 step 3: the Revive Cell. Optional for the stage's own solution (no lock needs it) but, when there, it must be REACHABLE (lying in the open on a floor of
+  // a room, never locked away: a body has only a short window), CARRYABLE next to another part (one hand) and genuine, and a stage holds at most one.
+  const openFromStart = new Set<string>([graph.start]);
+  for (const q = [graph.start]; q.length;) for (const d of rooms.get(q.shift()!)?.doors ?? []) if (!linkOf.has(d.id) && !openFromStart.has(d.to) && rooms.has(d.to)) { openFromStart.add(d.to); q.push(d.to); }
+  const cells = items.filter((i) => i.kind === 'revive_cell');
+  if (cells.length > 1) err('a stage holds at most one Revive Cell');
+  for (const c of cells) {
+    if (c.decoy === true) err(`revive cell ${c.id} cannot be a decoy`);
+    if (c.hidden) err(`revive cell ${c.id} must lie in the open (a body has only a short window)`);
+    if ((c.slots ?? ITEM_KIND_SPECS.revive_cell.defaultSlots) * 2 > ITEM_LIMITS.carrySlots) err(`revive cell ${c.id} must fit in one hand, so it can be carried next to another part`);
+    standing(c.id, 'revive cell', itemRoom(c), c.x, c.y);
+    // a body has only a short window: the cell must lie where a team can get it WITHOUT SOLVING ANY LOCK (the start room, plus rooms joined to it by doors that have no lock)
+    if (!openFromStart.has(itemRoom(c))) err(`revive cell ${c.id} lies behind a lock: a team could not get it within the revive window`);
+  }
   for (const h of spec.hidingSpots ?? []) { claim(h.id, 'hiding spot'); standing(h.id, 'hiding spot', h.room, h.x, h.y); }
   for (const v of spec.ghostEvidence ?? []) {
     claim(v.id, 'evidence'); standing(v.id, 'evidence', v.room, v.x, v.y);
@@ -201,6 +215,16 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
   }
   if (!rooms.has(spec.exit.room)) err(`exit room ${spec.exit.room} does not exist`);
   return errs;
+}
+
+/**
+ * P4 step 3: a ghost stage holds exactly one Revive Cell on Easy and Intermediate (a rare chance to bring a teammate back) and none on Hardcore
+ * (a Hardcore death is final). The generator calls this when the run has a ghost.
+ */
+export function requireRevive(def: Pick<StageDef, 'items'>, difficulty: 'easy' | 'intermediate' | 'hardcore'): string[] {
+  const n = (def.items ?? []).filter((i) => i.kind === 'revive_cell').length;
+  if (difficulty === 'hardcore') return n === 0 ? [] : [`a Hardcore stage holds no Revive Cell (it holds ${n})`];
+  return n === 1 ? [] : [`a ghost stage on ${difficulty} must hold exactly one Revive Cell (it holds ${n})`];
 }
 
 /** P3E step 4: every ghost stage must hold exactly one Pulse Gun (the generator calls this when the run has a ghost). */

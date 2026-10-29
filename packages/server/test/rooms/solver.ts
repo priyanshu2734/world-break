@@ -11,7 +11,16 @@ import { digits, esc, expectOk, fetchItem, itemAct, seen, type Play } from './fl
  * typing codes, lighting switches, using doors with E. It fails loudly if anything in the stage cannot actually be done.
  * `coop` makes every other player follow through each opened door, and a two-person lock is lit by two different players at once.
  */
-export interface SolveStats { maxSlots: number; doors: number; ticks: number }
+export interface SolveStats {
+  maxSlots: number; doors: number; ticks: number;
+  /** P4 step 5: parts the solver went and picked up again from where they came to rest (after a death dropped them). */
+  recovered: number;
+  /** P4 step 5: how many times the lead player died and the next living player took over. */
+  leadChanges: number;
+}
+
+/** P4 step 5: what the solver tells a drill each time a player has just fetched a part that is needed later (the drill may kill them here). */
+export interface FetchedEvent { who: string; itemId: string; kind: string; index: number }
 
 export function newRun(players: number, runSeed = 7): { room: Room; ids: string[] } {
   const room = new Room('ABCD', 4, runSeed, { escape: true });
@@ -43,14 +52,24 @@ export function advanceTo(room: Room, ids: string[], stage: number): StageDef {
 
 const graphOf = (def: StageDef): RoomGraph => def.rooms!;
 
-export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team } = {}): SolveStats {
+export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team; /** P4 step 5: called right after a needed part was fetched (a drill kills the carrier here to prove the part can be recovered). */ onFetched?: (e: FetchedEvent) => void } = {}): SolveStats {
   const graph = graphOf(def), spec = def.escape!;
   const arenas = new Map(graph.rooms.map((r) => [r.id, r.arena]));
   const team = opts.team ? opts.team(room, (id) => arenas.get(id)!) : new Team(room, (id) => arenas.get(id)!);
   const bots = ids.map((id) => new Bot(team, id));
   const play: Play = { room, team, bots, ids, arenas };
-  const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0 };
-  const lead = bots[0]!, leadId = ids[0]!;
+  const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0, recovered: 0, leadChanges: 0 };
+  let lead = bots[0]!, leadId = ids[0]!;
+  // P4 step 5: a player may die while the stage is being solved. The dead can do nothing; the next living player takes over as lead, and any part the dead
+  // one was carrying (dropped where they fell, moved to a floor a player can reach) is gone back for. Nothing here changes a run in which nobody dies.
+  const dead = (id: string): boolean => room.deathSystem?.isDead(id) ?? false;
+  const ensureLead = (): void => {
+    if (!dead(leadId)) return;
+    const i = ids.findIndex((id) => !dead(id));
+    if (i < 0) throw new Error('everyone is dead');
+    lead = bots[i]!; leadId = ids[i]!; stats.leadChanges++;
+  };
+  let fetches = 0;
   team.tick();
 
   const roomDef = (id: string) => graph.rooms.find((r) => r.id === id)!;
@@ -58,12 +77,44 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
   const isOpen = (doorId: string) => team.state().escape!.doors.find((d) => d.id === doorId)?.open === true;
   const slots = (who: string) => { const n = team.state().items?.players.find((x) => x.id === who)?.slotsUsed ?? 0; stats.maxSlots = Math.max(stats.maxSlots, n); if (n > 2) throw new Error(`${who} holds ${n} parts (limit 2)`); };
 
+  /**
+   * P4 step 5: make sure the lead holds part `itemId` (fetched earlier, perhaps by somebody who has died since). Waits for a dying player's drops to finish, then
+   * walks to where the part RESTS (the item system moved it to a reachable floor) and picks it up again, within the 2 slots.
+   */
+  const ensureHeld = (itemId: string): void => {
+    ensureLead();
+    const get = () => team.state().items!.items.find((i) => i.id === itemId);
+    for (let guard = 0; guard < 120; guard++) {
+      const c = get();
+      if (c && c.state === 'carried' && c.carrierId && dead(c.carrierId)) team.idle(5); else break; // still being put down
+    }
+    const it = get();
+    if (!it) throw new Error(`${itemId} is gone`);
+    if (it.state === 'carried' && it.carrierId === leadId) return;
+    if (it.state !== 'in_world') throw new Error(`${itemId} is ${it.state} (carried by ${it.carrierId ?? 'nobody'}) and cannot be recovered`);
+    travel(lead, leadId, it.roomId ?? graph.start);
+    lead.goTo(it.x, it.y);
+    expectOk(fetchItem(play, lead, itemId, leadId));
+    slots(leadId);
+    stats.recovered++;
+  };
+  /** A part has just been fetched for later: tell a drill (it may kill the carrier), then make sure somebody alive holds it. */
+  const fetched = (who: string, itemId: string, kind: string): void => {
+    opts.onFetched?.({ who, itemId, kind, index: fetches++ });
+    ensureLead();
+    ensureHeld(itemId);
+  };
+
   /** Use a door (E) and wait to arrive. */
   const through = (b: Bot, who: string, doorId: string) => {
     const d = doorBox(doorId);
-    b.goTo(d.x, d.y);
-    expectOk(esc(play, { action: 'use_door', doorId }, who));
-    team.waitForRoom(who, d.to, 40);
+    // P4 step 5: up to three tries. A survival reflex (the hiding bot) can pull a player away from the door while the crossing is still under way, which a
+    // person would simply retry; the first try is the only one in a run with no interruption, so those runs are unchanged.
+    for (let attempt = 0; attempt < 3 && (attempt === 0 || team.roomOf(who) !== d.to); attempt++) { // the first try always runs (a gate leads to the room you are already in)
+      b.goTo(d.x, d.y);
+      expectOk(esc(play, { action: 'use_door', doorId }, who));
+      team.waitForRoom(who, d.to, 40);
+    }
     if (team.roomOf(who) !== d.to) throw new Error(`${who} did not reach ${d.to}`);
     stats.doors++;
   };
@@ -122,14 +173,15 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
 
   const reached = new Set<string>([graph.start]);
   for (const { l, gate, nearDoor, near, far } of ordered) {
+    ensureLead();
     const lock = l.lock;
     // everything on the near side: the rooms reachable from the start without this door, and (for a gate) only left of it
     const nearRooms = new Set(reached);
     const gateX = gate ? doorBox(nearDoor).x : null;
     const before = gate ? { room: near, x: gateX! } : null;
     travel(lead, leadId, near);
-    if (lock.type === 'key_item') fetchPart(lead, leadId, 'access_key', nearRooms, before);
-    else if (lock.type === 'power') fetchPart(lead, leadId, 'battery', nearRooms, before);
+    if (lock.type === 'key_item') fetched(leadId, fetchPart(lead, leadId, 'access_key', nearRooms, before), 'access_key');
+    else if (lock.type === 'power') fetched(leadId, fetchPart(lead, leadId, 'battery', nearRooms, before), 'battery');
     else if (lock.type === 'code') {
       lock.clueIds.forEach((id) => readClue(lead, leadId, id));
       const code = lock.clueIds.map((id) => digits(note.get(id)!)).join('');
@@ -138,8 +190,9 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
       expectOk(esc(play, { action: 'enter_code', targetId: k.id, code }, leadId));
     } else if (lock.type === 'two_person') {
       const a = spec.switches.find((x) => x.id === lock.switchA)!, b = spec.switches.find((x) => x.id === lock.switchB)!;
-      if (opts.coop && bots.length > 1) {
-        const other = bots[1]!, otherId = ids[1]!;
+      const mateIdx = ids.findIndex((id) => id !== leadId && !dead(id));
+      if (opts.coop && mateIdx >= 0) {
+        const other = bots[mateIdx]!, otherId = ids[mateIdx]!;
         travel(other, otherId, a.room);
         lead.goTo(a.x, a.y); other.goTo(b.x, b.y);
         expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
@@ -158,13 +211,15 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
       expectOk(esc(play, { action: 'enter_code', targetId: s.id, code: combo }, leadId));
       expectOk(fetchItem(play, lead, s.contains!, leadId));
       slots(leadId);
+      fetched(leadId, s.contains!, 'safe_item');
     }
     travel(lead, leadId, near);
     through(lead, leadId, nearDoor);
     reached.add(far.room);
     for (const id of l.doors) if (!isOpen(id)) throw new Error(`door ${id} is not open after its lock was solved`);
     if (opts.coop) {
-      for (let i = 1; i < bots.length; i++) {
+      for (let i = 0; i < bots.length; i++) {
+        if (ids[i] === leadId || dead(ids[i]!)) continue; // the dead stay where they fell
         if (gate) through(bots[i]!, ids[i]!, nearDoor); // a gate is crossed by every player, within the one room
         else travel(bots[i]!, ids[i]!, team.roomOf(leadId)!);
         slots(ids[i]!);
@@ -172,6 +227,7 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
     }
   }
   // the exit
+  ensureLead();
   travel(lead, leadId, spec.exit.room);
   lead.goTo(spec.exit.x, spec.exit.y);
   team.idle(3);

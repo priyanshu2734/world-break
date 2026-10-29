@@ -77,6 +77,10 @@ interface Actor {
   lit: boolean;
   /** P3E step 5: destroyed by the gun: its next appearance is farther from every player. */
   afterDestroy: boolean;
+  /** P4: SATIATED (quiet, standing where it killed) until this tick; 0 = not satiated. */
+  satiatedUntil: number;
+  /** P4: consecutive ticks of contact with each touching player. A hunting ghost kills at `host.contactTicks`. */
+  contact: Map<string, number>;
 }
 
 const DOOR_REACH = 80;
@@ -131,7 +135,7 @@ export class GhostSystem {
       this.actors.push({
         id: `g${index}`, kind, rng, state: 'dormant', since: 0, until: first, warnedAt: -1, blockedLogged: false, present: false,
         room: cfg.graph.start, x: 0, y: 0, angle: 0, path: [], pathGoal: -1, lastPlan: -100, goal: null, patrol: null,
-        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false, inspect: null, scream: null, screamReadyAt: 0, lit: false, afterDestroy: false,
+        searchUntil: 0, searchStart: 0, searchBase: 0, opening: null, activeUntil: 0, quarry: null, lastSeen: null, chain: [], lastHeardLog: -1000, moving: false, inspect: null, scream: null, screamReadyAt: 0, lit: false, afterDestroy: false, satiatedUntil: 0, contact: new Map(),
       });
     });
   }
@@ -291,9 +295,9 @@ export class GhostSystem {
     if (!GHOST_TRANSITIONS[a.state].includes(to)) throw new Error(`ghost ${a.id}: illegal transition ${a.state} -> ${to}`);
     const t = this.host.tick;
     this.record({ tick: t, ghost: a.id, kind: 'state', from: a.state, to, cause });
-    a.state = to; a.since = t;
+    a.state = to; a.since = t; a.contact.clear();
     if (to === 'warning') { a.until = t + GHOST_LIMITS.warningTicks; a.warnedAt = t; a.present = false; a.blockedLogged = false; }
-    if (to === 'respawn') { a.present = false; a.until = t + this.tuning.intervalTicks; this.clearPlan(a); a.quarry = null; a.lastSeen = null; a.chain = []; a.opening = null; }
+    if (to === 'respawn') { a.satiatedUntil = 0; a.present = false; a.until = t + this.tuning.intervalTicks; this.clearPlan(a); a.quarry = null; a.lastSeen = null; a.chain = []; a.opening = null; }
     if (to === 'stunned') { this.clearPlan(a); a.opening = null; }
   }
   private clearPlan(a: Actor): void { a.path = []; a.pathGoal = -1; a.goal = null; a.patrol = null; a.searchUntil = 0; a.inspect = null; }
@@ -389,7 +393,7 @@ export class GhostSystem {
     const room = this.roomsById.get(n.room);
     if (!room) return;
     for (const a of this.actors) {
-      if (!a.present || a.room !== n.room || a.state !== 'roaming') continue;
+      if (!a.present || a.room !== n.room || a.state !== 'roaming' || a.satiatedUntil > this.host.tick) continue;
       const open = this.host.openDoorIds();
       const clear = hasLineOfSight({ x: a.x, y: a.y }, { x: n.x, y: n.y }, this.occ(n.room, open));
       const range = this.tuning.hearingPx * n.loud * (clear ? 1 : NOISE_MUFFLE);
@@ -426,6 +430,12 @@ export class GhostSystem {
 
   // ------------------------------------------------------------------------------------------------------- acting
   private act(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>, t: number): void {
+    // P4: a satiated ghost (it has just killed) stands quiet: it neither senses, hunts, moves nor kills until the time is up
+    if (a.satiatedUntil !== 0) {
+      if (t < a.satiatedUntil) return;
+      a.satiatedUntil = 0;
+      a.activeUntil = Math.max(a.activeUntil, t + GHOST_LIMITS.roamTicks / 2);
+    }
     // a door being opened is finished (or cancelled) first
     if (a.opening) this.progressDoor(a, open, t);
 
@@ -450,7 +460,7 @@ export class GhostSystem {
       }
     }
 
-    if (a.state === 'hunting' && this.catchCheck(a, players, t)) return;
+    if (a.state === 'hunting' && this.catchCheck(a, players, open, t)) return;
     // the Howler's scream: it stands still for the wind-up (the telegraph), then lets go
     if (a.scream) {
       if (t < a.scream.until) return;
@@ -503,7 +513,7 @@ export class GhostSystem {
     this.fx.push({ kind: 'scream', ghost: a.kind, room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
     this.host.onScream?.({ ghost: a.id, room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
     for (const o of this.actors) {
-      if (o === a || !o.present || o.state !== 'roaming') continue;
+      if (o === a || !o.present || o.state !== 'roaming' || o.satiatedUntil > t) continue;
       o.goal = { room: a.room, x: a.x, y: a.y }; o.searchUntil = 0; o.patrol = null; o.path = []; o.pathGoal = -1;
     }
     if (best) {
@@ -513,22 +523,50 @@ export class GhostSystem {
     }
   }
 
-  private catchCheck(a: Actor, players: GhostPlayer[], t: number): boolean {
+  /**
+   * The touch. A HUNTING ghost kills a player it stays in contact with (within `catchRadius`). With the P4 hooks (`host.contactTicks`) the contact must
+   * last that many consecutive ticks AND have a clear line (a thin wall between the two is not a touch); a hidden player is never touched; and the host
+   * may refuse the kill (`canKill`: spawn grace, revive protection, already dead). Without the hooks it is the pre-P4 rule: one tick of contact.
+   */
+  private catchCheck(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>, t: number): boolean {
+    const need = this.host.contactTicks ?? 0;
+    const touching = new Set<string>();
     for (const p of players) {
       if (!p.connected || p.captured || p.hidden || p.roomId !== a.room) continue;
       if (Math.hypot(a.x - p.x, a.y - (p.y - BODY_CENTRE)) > GHOST_LIMITS.catchRadius) continue;
-      this.catchPlayer(a, p, t, `Caught ${p.name} at tick ${t}`);
+      if (this.host.canKill && !this.host.canKill(p.id)) continue;
+      if (need > 0) {
+        if (!hasLineOfSight({ x: a.x, y: a.y }, { x: p.x, y: p.y - BODY_CENTRE }, this.occ(a.room, open))) continue;
+        touching.add(p.id);
+        const n = (a.contact.get(p.id) ?? 0) + 1;
+        a.contact.set(p.id, n);
+        if (n < need) continue;
+      }
+      this.catchPlayer(a, p, t, `Caught ${p.name} at tick ${t}`, 'touch');
       return true;
     }
+    for (const id of [...a.contact.keys()]) if (!touching.has(id)) a.contact.delete(id);
     return false;
   }
 
-  /** Record a catch with the reasons that led to it, send the ghost away (RESPAWN) and tell the host. */
-  private catchPlayer(a: Actor, p: GhostPlayer, t: number, last: string): void {
-    const ev: GhostCatchEvent = { tick: t, ghost: a.id, kind: 'catch', player: p.id, room: a.room, x: r2(p.x), y: r2(p.y), because: [...a.chain, last] };
+  /** Record a kill with the reasons that led to it, tell the host, and either satiate the ghost (P4) or send it away (RESPAWN, the pre-P4 rule). */
+  private catchPlayer(a: Actor, p: GhostPlayer, t: number, last: string, how: 'touch' | 'opened_spot' = 'touch'): void {
+    const ev: GhostCatchEvent = { tick: t, ghost: a.id, kind: 'catch', player: p.id, room: a.room, x: r2(p.x), y: r2(p.y), because: [...a.chain, last], how, ghostKind: a.kind };
     this.record(ev);
-    this.go(a, 'respawn', `it caught ${p.name}`);
+    const sat = this.host.satiatedTicks ?? 0;
+    if (sat > 0) this.satiate(a, p, t, sat);
+    else this.go(a, 'respawn', `it caught ${p.name}`);
     this.host.onCatch?.(p.id, ev);
+  }
+
+  /** P4: after a kill the ghost stays where it is, quiet, for `ticks`, so the team can recover what the dead player dropped. It then roams on. */
+  private satiate(a: Actor, p: GhostPlayer, t: number, ticks: number): void {
+    if (a.state === 'hunting') this.go(a, 'roaming', `it killed ${p.name} and is satiated`);
+    a.contact.clear();
+    this.clearPlan(a); a.opening = null; a.quarry = null; a.lastSeen = null; a.scream = null; a.chain = [];
+    a.satiatedUntil = t + ticks;
+    a.activeUntil = a.satiatedUntil + GHOST_LIMITS.roamTicks / 2;
+    this.record({ tick: t, ghost: a.id, kind: 'satiated', player: p.id, until: a.satiatedUntil });
   }
 
   // ------------------------------------------------------------------------------------------------------- hiding places
@@ -553,7 +591,7 @@ export class GhostSystem {
     if (t < ins.until) return;
     a.inspect = null;
     const who = this.host.occupantsOf?.(spot.id) ?? ((): string[] => { const one = this.host.occupantOf?.(spot.id) ?? null; return one ? [one] : []; })();
-    const found = players.filter((x) => who.includes(x.id) && x.connected && !x.captured);
+    const found = players.filter((x) => who.includes(x.id) && x.connected && !x.captured && (this.host.canKill?.(x.id) ?? true));
     const p = found[0];
     const base = { tick: t, ghost: a.id, kind: 'inspect' as const, spot: spot.id, room: spot.room };
     if (p) {
@@ -561,9 +599,9 @@ export class GhostSystem {
       // a spot holds up to two: the ghost opens it and catches everyone inside
       for (const q of found.slice(1)) {
         this.record({ ...base, phase: 'found', player: q.id, text: `Opened the ${spot.kind} and found ${q.name}` });
-        this.host.onCatch?.(q.id, { tick: t, ghost: a.id, kind: 'catch', player: q.id, room: a.room, x: r2(q.x), y: r2(q.y), because: [...a.chain, `Opened the ${spot.kind} and found ${q.name} at tick ${t}`] });
+        this.host.onCatch?.(q.id, { tick: t, ghost: a.id, kind: 'catch', player: q.id, room: a.room, x: r2(q.x), y: r2(q.y), because: [...a.chain, `Opened the ${spot.kind} and found ${q.name} at tick ${t}`], how: 'opened_spot', ghostKind: a.kind });
       }
-      this.catchPlayer(a, p, t, `Opened the ${spot.kind} and found ${p.name} at tick ${t}`);
+      this.catchPlayer(a, p, t, `Opened the ${spot.kind} and found ${p.name} at tick ${t}`, 'opened_spot');
       return;
     }
     this.record({ ...base, phase: 'empty', text: `Opened the ${spot.kind}: nobody there` });

@@ -15,6 +15,10 @@ class FakeCatchHost implements CatchHost {
   watchedIds = new Set<string>();
   seeAll = true;
   blind = new Set<string>();
+  /** P4: who the ghost killed (the host's death system is faked as a set). */
+  killed: string[] = [];
+  dead(id: string): boolean { return this.killed.includes(id); }
+  kill(id: string): void { if (!this.killed.includes(id)) this.killed.push(id); }
   who(): CatchWho[] { return this.players; }
   freeze(id: string, on: boolean): void { if (on) this.frozen.add(id); else this.frozen.delete(id); }
   dropOne(id: string): number { const n = this.carrying.get(id) ?? 0; if (n === 0) return 0; this.carrying.set(id, n - 1); this.dropped.push(id); return n - 1; }
@@ -91,142 +95,43 @@ describe('P3E hiding', () => {
     expect(host.frozen.has('a')).toBe(false);
     expect(sys.occupantOf('r0_h0')).toBeNull();
   });
-  it('a disconnected or unknown player cannot hide; a caught one cannot', () => {
-    const { sys } = setup([who('a', 500, { connected: false }), who('b', 500)]);
+  it('a disconnected or unknown player cannot hide; a dead one cannot (P4: was "caught")', () => {
+    const { host, sys } = setup([who('a', 500, { connected: false }), who('b', 500)]);
     expect(sys.hide('a').ok).toBe(false);
     expect(sys.hide('zzz').ok).toBe(false);
     sys.capture('b');
-    expect(sys.hide('b')).toEqual({ ok: false, error: 'You are caught. Wait for a teammate.' });
+    expect(host.dead('b')).toBe(true);
+    expect(sys.hide('b')).toEqual({ ok: false, error: 'You are dead. You can only watch.' });
   });
 });
 
-describe('P3E the catch', () => {
-  it('a caught player is frozen where they are, and a caught hider is taken out of the spot', () => {
+describe('P4 the kill seam (was the P3E capture)', () => {
+  it('a kill takes a hider out of the spot, freezes nothing itself and tells the host once', () => {
     const { host, sys } = setup([who('a', 500), who('b', 800)]);
     sys.hide('a');
     sys.capture('a');
-    expect(sys.isCaptured('a')).toBe(true);
+    expect(host.killed).toEqual(['a']);
     expect(sys.isHidden('a')).toBe(false);
     expect(sys.occupantOf('r0_h0')).toBeNull();
-    expect(host.frozen.has('a')).toBe(true);
-    expect(host.said.at(-1)?.tone).toBe('bad');
-    expect(sys.releaseIn('a')).toBe(CATCH_LIMITS.captureTicks);
+    expect(sys.isCaptured('a')).toBe(true); // name kept: "not a target any more"
+    expect(sys.capturedCount).toBe(1);
   });
-  it('carried parts fall one at a time until none are left', () => {
-    const { host, sys, run } = setup([who('a', 300)]);
-    host.carrying.set('a', 2);
-    sys.capture('a');
-    run(1);
-    expect(host.carrying.get('a')).toBe(1);
-    run(1);
-    expect(host.carrying.get('a')).toBe(0);
-    run(5);
-    expect(host.dropped).toEqual(['a', 'a']);
-  });
-  it('a drop that never works does not loop forever', () => {
-    const { host, sys, run } = setup([who('a', 300)]);
-    let calls = 0;
-    host.dropOne = () => { calls++; return 1; };
-    sys.capture('a');
-    run(200);
-    expect(calls).toBeLessThanOrEqual(81);
-  });
-  it('capturing twice is one capture', () => {
+  it('killing twice (two ghosts on one tick) is one death', () => {
     const { host, sys } = setup([who('a', 300)]);
     sys.capture('a');
-    const said = host.said.length;
     sys.capture('a');
-    expect(host.said.length).toBe(said);
+    expect(host.killed).toEqual(['a']);
   });
-});
-
-describe('P3E rescue', () => {
-  const holding = (id: string, x: number, o: Partial<CatchWho> = {}) => who(id, x, { use: true, ...o });
-  it('a teammate holding E in reach frees them after rescueTicks, at no cost, where they stand', () => {
-    const { host, sys, run } = setup([who('a', 300), holding('b', 340)]);
-    sys.capture('a');
-    run(CATCH_LIMITS.rescueTicks - 1);
-    expect(sys.isCaptured('a')).toBe(true);
-    expect(sys.rescueProgress('a')!).toBeGreaterThan(0.9);
-    run(1);
-    expect(sys.isCaptured('a')).toBe(false);
-    expect(host.frozen.has('a')).toBe(false);
-    expect(host.penalties).toEqual([]);
-    expect(host.entries).toEqual([]);
-    expect(host.said.at(-1)?.text).toBe('B freed A.');
-  });
-  it('letting go loses progress; a brief slip does not undo everything', () => {
-    const { host, sys, run } = setup([who('a', 300), holding('b', 340)]);
-    sys.capture('a');
-    run(40);
-    host.players[1] = who('b', 340); // let go
-    run(5);
-    const p = sys.rescueProgress('a')!;
-    expect(p).toBeCloseTo((40 - 5 * CATCH_LIMITS.rescueDecayPerTick) / CATCH_LIMITS.rescueTicks, 5);
-    run(100);
-    expect(sys.rescueProgress('a')).toBe(0);
-    expect(sys.isCaptured('a')).toBe(true);
-  });
-  it('out of reach, in another room, hiding, caught, or disconnected rescuers do nothing', () => {
-    for (const rescuer of [holding('b', 300 + CATCH_LIMITS.rescueRange + 1), holding('b', 320, { room: 'r1' }), holding('b', 320, { y: 400 }), holding('b', 320, { connected: false })]) {
-      const { sys, run } = setup([who('a', 300), rescuer]);
-      sys.capture('a');
-      run(CATCH_LIMITS.rescueTicks + 5);
-      expect(sys.isCaptured('a')).toBe(true);
-    }
-    const hiding = setup([who('a', 300), holding('b', 500)]);
-    hiding.sys.hide('b');
-    hiding.host.players[0] = who('a', 520);
-    hiding.sys.capture('a');
-    hiding.run(CATCH_LIMITS.rescueTicks + 5);
-    expect(hiding.sys.isCaptured('a')).toBe(true);
-    const both = setup([who('a', 300), holding('b', 320)]);
-    both.sys.capture('a'); both.sys.capture('b');
-    both.run(CATCH_LIMITS.rescueTicks + 5);
-    expect(both.sys.isCaptured('a')).toBe(true);
-  });
-  it('two rescuers do not make it faster (one counts)', () => {
-    const { sys, run } = setup([who('a', 300), holding('b', 320), holding('c', 330)]);
-    sys.capture('a');
-    run(CATCH_LIMITS.rescueTicks - 1);
-    expect(sys.isCaptured('a')).toBe(true);
-  });
-  it('the caught player cannot free themselves by holding E', () => {
-    const { sys, run } = setup([who('a', 300, { use: true })]);
-    sys.capture('a');
-    run(CATCH_LIMITS.rescueTicks + 5);
-    expect(sys.isCaptured('a')).toBe(true);
-  });
-});
-
-describe('P3E release', () => {
-  it('after captureTicks with nobody helping: placed at the entry, a score penalty, unfrozen, nobody eliminated', () => {
-    const { host, sys, run } = setup([who('a', 300), who('b', 900)]);
-    sys.capture('a');
-    run(CATCH_LIMITS.captureTicks - 1);
-    expect(sys.isCaptured('a')).toBe(true);
-    expect(host.penalties).toEqual([]);
-    run(1);
-    expect(sys.isCaptured('a')).toBe(false);
-    expect(host.entries).toEqual(['a']);
-    expect(host.penalties).toEqual([CATCH_LIMITS.releasePenalty]);
-    expect(host.frozen.has('a')).toBe(false);
-    expect(host.said.at(-1)?.tone).toBe('warn');
-    run(CATCH_LIMITS.captureTicks * 2);
-    expect(host.penalties.length).toBe(1); // charged once
-  });
-  it('the capture is about 45 seconds and a rescue takes a few seconds (the brief)', () => {
-    expect(CATCH_LIMITS.captureTicks / 20).toBe(45);
-    expect(CATCH_LIMITS.rescueTicks / 20).toBeGreaterThanOrEqual(3);
-    expect(CATCH_LIMITS.rescueTicks / 20).toBeLessThanOrEqual(5);
+  it('an unknown player is never killed', () => {
+    const { host, sys } = setup([who('a', 300)]);
+    sys.capture('zzz');
+    expect(host.killed).toEqual([]);
   });
   it('a player who leaves the run is forgotten, and does not break the others', () => {
-    const { sys, run } = setup([who('a', 300), who('b', 900)]);
-    sys.capture('a'); sys.capture('b');
-    sys.remove('a');
-    run(CATCH_LIMITS.captureTicks);
-    expect(sys.isCaptured('a')).toBe(false);
-    expect(sys.isCaptured('b')).toBe(false);
+    const { sys } = setup([who('a', 300), who('b', 500)]);
+    sys.hide('b');
+    sys.remove('b');
+    expect(sys.isHidden('b')).toBe(false);
   });
 });
 
@@ -243,17 +148,11 @@ describe('P3E what a player is told', () => {
     host.blind.add('b');
     expect(sys.statusFor('b').spots).toEqual([]); // not in view: not told
   });
-  it('your own timer, and the caught teammates you can see with the rescue progress', () => {
-    const { host, sys, run } = setup([who('a', 300), who('b', 340, { use: true }), who('c', 900, { room: 'r1' })]);
+  it('the interim caught/captives fields are always empty now (the schema keeps them; the death messages tell who is dead)', () => {
+    const { sys } = setup([who('a', 300), who('b', 340, { use: true })]);
     sys.capture('a');
-    run(40);
-    expect(sys.statusFor('a').caught?.secondsLeft).toBe(Math.ceil((CATCH_LIMITS.captureTicks - 40) / 20));
-    expect(sys.statusFor('a').captives).toEqual([]);
-    expect(sys.statusFor('b').captives).toEqual([{ id: 'a', progress: 0.5 }]);
-    expect(sys.statusFor('b').caught).toBeNull();
-    expect(sys.statusFor('c').captives).toEqual([]); // another room
-    host.blind.add('b');
-    expect(sys.statusFor('b').captives).toEqual([]);   // out of view
+    expect(sys.statusFor('a').caught).toBeNull();
+    expect(sys.statusFor('b').captives).toEqual([]);
   });
   it('an unknown viewer is told nothing', () => {
     const { sys } = setup([who('a', 300)]);

@@ -6,6 +6,7 @@ import { digits, esc, expectOk, fetchItem, itemAct, type Play } from '../rooms/f
 import { solveStage } from '../rooms/solver';
 import type { Difficulty } from '@wb/shared';
 import { HideTeam } from './hideTeam';
+import { drill } from '../death/drill';
 
 /** Start a real ghost run at `stage`, take the Pulse Gun out of its locker or safe (reading the notes for a safe), then clear the stage carrying it. */
 function playStage(stage: number, seed: number, players: number, difficulty: Difficulty = 'easy'): { carried: boolean; maxSlots: number; hides: number; catches: number } {
@@ -15,6 +16,9 @@ function playStage(stage: number, seed: number, players: number, difficulty: Dif
   ids.forEach((id, i) => { room.join(id, `P${i}`); if (i > 0) room.setReady(id, true); });
   if (!room.start('p0').ok) throw new Error('start refused');
   for (let i = 0; i < 20 && room.phase !== 'playing'; i++) room.tick();
+  // P4: these tests measure that the GENERATED STAGE can be solved with the gun in hand, not that a bot survives the ghost (touch is death now;
+  // test/death/solve.test.ts is where the lethal solver lives). The ghost is still present, hunts and is seen: it just cannot kill here.
+  room.deathSystem?.setLethal(false);
   const rec = room.stageRecord!;
   const def = generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty });
   if (def.id !== rec.defId) throw new Error('room and generator disagree');
@@ -68,7 +72,10 @@ describe('generated ghost stages stay solvable with the gun in hand', () => {
   });
 });
 
-describe('the ghost is really present while the stage is solved (a bot that hides when warned)', () => {
+// P4 step 5: the ghost is present and hunts here but cannot kill (touch is death now, see `setLethal` above): these tests prove the GENERATED STAGE can be solved with
+// the ghost around, so they are exact (every seed). What a bot does when the ghost can really kill is in test/death/solve.test.ts, strict where it is a property of the
+// stage and labelled STATISTICAL where it is a property of the bot.
+describe('the ghost is present while the stage is solved (a bot that hides when warned; the ghost cannot kill here)', () => {
   type Outcome = { cleared: boolean; error: string; maxSlots: number; hides: number; catches: number };
   const attempt = (stage: number, seed: number, players: number, difficulty: Difficulty): Outcome => {
     try {
@@ -86,21 +93,31 @@ describe('the ghost is really present while the stage is solved (a bot that hide
     for (const o of outs) expect(o.maxSlots).toBeLessThanOrEqual(2);
     expect(outs.reduce((n, o) => n + o.hides, 0)).toBeGreaterThan(0);
   }, LONG);
-  it('stage 29 (the longest stages, five rooms): the bot clears most seeds; a failure only ever follows a catch that dropped a part (a bot is not a person)', () => {
+  it('stage 29 (the longest stages, five rooms): one player clears every seed within 2 slots', () => {
     const outs = SEEDS.map((seed) => attempt(29, seed, 1, 'easy'));
-    expect(outs.filter((o) => o.cleared).length).toBeGreaterThanOrEqual(7);
+    expect(outs.filter((o) => o.cleared).length).toBe(SEEDS.length);
     for (const o of outs) if (o.cleared) expect(o.maxSlots).toBeLessThanOrEqual(2);
   }, LONG);
-  it('hardcore stage 12 (the Howler alone): one player clears most seeds', () => {
+  it('hardcore stage 12 (the Howler alone): one player clears every seed', () => {
     const outs = SEEDS.map((seed) => attempt(12, seed, 1, 'hardcore'));
-    expect(outs.filter((o) => o.cleared).length).toBeGreaterThanOrEqual(8);
+    expect(outs.filter((o) => o.cleared).length).toBe(SEEDS.length);
   }, LONG);
-  it('two to four players clear a stage with two ghosts around', () => {
+  it('two to four players clear a stage with two ghosts around: the stage always (no reflex), and with the hiding reflex every failure is the reflex itself, never the stage', () => {
     for (const n of [2, 3, 4]) {
+      // the STAGE: the same seeds, the same ghosts, no hiding reflex: every run clears within 2 slots (exact)
+      for (const seed of [1, 2, 3, 4, 5]) {
+        const r = drill(20, seed, n, {});
+        expect(r.cleared, `n=${n} seed=${seed}: ${r.error}`).toBe(true);
+        expect(r.maxSlots).toBeLessThanOrEqual(2);
+      }
+      // the BOT: the hiding reflex waits for a threat to pass, and a ghost that cannot kill (this harness) never gives up hunting a hidden player, so with three or four
+      // bots the reflex can time out. Exact classification: a run clears, or ends in that timeout; nothing else.
       const outs = [1, 2, 3, 4, 5].map((seed) => attempt(20, seed, n, 'easy'));
-      // the interim capture drops what a caught player carries and the bot does not go back for it, so more players means more lost keys
-      expect(outs.filter((o) => o.cleared).length).toBeGreaterThanOrEqual(n === 2 ? 4 : 2);
-      for (const o of outs) if (o.cleared) expect(o.maxSlots).toBeLessThanOrEqual(2);
+      for (const o of outs) {
+        if (o.cleared) expect(o.maxSlots).toBeLessThanOrEqual(2);
+        else expect(o.error).toBe('hide detour did not end');
+      }
+      expect(outs.filter((o) => o.cleared).length).toBeGreaterThan(0); // the reflex does not stop every run
     }
   }, LONG);
 });
