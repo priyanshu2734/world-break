@@ -391,10 +391,11 @@ export class GameScene extends Phaser.Scene {
     const isHost = room.hostId === s.playerId;
     if (this.keys.R.isDown && isHost && g.phase === 'playing') this.resetHeld += delta; else this.resetHeld = 0;
     // --- P3A: host presses N on the result panel to start the next stage (the game is endless) ---
-    if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'stage_complete') void s.nextStage();
+    const nPressed = Phaser.Input.Keyboard.JustDown(this.stageKeys.N);
+    if (nPressed && isHost && room.phase === 'stage_complete') void s.nextStage();
     // --- P4 step 4: after a team wipe the host presses N on the review to try the same stage again (the server decides who may) ---
     if (room.phase !== 'death_review' && s.review) s.review = null;
-    if (Phaser.Input.Keyboard.JustDown(this.stageKeys.N) && isHost && room.phase === 'death_review') void s.retryStage();
+    if (nPressed && isHost && room.phase === 'death_review') void s.retryStage();
     this.reviewView.update({ phase: room.phase, review: s.review, isHost, stage: g.stage });
     this.holdBar.width = Math.min(1, this.resetHeld / RESET_HOLD_MS) * 200;
     if (this.resetHeld >= RESET_HOLD_MS) { this.resetHeld = 0; void s.resetArena(); }
