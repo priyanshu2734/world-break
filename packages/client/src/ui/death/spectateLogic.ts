@@ -1,4 +1,5 @@
 import { SERVER_TICK_HZ, SPECTATE, type DeathState, type GhostPing } from '@wb/shared';
+import { roomText } from './flyLogic';
 
 /** P4 step 2: pure helpers for the spectator view. No Phaser here, so they are unit-tested. */
 
@@ -33,11 +34,11 @@ export function pingWaitMs(d: DeathState, nowMs: number, arrivedMs: number): num
 export function watchLine(d: DeathState | null | undefined, nowMs: number, arrivedMs: number): string {
   if (!isSpectating(d)) return '';
   const dd = d!;
-  if (!dd.following) return 'Nobody is left to watch.';
   const wait = pingWaitMs(dd, nowMs, arrivedMs);
   const ping = wait > 0 ? `G  ghost here (${Math.ceil(wait / 1000)} s)` : 'G  ghost here';
-  const sw = dd.watchable.length > 1 ? '   ◀ ▶  switch' : '';
-  return `Watching ${dd.following.name}${sw}   ${ping}`;
+  const room = roomText(dd.rooms, dd.cam?.room);
+  const where = dd.cam?.free ? 'Flying' : dd.following ? `Watching ${dd.following.name}` : 'Nobody is left to watch';
+  return [where, room, ping].filter((x) => x !== '').join('   ');
 }
 
 /** A left or right key press asks for the previous or next teammate (left wins a tie: nothing happens when both are pressed). */
@@ -60,4 +61,4 @@ export function activePings(pings: readonly { ping: GhostPing; at: number }[], r
 export function pingAlpha(age: number): number { return age <= 1000 ? 1 : Math.max(0, 1 - (age - 1000) / (PING_TTL_MS - 1000)); }
 
 /** Which keys a spectator uses (kept here so the hint line and the scene agree). */
-export const SPECTATE_HINT = '◀ ▶  switch teammate   G  ghost here';
+export const SPECTATE_HINT = 'WASD / arrows fly   Q E room   Z X teammate   F follow   G ghost here';

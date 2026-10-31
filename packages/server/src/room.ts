@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -164,13 +164,12 @@ export class Room {
     const e = this.engine, snapshot = this.gameSnapshot();
     if (!e || !snapshot || !e.def.escape || !e.def.rooms) return null;
     const ghosts = this.ghost?.publicGhosts();
-    // P4: a dead player watches through a living teammate's eyes and is shown the ghosts and the teammates that teammate can see, and nothing else
-    // (no items, codes, doors, safes, clues or other rooms). With nobody to watch they are shown the team list only.
+    // P4 step 6: a dead player is a free-fly spectator. They are shown every teammate and every ghost on the stage (positions and look), wherever they are, and nothing
+    // else: no items, codes, doors, safes, clues, switches or objectives, and no light to see by (they do not need one).
     if (this.death?.isDead(playerId)) {
-      const target = this.spectate?.targetOf(playerId) ?? null;
       return restrictedView(
-        { snapshot, stage: e.state(), graph: e.def.rooms, radius: target ? this.radiusIn(this.sim?.roomOf(target) ?? '') : 0, ...(ghosts ? { ghosts } : {}), ...(this.catchSys ? { hidden: this.catchSys.hiddenIds() } : {}), ...(this.death ? { lives: this.livesMap() } : {}) },
-        { eyes: target ?? '', self: null, spectator: true, ...(target && this.coneVision ? { aim: this.sim?.aimOf(target) ?? null } : {}) },
+        { snapshot, stage: e.state(), graph: e.def.rooms, radius: 0, ...(ghosts ? { ghosts } : {}), ...(this.death ? { lives: this.livesMap() } : {}) },
+        { eyes: '', self: null, spectator: true, fly: true },
       );
     }
     return restrictedView(
@@ -183,9 +182,12 @@ export class Room {
   private layoutQueue: { playerId: string; layout: RoomLayout }[] = [];
   /** P3D: the room graph of the current stage, if it has one. */
   private graph() { return this.engine?.def.rooms; }
-  private queueLayout(playerId: string, roomId: string): void {
+  private queueLayout(playerId: string, roomId: string, withDoors = true): void {
     const g = this.graph(); const r = g && roomById(g, roomId);
-    if (r) this.layoutQueue.push({ playerId, layout: layoutOf(r) });
+    if (!r) return;
+    const layout = layoutOf(r);
+    // P4 step 6: a spectator is told the walls and floors of a room and nothing about its doors
+    this.layoutQueue.push({ playerId, layout: withDoors ? layout : { ...layout, doors: [] } });
   }
   /** P3D: puts every player in the start room of a multi-room stage (or back on one arena) and queues the start room's layout for all. */
   private bindRooms(engine: StageEngine): void {
@@ -245,6 +247,14 @@ export class Room {
       roster: () => sim.senses().map((x) => ({ id: x.id, name: x.name, connected: x.connected })),
       isDead: (id) => death.isDead(id),
       isAlive: (id) => death.isAlive(id),
+      rooms: () => (engine.def.rooms ? engine.def.rooms.rooms.map((r) => r.id) : [this.sim?.arena.id ?? 'arena']),
+      bounds: (room) => {
+        const r = engine.def.rooms?.rooms.find((x) => x.id === room);
+        if (r) return { w: r.arena.width, h: r.arena.height };
+        const a = this.sim?.arena;
+        return a && (room === a.id || !engine.def.rooms) ? { w: a.width, h: a.height } : null;
+      },
+      positionOf: (id) => { const p = sim.senses().find((x) => x.id === id); return p && p.roomId ? { room: p.roomId, x: p.x, y: p.y } : null; },
     });
     this.reviveSys = new ReviveSystem({
       get tick() { return sim.tick; },
@@ -587,14 +597,13 @@ export class Room {
     const sp = this.spectate, sim = this.sim;
     if (!sp || !sim) return;
     for (const id of this.members.keys()) {
-      const t = sp.targetOf(id);
-      const room = t ? sim.roomOf(t) : null;
-      const key = t && room ? `${t}|${room}` : '';
+      const cam = sp.camOf(id);
+      const key = cam ? cam.room : '';
       const was = this.specLayouts.get(id);
       if (was === key) continue;
       this.specLayouts.set(id, key);
-      if (t && room) this.queueLayout(id, room);
-      else if (was) { const mine = sim.roomOf(id); if (mine) this.queueLayout(id, mine); } // no longer a spectator (revived): learn the walls of the room they stand in again
+      if (cam) this.queueLayout(id, cam.room, false); // the room the camera is in, walls only
+      else if (was) { const mine = sim.roomOf(id); if (mine) this.queueLayout(id, mine); } // no longer a spectator (revived): learn the walls and doors of the room they stand in again
     }
   }
 
@@ -621,6 +630,7 @@ export class Room {
       reviveLeft: body ? Math.max(0, body.reviveUntil - this.sim.tick) : 0,
       reviving: (() => { const w = this.reviveSys?.progress().find((x) => x.reviver === id); const b = w ? d.bodies().find((x) => x.id === w.body) : undefined; return w && b ? { id: b.id, name: b.name, progress: w.progress } : null; })(),
       beingRevived: this.reviveSys?.progress().find((x) => x.body === id)?.progress ?? null,
+      ...(dead && sp.camOf(id) ? { cam: sp.camOf(id)!, rooms: this.engine?.def.rooms ? this.engine.def.rooms.rooms.map((r) => r.id) : [this.sim.arena.id] } : {}),
     };
   }
 
@@ -701,19 +711,36 @@ export class Room {
     return this.spectate.request(id, req.target);
   }
 
+  /** P4 step 6: a dead player's camera keys. The server bounds it (speed, area, message rate); nothing else about the live world changes. */
+  spectateMove(id: string, move: SpectateMove): { ok: true; message: string } | { ok: false; error: string } {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    if (!this.spectate) return { ok: false, error: 'You are not dead.' };
+    return this.spectate.move(id, move);
+  }
+
+  /** P4 step 6: a dead player asks for another room of the stage. */
+  spectateRoom(id: string, req: SpectateRoom): { ok: true; message: string } | { ok: false; error: string } {
+    if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
+    if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
+    if (!this.spectate) return { ok: false, error: 'You are not dead.' };
+    return this.spectate.room(id, req.room);
+  }
+
   /** P4 step 2: "ghost here". The position is the server's: the nearest ghost in the spectator's own view. Sent to the living in that room and the other spectators. */
   spectatePing(id: string): { ok: true; message: string } | { ok: false; error: string } {
     if (this.phase !== 'playing' || !this.engine) return { ok: false, error: 'No stage is running.' };
     if (!this.members.has(id)) return { ok: false, error: 'You are not part of this run.' };
     const sp = this.spectate, d = this.death;
     if (!sp || !d) return { ok: false, error: 'You are not dead.' };
-    const target = sp.targetOf(id);
-    const eyes = target ? this.sim?.positionOf(target) : undefined;
-    const seen = [...(this.viewFor(id)?.snapshot.ghosts ?? [])].sort((a, b) => Math.hypot(a.x - (eyes?.x ?? 0), a.y - (eyes?.y ?? 0)) - Math.hypot(b.x - (eyes?.x ?? 0), b.y - (eyes?.y ?? 0)));
+    // the ghost nearest the camera (one in the camera's room first): the position is the server's, the spectator only says "here"
+    const cam = sp.camOf(id);
+    const dist = (g: { room: string; x: number; y: number }): number => (cam && g.room === cam.room ? Math.hypot(g.x - cam.x, g.y - cam.y) : 1e9 + Math.hypot(g.x, g.y));
+    const seen = [...(this.viewFor(id)?.snapshot.ghosts ?? [])].sort((a, b) => dist(a) - dist(b));
     const r = sp.ping(id, seen);
     if (!r.ok) return r;
     const sim = this.sim!;
-    const to = sim.senses().filter((x) => x.connected && (d.isAlive(x.id) ? x.roomId === r.ping.room : d.isDead(x.id) && sim.roomOf(sp.targetOf(x.id) ?? '') === r.ping.room)).map((x) => x.id);
+    const to = sim.senses().filter((x) => x.connected && (d.isAlive(x.id) ? x.roomId === r.ping.room : d.isDead(x.id) && sp.camOf(x.id)?.room === r.ping.room)).map((x) => x.id);
     this.pings.push({ to, ping: r.ping });
     if (this.pings.length > 16) this.pings.splice(0, this.pings.length - 16);
     return { ok: true, message: 'Ghost here.' };

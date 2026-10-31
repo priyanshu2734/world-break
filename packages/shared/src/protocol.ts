@@ -130,6 +130,10 @@ export interface ClientToServerEvents {
   'ghost:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P4 step 2: a dead player picks whom to watch (a teammate's id, or 'next' / 'prev'). The server decides. */
   'spectate:follow': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P4 step 6: a dead player's camera intent (which way the keys are held). The server bounds it; it never takes a position or a speed. */
+  'spectate:move': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P4 step 6: a dead player asks for another room of the stage (next, previous, or by id). */
+  'spectate:room': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P4 step 2: a dead player says "ghost here". No payload: the server uses the ghost the spectator can see. */
   'spectate:ping': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }

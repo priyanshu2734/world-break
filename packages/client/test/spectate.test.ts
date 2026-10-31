@@ -33,14 +33,16 @@ describe('P4 spectator logic (client)', () => {
     expect(headline(ds({ reviveLeft: 0 }), 0, 0)).toBe('YOU ARE DEAD.');
     expect(headline(ds({ life: 'eliminated', reviveLeft: 0 }), 0, 0)).toBe('YOU ARE OUT. Watch your team.');
   });
-  it('the watch line: whom, the keys, the ping wait; switching is offered only when there is somebody else; nobody left is said plainly', () => {
-    expect(watchLine(ds(), 0, 0)).toBe('Watching Bea   ◀ ▶  switch   G  ghost here');
-    expect(watchLine(ds({ watchable: [{ id: 'b', name: 'Bea' }] }), 0, 0)).toBe('Watching Bea   G  ghost here');
+  it('the watch line (step 6): whom they watch or that they fly, the room, the ping wait; nobody left is said plainly', () => {
+    expect(watchLine(ds(), 0, 0)).toBe('Watching Bea   G  ghost here');
     expect(watchLine(ds({ pingReadyIn: 2 * SERVER_TICK_HZ }), 0, 0)).toContain('ghost here (2 s)');
-    expect(watchLine(ds({ following: null, watchable: [] }), 0, 0)).toBe('Nobody is left to watch.');
+    expect(watchLine(ds({ cam: { room: 'r1', x: 5, y: 5, free: true }, rooms: ['r0', 'r1', 'r2'] }), 0, 0)).toBe('Flying   Room 2 of 3   G  ghost here');
+    expect(watchLine(ds({ cam: { room: 'r0', x: 5, y: 5, free: false }, rooms: ['r0', 'r1'] }), 0, 0)).toBe('Watching Bea   Room 1 of 2   G  ghost here');
+    expect(watchLine(ds({ following: null, watchable: [] }), 0, 0)).toBe('Nobody is left to watch   G  ghost here');
     expect(watchLine(ds({ life: 'alive' }), 0, 0)).toBe('');
     expect(pingWaitMs(ds({ pingReadyIn: SERVER_TICK_HZ }), 500, 0)).toBe(500);
     expect(SPECTATE_HINT).toContain('G');
+    expect(SPECTATE_HINT).toContain('fly');
   });
   it('arrow keys: left is the previous teammate, right the next, both or neither nothing', () => {
     expect(switchKey(true, false)).toBe('prev');

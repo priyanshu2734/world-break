@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, visionRadius, quantiseAim, type ActiveAbilityId, type GamePlayer, type InputIntent, type StageAction } from '@wb/shared';
+import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, visionRadius, quantiseAim, stepSpectatorCam, type ActiveAbilityId, type GamePlayer, type InputIntent, type SpectateMove, type SpectatorCam, type StageAction } from '@wb/shared';
 import type { Session } from '../net/session';
 import { INTERP_DELAY_MS } from '../net/interpolation';
 import { LocalPredictor } from '../sim/prediction';
@@ -30,8 +30,10 @@ import { HideView } from '../ui/ghost/HideView';
 import { GunView } from '../ui/ghost/GunView';
 import { SpectateView } from '../ui/death/SpectateView';
 import { ReviewView } from '../ui/death/ReviewView';
+import { stageKeyAction } from '../ui/death/stageKeys';
 import { bodyInReach, carriesCell, lifeMark, reviveLine } from '../ui/death/reviveLogic';
-import { SPECTATE_HINT, eyesId, isSpectating, switchKey } from '../ui/death/spectateLogic';
+import { SPECTATE_HINT, isSpectating } from '../ui/death/spectateLogic';
+import { FLY_HINT, focusFor, intentFromKeys, reconcileCam, shouldSendIntent, whereLines } from '../ui/death/flyLogic';
 import { canFire, carriesGun, cooldownFraction, cooldownLeftMs } from '../ui/ghost/gunLogic';
 import { canMove, captiveInReach, modeOf, nearestSpot, onEPressed, shouldShowTip } from '../ui/ghost/hideLogic';
 
@@ -114,6 +116,11 @@ export class GameScene extends Phaser.Scene {
   private gunView!: GunView;
   /** P4 step 2: the dead player's overlay (headline, whom they watch, the keys) and the ghost-here pings. */
   private spectateView!: SpectateView;
+  /** P4 step 6: the free-fly camera this client draws (predicted; the server's copy bounds it), the last intent sent, and the death state it was last reconciled with. */
+  private specCam: SpectatorCam | null = null;
+  private specSent: { move: SpectateMove; atMs: number } | null = null;
+  private specSeenAt = 0;
+  private specKeys!: Record<'W' | 'A' | 'S' | 'D' | 'Q' | 'E' | 'Z' | 'X' | 'F', Phaser.Input.Keyboard.Key>;
   /** P4 step 4: the wipe banner and the death review. */
   private reviewView!: ReviewView;
   /** performance.now() of the last dissolve of a ghost I saw (for the "it is coming back" line). */
@@ -147,6 +154,7 @@ export class GameScene extends Phaser.Scene {
     this.cursors = kb.createCursorKeys();
     this.keys = kb.addKeys('W,A,D,SPACE,R') as typeof this.keys;
     this.stageKeys = kb.addKeys('E,Q,N,G,F,H,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
+    this.specKeys = kb.addKeys('W,A,S,D,Q,E,Z,X,F') as typeof this.specKeys; // a spectator's own key objects (a press read here is not eaten by the stage keys)
     this.stageView = new StageView(this);
     this.stageHud = new StageHud(this);
     this.abilityHud = new AbilityHud(this);
@@ -342,12 +350,18 @@ export class GameScene extends Phaser.Scene {
     // P4 step 2: a dead player is a spectator. They are not simulated (no prediction), and the camera, the room and the light follow the teammate they watch.
     if (g.phase !== 'playing' && s.death) s.death = null; // a new stage (briefing) or a result: the old life no longer applies
     const spectating = isSpectating(s.death);
-    const eyes = spectating ? g.players.find((p) => p.id === eyesId(s.death)) : undefined;
+    // P4 step 6: a free-fly spectator. The camera is predicted here with the SAME step the server bounds it with, and snapped to the server's when they disagree.
+    if (!spectating) { this.specCam = null; this.specSent = null; }
+    if (spectating && s.death) {
+      if (this.specSeenAt !== s.deathAt) { this.specSeenAt = s.deathAt; this.specCam = reconcileCam(this.specCam, s.death.cam); }
+      else if (!this.specCam && s.death.cam) this.specCam = s.death.cam;
+    }
+    const fly = spectating ? focusFor({ death: s.death, players: g.players, cam: this.specCam }) : null;
     const me = spectating ? undefined : g.players.find((p) => p.id === s.playerId);
 
     // --- P3B/P3D: the arena the local player is simulated in. The server may switch arena between stages (the Ability Lab), and on a
     //     multi-room stage each player is in one room, whose layout the server sent to this player only. Unknown yet = wait, do not guess. ---
-    const myRoom = spectating ? eyes?.roomId : me?.roomId;
+    const myRoom = spectating ? fly?.room : me?.roomId;
     if (this.layoutSeenSeq !== s.layoutSeq) { // a door just moved the player (a gate moves them within one room): predict afresh from the server's position
       this.layoutSeenSeq = s.layoutSeq;
       if (myRoom !== undefined) this.predictor.stop();
@@ -391,11 +405,13 @@ export class GameScene extends Phaser.Scene {
     const isHost = room.hostId === s.playerId;
     if (this.keys.R.isDown && isHost && g.phase === 'playing') this.resetHeld += delta; else this.resetHeld = 0;
     // --- P3A: host presses N on the result panel to start the next stage (the game is endless) ---
-    const nPressed = Phaser.Input.Keyboard.JustDown(this.stageKeys.N);
-    if (nPressed && isHost && room.phase === 'stage_complete') void s.nextStage();
     // --- P4 step 4: after a team wipe the host presses N on the review to try the same stage again (the server decides who may) ---
     if (room.phase !== 'death_review' && s.review) s.review = null;
-    if (nPressed && isHost && room.phase === 'death_review') void s.retryStage();
+    // the N key is read ONCE (a JustDown check consumes the press) and decides between the next stage and a retry
+    const nPressed = Phaser.Input.Keyboard.JustDown(this.stageKeys.N);
+    const nAction = stageKeyAction({ nPressed, isHost, phase: room.phase });
+    if (nAction === 'next') void s.nextStage();
+    else if (nAction === 'retry') void s.retryStage();
     this.reviewView.update({ phase: room.phase, review: s.review, isHost, stage: g.stage });
     this.holdBar.width = Math.min(1, this.resetHeld / RESET_HOLD_MS) * 200;
     if (this.resetHeld >= RESET_HOLD_MS) { this.resetHeld = 0; void s.resetArena(); }
@@ -455,7 +471,7 @@ export class GameScene extends Phaser.Scene {
     const itemLine = stHere && meNow ? itemPrompt(stHere, s.playerId, meNow) : null;
     const goal = goalLine(st?.escape, myRoom, carriedItems(st, s.playerId).map((i) => i.kind), s.notes.length);
     this.escapeView.update(myRoom, st?.escape, st?.tick ?? 0, this.escapeNearest, g.phase === 'playing' && !this.pad.isOpen && !itemLine, s.notes, goal);
-    const keysText = spectating ? SPECTATE_HINT : st?.escape ? `${ESCAPE_KEYS_HINT}  Shift sneak  M mute ghost` : this.defaultHint;
+    const keysText = spectating ? FLY_HINT : st?.escape ? `${ESCAPE_KEYS_HINT}  Shift sneak  M mute ghost` : this.defaultHint;
     if (this.hint.text !== keysText) this.hint.setText(keysText);
     this.pad.update(g.phase === 'playing' ? meNow : null);
     this.stageView.update(stHere ?? EMPTY_STAGE, g.tick, stHere ? meNow : null);
@@ -487,15 +503,25 @@ export class GameScene extends Phaser.Scene {
       otherPrompt: !!itemLine || this.escapeNearest !== null, now: nowMs,
     });
     this.spectateView.update({ death: s.death, arrivedMs: s.deathAt, pings: s.ghostPings, room: myRoom, nowMs });
+    // P4 step 6: who is in which room, for a spectator only
+    this.spectateView.setWhere(spectating && s.death ? whereLines({ selfId: s.playerId, players: g.players, ghosts: g.ghosts ?? [], rooms: s.death.rooms, camRoom: myRoom }) : []);
     // P4 step 3: the revive prompt for a carrier next to a body, the bar while holding, and what a body is told
     const carried = st?.items ? carriedItems(st, s.playerId) : [];
     const nearBody = !spectating && me ? bodyInReach(meNow ?? me, g.team, this.where) : null;
     this.spectateView.setRevive(reviveLine(s.death, nearBody, carriesCell(carried)));
-    // P4 step 2: a spectator's keys. Read before the stage keys (which consume key presses); the server decides everything.
-    if (spectating && g.phase === 'playing') {
-      const J = Phaser.Input.Keyboard.JustDown;
-      const sw = switchKey(J(this.cursors.left), J(this.cursors.right));
-      if (sw) void s.spectateFollow(sw);
+    // P4 step 6: a spectator's keys. Read before the stage keys (which consume key presses); the server decides and bounds everything.
+    if (spectating && g.phase === 'playing' && s.death) {
+      const J = Phaser.Input.Keyboard.JustDown, K = this.specKeys, C = this.cursors;
+      const intent = intentFromKeys({ left: K.A.isDown || C.left.isDown, right: K.D.isDown || C.right.isDown, up: K.W.isDown || C.up.isDown, down: K.S.isDown || C.down.isDown });
+      if (shouldSendIntent(this.specSent, intent, nowMs)) { s.spectateMove(intent.x, intent.y); this.specSent = { move: intent, atMs: nowMs }; }
+      if ((intent.x !== 0 || intent.y !== 0) && fly) this.specCam = { room: fly.room ?? this.specCam?.room ?? '', x: fly.x, y: fly.y, free: true }; // moving frees the camera at once, here too
+      const bounds = this.arena ? { w: this.arena.width, h: this.arena.height } : null;
+      if (this.specCam?.free && bounds) this.specCam = stepSpectatorCam(this.specCam, intent, Math.min(delta, 100) / 1000, bounds);
+      if (J(K.Q)) void s.spectateRoom('prev');
+      if (J(K.E)) void s.spectateRoom('next');
+      if (J(K.Z)) void s.spectateFollow('prev');
+      if (J(K.X)) void s.spectateFollow('next');
+      if (J(K.F)) { void s.spectateFollow(s.death.following?.id ?? 'next'); this.specCam = null; }
       if (J(this.stageKeys.G)) void s.spectatePing();
     }
     const ptrG = this.input.activePointer;
@@ -512,13 +538,13 @@ export class GameScene extends Phaser.Scene {
     this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
 
     // --- P3D: the camera follows the local player inside the room (a room no bigger than the screen never scrolls) ---
-    const focus = meNow ?? (eyes ? (sampled.get(eyes.id) ?? eyes) : null); // a spectator's camera is on the teammate they watch
+    const focus = meNow ?? (fly ? { x: fly.x, y: fly.y } : null); // a spectator's camera: where it flies, or on the teammate they watch
     if (focus) {
       const sc = cameraScroll({ x: focus.x, y: focus.y - PLAYER_HEIGHT / 2 }, this.arena);
       this.cameras.main.setScroll(sc.x, sc.y);
     }
     this.pinHud();
-    this.syncDarkness(this.darkCfg.enabled || !!st?.darkness);
+    this.syncDarkness(!spectating && (this.darkCfg.enabled || !!st?.darkness)); // a spectator has no flashlight: the whole room is lit
     if (this.darkness) {
       const ptr = this.input.activePointer;
       const flick = Math.min(

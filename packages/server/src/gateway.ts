@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, SpectateMoveSchema, SpectateRoomSchema, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -149,6 +149,25 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
+    // P4 step 6: the free-fly camera. Zod here (an intent of -1, 0 or 1 per axis, or a room), the bounds and the rate limit in the spectate system.
+    socket.on('spectate:move', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = SpectateMoveSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const r = rooms.get(s.roomCode)?.spectateMove(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
+    socket.on('spectate:room', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = SpectateRoomSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const r = rooms.get(s.roomCode)?.spectateRoom(s.playerId, p.data);
+      if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
     socket.on('spectate:ping', (_payload, ack) => {
       const s = sessions.get(socket.id);
       if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
@@ -238,7 +257,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
           if (sess.roomCode !== room.code) continue;
           const ds = room.deathState(sess.playerId);
           if (!ds) continue;
-          const key = JSON.stringify({ l: ds.life, f: ds.following?.id ?? null, w: ds.watchable.map((x) => x.id), p: ds.pingReadyIn > 0, r: ds.reviving ? Math.floor(ds.reviving.progress * 10) : null, b: ds.beingRevived != null ? Math.floor(ds.beingRevived * 10) : null });
+          const key = JSON.stringify({ l: ds.life, f: ds.following?.id ?? null, w: ds.watchable.map((x) => x.id), p: ds.pingReadyIn > 0, c: ds.cam ? `${ds.cam.room}|${ds.cam.free}` : null, r: ds.reviving ? Math.floor(ds.reviving.progress * 10) : null, b: ds.beingRevived != null ? Math.floor(ds.beingRevived * 10) : null });
           const last = sentLife.get(sess.playerId);
           if (last && last.key === key && ds.tick - last.tick < SERVER_TICK_HZ && ds.tick >= last.tick) continue;
           sentLife.set(sess.playerId, { key, tick: ds.tick });

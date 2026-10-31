@@ -11,7 +11,8 @@ import { requireGhostLevel, requireGun, requireRevive } from './escapeValidate';
 /** P3E step 4: from this stage the Pulse Gun is in a SAFE (a 3-digit combination found on notes in the start room); before it, in a plain locker. */
 export const GUN_SAFE_FROM_STAGE = 5;
 /** Free floor spots a room keeps after its hiding spots (the gun's locker or safe and its three notes are placed afterwards). */
-const GUN_RESERVED_FLOOR = 4;
+/** P4 step 6: hiding spots of a ghost stage lie on their own grid, half a step off the item grid. */
+const HIDE_STEP = 130, HIDE_SHIFT = 65, HIDE_CLEAR = 60;
 /** Options of the generator. `ghost: true` = the run has a ghost: every ghost stage then holds one Pulse Gun. Default (off) = exactly the earlier stages. */
 export interface GenerateOptions { ghost?: boolean; /** P3E step 5: the mode (hiding spots per room come from the tuning table). Default easy. */ difficulty?: Difficulty }
 
@@ -203,7 +204,10 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
       const s = take(room, rng, 'floor');
       const keyId = `${tag}_key_safe`;
       const clueIds = combo.split('').map((d, n) => {
-        const where = noteRoom(), c = take(where, rng, 'any'), id = `${tag}_s${n}`;
+        // P4 step 6: EVERY page of a safe lies in the safe's own room, at a random spot of it (it used to lie in the room before 30% of the time, so a team could find
+        // the pages and still have to walk back to a safe). `noteRoom()` is still called, and its answer ignored, so every later draw of the stage keeps its place.
+        noteRoom();
+        const where = room, c = take(where, rng, 'any'), id = `${tag}_s${n}`;
         clues.push({ id, room: where.id, x: c.x, y: c.y, label: `Torn page ${n + 1}`, text: COMBO_NOTE(n, d) });
         return id;
       });
@@ -223,11 +227,28 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
     ? Math.max(1, Math.min(ghostTuning(opts.difficulty ?? 'easy', stage).hidingSpotsPerRoom, Math.floor(ESCAPE_LIMITS.maxHidingSpots / plans.length)))
     : hidingSpotsForStage(stage);
   for (const p of plans) {
+    if (gunOn) {
+      // P4 step 6: with the ghost, hiding spots have their OWN positions on the floor: the item grid shifted by half a step, so they never take a slot an item needs and never lie
+      // on top of one (always at least HIDE_CLEAR from an item, and a whole step from another spot). A small room (stage 2) can therefore hold the 4 the tuning table asks for.
+      const chosen: Pt[] = [];
+      for (let h = 0; h < perRoom; h++) {
+        const free: Pt[] = [];
+        for (let x = FIRST_SPOT_X + HIDE_SHIFT; x <= p.limitX; x += HIDE_STEP) {
+          if (p.taken.some((t) => t.y === p.floorY && Math.abs(t.x - x) < HIDE_CLEAR)) continue;
+          if (chosen.some((c) => Math.abs(c.x - x) < HIDE_STEP)) continue;
+          free.push({ x, y: p.floorY });
+        }
+        if (free.length === 0) break;
+        const s = rng.pick(free);
+        chosen.push(s);
+        hidingSpots.push({ id: `${p.id}_h${h}`, room: p.id, x: s.x, y: s.y, kind: rng.pick(['closet', 'vent'] as const) });
+      }
+      continue;
+    }
     for (let h = 0; h < perRoom; h++) {
       if (spots(p, 'floor').length === 0) break;
-      if (gunOn && h > 0 && spots(p, 'floor').length <= GUN_RESERVED_FLOOR) break; // keep floor for the gun's locker and the safe's notes
       const s = take(p, rng, 'floor');
-      hidingSpots.push({ id: `${p.id}_h${h}`, room: p.id, x: s.x, y: s.y, kind: gunOn ? rng.pick(['closet', 'vent'] as const) : h % 2 === 0 ? 'closet' : 'vent' });
+      hidingSpots.push({ id: `${p.id}_h${h}`, room: p.id, x: s.x, y: s.y, kind: h % 2 === 0 ? 'closet' : 'vent' });
     }
   }
 

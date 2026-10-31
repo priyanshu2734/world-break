@@ -14,8 +14,13 @@ export class SpectateView {
   private head: Phaser.GameObjects.Text;
   private line: Phaser.GameObjects.Text;
   private rings: Phaser.GameObjects.Graphics;
+  /** P4 step 6: the list of who is in which room ([] hides it). */
+  setWhere(lines: readonly string[]): void { this.where.setText(lines.join('\n')).setVisible(lines.length > 0); }
+
   /** P4 step 3: the revive prompt and its bar. */
   private reviveText: Phaser.GameObjects.Text;
+  /** P4 step 6: where every teammate and ghost is (their room), so a spectator knows where to fly. */
+  private where: Phaser.GameObjects.Text;
   private reviveBar: Phaser.GameObjects.Graphics;
   private labels: Phaser.GameObjects.Text[] = [];
 
@@ -29,6 +34,7 @@ export class SpectateView {
     this.reviveText = scene.add.text(W / 2, H - 150, '', { ...FONT, fontSize: '18px', color: '#9ff0b0', backgroundColor: '#04140acc' })
       .setOrigin(0.5, 1).setPadding(12, 6).setDepth(104).setScrollFactor(0).setVisible(false);
     this.reviveBar = scene.add.graphics().setDepth(105).setScrollFactor(0);
+    this.where = scene.add.text(16, 120, '', { ...FONT, fontSize: '15px', color: '#cfe8ff', backgroundColor: '#04101acc', lineSpacing: 3 }).setPadding(10, 6).setDepth(104).setScrollFactor(0).setVisible(false);
   }
 
   /** P4 step 3: the revive prompt (to the carrier next to a body), the bar while holding, and the line a body sees. */
@@ -61,5 +67,5 @@ export class SpectateView {
     });
   }
 
-  destroy(): void { this.dim.destroy(); this.head.destroy(); this.line.destroy(); this.rings.destroy(); this.reviveText.destroy(); this.reviveBar.destroy(); for (const t of this.labels) t.destroy(); }
+  destroy(): void { this.dim.destroy(); this.head.destroy(); this.line.destroy(); this.rings.destroy(); this.reviveText.destroy(); this.reviveBar.destroy(); this.where.destroy(); for (const t of this.labels) t.destroy(); }
 }

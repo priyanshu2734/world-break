@@ -73,6 +73,20 @@ describe('P4 spectating through the gateway', () => {
     expect(b.pings[0]).toMatchObject({ room: q.roomId, from: 'A' });
     expect(await emit(a.s, 'spectate:ping')).toEqual({ ok: false, error: 'Too fast.' });
 
+    // P4 step 6: the free-fly camera over the socket: a bounded intent, a room, and the refusals
+    const wait = () => new Promise((res) => setTimeout(res, 150)); // the server takes one camera message per 2 ticks (0.1 s)
+    await wait();
+    expect(await emit(a.s, 'spectate:move', { x: 1, y: 0 })).toEqual({ ok: true, message: 'Camera moved.' });
+    await wait();
+    expect(await emit(a.s, 'spectate:move', { x: 5, y: 0 })).toEqual({ ok: false, error: 'Invalid request' });
+    expect(await emit(b.s, 'spectate:move', { x: 1, y: 0 })).toEqual({ ok: false, error: 'You are not dead.' });
+    await wait();
+    expect(await emit(a.s, 'spectate:room', { room: 'nowhere' })).toEqual({ ok: false, error: 'There is no such room.' });
+    await wait();
+    expect((await emit(a.s, 'spectate:room', { room: 'next' })).ok).toBe(true);
+    await until(() => a.states.some((x) => x.cam !== undefined && x.rooms !== undefined && x.cam.free));
+    expect(b.states.every((x) => x.cam === undefined)).toBe(true); // the living are never sent a camera
+
     // what the dead player's snapshot holds: no stage secrets
     await until(() => a.snaps.length > 0);
     expect(a.snaps.at(-1)!.players.length).toBeLessThanOrEqual(2);
