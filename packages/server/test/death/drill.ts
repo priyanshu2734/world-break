@@ -45,6 +45,9 @@ export interface DrillResult {
   relocated: number;
   /** Deaths by the ghost (not scripted). */
   ghostKills: number;
+  /** Doors of this stage that need a safe (a MANDATORY safe), and whether the optional gun safe is there. */
+  mandatorySafes: number;
+  gunSafe: boolean;
 }
 
 const SCRIPTED: KillCause = { how: 'touch', ghost: 'g0', ghostKind: null, because: ['scripted death (solver drill)'] };
@@ -69,7 +72,7 @@ export function drill(stage: number, seed: number, players: number, o: DrillOpti
   const alive = (): string[] => ids.filter((id) => !death.isDead(id));
   let kills = 0;
   if (plan !== 'none') for (let i = 0; i < DEATH_TABLE.spawnGraceS * 20 + 5; i++) room.tick(); // the spawn grace must be over for a kill to be allowed
-  const result: DrillResult = { cleared: false, died: false, error: '', maxSlots: 0, fetches: 0, kills: 0, recovered: 0, leadChanges: 0, relocated: 0, ghostKills: 0 };
+  const result: DrillResult = { cleared: false, died: false, error: '', maxSlots: 0, fetches: 0, kills: 0, recovered: 0, leadChanges: 0, relocated: 0, ghostKills: 0, mandatorySafes: def.escape!.links.filter((l) => l.lock.type === 'safe').length, gunSafe: def.escape!.safes.some((x) => def.items?.find((i) => i.id === x.contains)?.kind === 'pulse_gun') };
   try {
     const stats = solveStage(room, ids, def, {
       coop: players > 1,

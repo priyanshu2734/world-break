@@ -58,19 +58,19 @@ describe('P4 what a spectator is sent', () => {
     expect(secrets.length).toBeGreaterThan(3);
     for (const sct of secrets) expect(raw, `leaked ${sct}`).not.toContain(sct);
   });
-  it('they watch through the target’s eyes: the target and a teammate in view are in the snapshot, a teammate far away is not; the team list says who is dead', () => {
+  it('they are shown EVERY teammate on the stage, near or far, and the team list says who is dead (the rule of step 2, a teammate’s light, no longer limits them)', () => {
     const r = mk(3);
     at(r, 'p0', 600); at(r, 'p1', 700); at(r, 'p2', 1500);
     kill(r, 'p0');
     tick(r, 3);
     expect(r.deathState('p0')!.following!.id).toBe('p1');
     const snap = r.viewFor('p0')!.snapshot;
-    const ids = snap.players.map((p) => p.id);
-    expect(ids).toContain('p1');
-    expect(ids).not.toContain('p2');
+    expect(snap.players.map((p) => p.id).sort()).toEqual(['p0', 'p1', 'p2']); // p2 is far from p1 and still shown
     expect(snap.team!.map((t) => [t.id, t.life])).toEqual([['p0', 'downed'], ['p1', 'alive'], ['p2', 'alive']]);
+    // positions are the real ones
+    for (const p of snap.players) expect(p.x).toBe(me(r, p.id).x);
   });
-  it('a ghost is in the spectator’s message only while the target can see it', () => {
+  it('every ghost is in the spectator’s message wherever it is: next to the teammate they watch, or at the far end of the room', () => {
     const r = mk(3);
     at(r, 'p0', 600); at(r, 'p1', 700); at(r, 'p2', 1500);
     kill(r, 'p0');
@@ -78,21 +78,23 @@ describe('P4 what a spectator is sent', () => {
     ghostNear(r, 'p1', 90);
     expect(r.viewFor('p0')!.snapshot.ghosts?.map((g) => g.id)).toEqual(['g0']);
     r.ghostSystem!.placeForTest('g0', { room: roomOf(r, 'p1'), x: 2400, y: 658, angle: 0, state: 'roaming' });
-    expect(r.viewFor('p0')!.snapshot.ghosts).toBeUndefined();
+    const far = r.viewFor('p0')!.snapshot.ghosts!;
+    expect(far).toHaveLength(1);
+    expect(far[0]).toMatchObject({ id: 'g0', x: r.ghostSystem!.publicGhosts()[0]!.x, kind: r.ghostSystem!.publicGhosts()[0]!.kind, state: 'roaming' }); // position AND look
   });
-  it('with nobody left to watch, they are shown the team list and nothing else', () => {
+  it('with nobody left alive to follow, they still see every teammate and ghost, and nothing else', () => {
     const r = mk(2);
-    at(r, 'p0', 600); at(r, 'p1', 1700);
+    at(r, 'p0', 600); at(r, 'p1', 1500);
     kill(r, 'p0');
     r.deathSystem!.setLethal(false);
-    // p1 disconnects: nobody alive and connected
-    r.disconnect('p1');
+    r.disconnect('p1'); // nobody alive and connected
     tick(r, 3);
+    expect(r.deathState('p0')!.following).toBeNull();
     const v = r.viewFor('p0')!;
-    expect(v.snapshot.players).toEqual([]);
-    expect(v.snapshot.ghosts).toBeUndefined();
+    expect(v.snapshot.players.map((p) => p.id).sort()).toEqual(['p0', 'p1']);
     expect(v.snapshot.team!.length).toBe(2);
     expect(v.stage.items).toBeUndefined();
+    expect(v.stage.escape).toBeUndefined();
   });
   it('the living are unchanged: they still get their own inventory and the stage', () => {
     const r = mk(3);
@@ -104,19 +106,17 @@ describe('P4 what a spectator is sent', () => {
   });
 });
 
-describe('P4 a hidden teammate stays hidden from a spectator too', () => {
-  it('a player hiding in a spot is in nobody’s snapshot but their own, spectators included', () => {
+describe('P4 step 6: a teammate who hides is shown to a spectator at their spot (the spectator sees every teammate)', () => {
+  it('the hiding player is in the spectator’s snapshot at the spot, and the message still holds no hiding-spot data', () => {
     const r = mk(3);
-    const spot = (r as unknown as { engine: { def: { escape: { hidingSpots: { x: number }[] } } } }).engine.def.escape.hidingSpots[0]!;
+    const spot = (r as unknown as { engine: { def: { escape: { hidingSpots: { x: number; id: string }[] } } } }).engine.def.escape.hidingSpots[0]!;
     at(r, 'p0', 300); at(r, 'p1', spot.x); at(r, 'p2', spot.x + 60);
     kill(r, 'p0');
     r.deathSystem!.setLethal(false);
     expect(r.ghostAction('p1', { action: 'hide' }).ok).toBe(true);
-    // p0 is dead and watches p1 first (next in team order): p1 is the eyes, so p1 is shown; switch to p2: p1 is then hidden from p0
-    expect(r.spectateFollow('p0', { target: 'p2' }).ok).toBe(true);
-    const ids = r.viewFor('p0')!.snapshot.players.map((p) => p.id);
-    expect(ids).toContain('p2');
-    expect(ids).not.toContain('p1');
+    const v = r.viewFor('p0')!;
+    expect(v.snapshot.players.find((p) => p.id === 'p1')!.x).toBe(me(r, 'p1').x);
+    expect(JSON.stringify(v)).not.toContain(spot.id); // nothing says WHERE the spot is, or that it is one
   });
 });
 
@@ -191,14 +191,88 @@ describe('P4 the ghost-here ping through the Room', () => {
     expect(r.drainPings()).toEqual([]);
     expect(r.deathState('p0')!.pingReadyIn).toBeGreaterThan(0);
   });
-  it('refused when the target sees no ghost', () => {
+  it('the ping uses the ghost wherever it is, with the server’s position: a ghost the watched teammate cannot see can be pointed at', () => {
     const r = mk(3);
     at(r, 'p0', 600); at(r, 'p1', 700); at(r, 'p2', 1500);
     kill(r, 'p0');
     r.deathSystem!.setLethal(false);
     r.ghostSystem!.placeForTest('g0', { room: roomOf(r, 'p1'), x: 2400, y: 658, angle: 0, state: 'roaming' });
-    expect(r.spectatePing('p0')).toEqual({ ok: false, error: 'No ghost in view.' });
-    expect(r.drainPings()).toEqual([]);
+    r.drainPings();
+    expect(r.spectatePing('p0')).toEqual({ ok: true, message: 'Ghost here.' });
+    const g = r.ghostSystem!.publicGhosts()[0]!;
+    expect(r.drainPings()[0]!.ping).toMatchObject({ x: Math.round(g.x), y: Math.round(g.y), room: g.room });
+  });
+});
+
+describe('P4 step 6: the free-fly camera through the Room', () => {
+  it('the death state carries the camera and the rooms of the stage; messages move it within bounds; the living are refused', () => {
+    const r = mk(3);
+    at(r, 'p0', 600); at(r, 'p1', 700); at(r, 'p2', 1500);
+    expect(r.spectateMove('p1', { x: 1, y: 0 })).toEqual({ ok: false, error: 'You are not dead.' });
+    expect(r.spectateRoom('p1', { room: 'next' })).toEqual({ ok: false, error: 'You are not dead.' });
+    kill(r, 'p0'); tick(r, 3);
+    const d = r.deathState('p0')!;
+    expect(d.cam).toMatchObject({ free: false });
+    expect(d.rooms!.length).toBeGreaterThanOrEqual(1);
+    expect(DeathStateSchema.safeParse(d).success).toBe(true);
+    expect(r.deathState('p1')!.cam).toBeUndefined(); // the living have no camera
+    const x0 = d.cam!.x;
+    expect(r.spectateMove('p0', { x: 1, y: 0 }).ok).toBe(true);
+    for (let i = 0; i < 8; i++) { r.spectateMove('p0', { x: 1, y: 0 }); tick(r); }
+    const c = r.deathState('p0')!.cam!;
+    expect(c.free).toBe(true);
+    expect(c.x).toBeGreaterThan(x0);
+    expect(c.x - x0).toBeLessThanOrEqual(640 * (9 / 20) + 1); // never faster than the bound
+    expect(r.spectateRoom('p0', { room: 'nowhere' })).toEqual({ ok: false, error: 'There is no such room.' });
+  });
+  it('a spectator who flies is still refused everything else, and flying changes nothing in the live world (nobody else can tell)', () => {
+    const r = mk(3);
+    at(r, 'p0', 600); at(r, 'p1', 700); at(r, 'p2', 1500);
+    kill(r, 'p0');
+    const before = JSON.stringify(r.peekStageState()!.items);
+    const bodyX = me(r, 'p0').x;
+    for (let i = 0; i < 40; i++) { r.spectateMove('p0', { x: -1, y: -1 }); tick(r); }
+    expect(me(r, 'p0').x).toBe(bodyX); // the body stays where it fell: the camera is not the player
+    expect(JSON.stringify(r.peekStageState()!.items)).toBe(before);
+    expect(input(r, 'p0')).toBe(false);
+    expect(r.itemAction('p0', { action: 'pickup', itemId: 'x' })).toEqual({ ok: false, error: 'You are dead. You can only watch.' });
+  });
+});
+
+describe('P4 step 6: a spectator is sent the walls of the room the camera is in, never its doors', () => {
+  it('on a multi-room stage: walls and floors for the camera’s room, no doors, a new layout on every room switch; the living still get their doors', () => {
+    const r = new Room('DETH', 3, 9, { escape: true, ghost: true, startStage: 12 });
+    for (let i = 0; i < 3; i++) r.join(`p${i}`, `P${i}`);
+    r.setReady('p1', true); r.setReady('p2', true);
+    expect(r.start('p0').ok).toBe(true);
+    for (let i = 0; i < 10 && r.phase !== 'playing'; i++) r.tick();
+    const startRoom = roomOf(r, 'p0');
+    const living = r.drainLayouts().find((l) => l.playerId === 'p1')!;
+    expect(living.layout.doors.length).toBeGreaterThan(0); // the living know their doors
+    at(r, 'p0', 600); at(r, 'p1', 700); at(r, 'p2', 1100);
+    kill(r, 'p0'); tick(r, 3);
+    const first = r.drainLayouts().filter((l) => l.playerId === 'p0');
+    expect(first.length).toBeGreaterThanOrEqual(1);
+    const mine = first.at(-1)!.layout;
+    expect(mine.roomId).toBe(startRoom);
+    expect(mine.doors).toEqual([]);
+    expect(mine.arena.solids.length).toBeGreaterThan(0); // the walls and floors are there
+    const rooms = r.deathState('p0')!.rooms!;
+    expect(rooms.length).toBeGreaterThan(2);
+    // switch to the next room: its layout arrives, again without doors, and the camera is in it
+    expect(r.spectateRoom('p0', { room: 'next' }).ok).toBe(true);
+    tick(r, 3);
+    const next = r.drainLayouts().filter((l) => l.playerId === 'p0').at(-1)!;
+    expect(next.layout.roomId).toBe(rooms[(rooms.indexOf(startRoom) + 1) % rooms.length]);
+    expect(next.layout.doors).toEqual([]);
+    expect(r.deathState('p0')!.cam!.room).toBe(next.layout.roomId);
+    // a room of the stage by id works too, and so does coming back
+    tick(r, 3);
+    expect(r.spectateRoom('p0', { room: startRoom }).ok).toBe(true);
+    tick(r, 3);
+    expect(r.drainLayouts().filter((l) => l.playerId === 'p0').at(-1)!.layout.roomId).toBe(startRoom);
+    // nobody else was sent anything because of this
+    expect(r.drainLayouts().filter((l) => l.playerId !== 'p0')).toEqual([]);
   });
 });
 

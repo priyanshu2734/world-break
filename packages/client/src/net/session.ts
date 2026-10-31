@@ -167,6 +167,13 @@ export class Session {
     const r = await this.call<Ack<{ message: string }>>('spectate:follow', { target });
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
   }
+  /** P4 step 6: the camera keys (a bounded intent; the answer is not waited for). */
+  spectateMove(x: -1 | 0 | 1, y: -1 | 0 | 1): void { this.socket.emit('spectate:move', { x, y }, () => { /* the server's refusals (too fast) change nothing */ }); }
+  /** P4 step 6: another room of the stage (`next`, `prev` or an id). */
+  async spectateRoom(room: string): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('spectate:room', { room });
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
   /** P4 step 2: "ghost here". The position comes from the server; nothing but the request is sent. */
   async spectatePing(): Promise<void> {
     const r = await this.call<Ack<{ message: string }>>('spectate:ping', {});

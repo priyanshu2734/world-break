@@ -165,6 +165,26 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
       }
     }
   });
+  // P4 step 6: EVERY safe (the one a door needs, and the optional one that holds the gun) is solvable from INSIDE ITS OWN ROOM, by one player, within two slots:
+  // all its pages lie in the safe's room (so nobody finds the digits and then has to leave to open it), they spell the combination, and what it holds is one genuine
+  // part of at most one hand. A safe a door depends on (a MANDATORY safe) must hold the part that opens that door and nothing else may be needed to open it.
+  for (const s of spec.safes) {
+    if (s.clueIds.length === 0) err(`safe ${s.id} has no pages`);
+    for (const id of s.clueIds) {
+      const c = clueById.get(id);
+      if (!c) err(`safe ${s.id}: unknown page ${id}`);
+      else if (c.room !== s.room) err(`safe ${s.id}: its page ${id} lies in ${c.room}, not in the safe's own room ${s.room}`);
+    }
+    if (digitsOf(s.clueIds) !== s.code) err(`safe ${s.id}: its pages do not spell its combination`);
+    const held = items.find((i) => i.id === s.contains);
+    if (held) {
+      if (itemRoom(held) !== s.room) err(`safe ${s.id}: what it holds must be in the same room`);
+      if ((held.slots ?? ITEM_KIND_SPECS[held.kind].defaultSlots) > ITEM_LIMITS.carrySlots) err(`safe ${s.id}: what it holds does not fit in two slots`);
+      if (held.decoy === true) err(`safe ${s.id}: what it holds cannot be a decoy`);
+    }
+    const needed = spec.links.some((l) => l.lock.type === 'safe' && l.lock.safeId === s.id);
+    if (needed && (!held || (held.kind !== 'access_key' && held.kind !== 'battery'))) err(`mandatory safe ${s.id} must hold the key or part that opens its door`);
+  }
   // every safe is used by a safe lock or is a decoy that holds nothing useful; a safe that holds a key must belong to a lock
   for (const s of spec.safes) {
     if (s.contains !== undefined && !items.some((i) => i.id === s.contains)) err(`safe ${s.id} contains unknown item ${s.contains}`);

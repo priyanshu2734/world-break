@@ -9,7 +9,41 @@ export const SPECTATE = {
   pingTtlTicks: 100,
   /** How many players can be named in a spectator's list of who to follow (everyone but themselves). */
   maxTargets: MAX_PLAYERS,
+  /** P4 step 6: a free-fly spectator's camera moves at most this fast (px per second, diagonals included) and never leaves the arena of its room. */
+  camSpeed: 640,
+  /** A move intent counts for this many ticks after the last message (0.5 s); silence stops the camera. */
+  camIntentTtlTicks: 10,
+  /** The server takes at most one move or room message per this many ticks from one spectator. */
+  camMinGapTicks: 2,
+  /** A room list is never longer than this (a stage has at most this many rooms). */
+  maxRooms: 16,
 } as const;
+
+/** P4 step 6: a camera: the room it is in, where, and whether it flies free (true) or sits on the teammate being followed (false). */
+export const SpectatorCamSchema = z.object({ room: z.string().min(1).max(64), x: z.number(), y: z.number(), free: z.boolean() });
+export type SpectatorCam = z.infer<typeof SpectatorCamSchema>;
+
+/** A move intent: which way the spectator holds the keys (-1, 0 or 1 on each axis). The server never takes a speed or a position from the client. */
+export const SpectateMoveSchema = z.object({ x: z.union([z.literal(-1), z.literal(0), z.literal(1)]), y: z.union([z.literal(-1), z.literal(0), z.literal(1)]) });
+export type SpectateMove = z.infer<typeof SpectateMoveSchema>;
+
+/** A spectator asks for another room of the stage (next, previous, or one by id). */
+export const SpectateRoomSchema = z.object({ room: z.union([z.literal('next'), z.literal('prev'), z.string().min(1).max(64)]) });
+export type SpectateRoom = z.infer<typeof SpectateRoomSchema>;
+
+/**
+ * P4 step 6: one step of a free-fly camera. PURE and shared, so the server (which bounds it) and the client (which draws it without waiting for the network) compute the
+ * same thing: the intent is normalised (a diagonal is no faster than a straight line), the speed is `SPECTATE.camSpeed`, and the camera is clamped inside the arena
+ * `bounds` of its room. It passes through walls (a camera has no body) and has no exit: there is nothing here to leave through.
+ */
+export function stepSpectatorCam(cam: SpectatorCam, intent: SpectateMove, dtSec: number, bounds: { w: number; h: number }): SpectatorCam {
+  const len = Math.hypot(intent.x, intent.y);
+  const k = len > 0 ? (SPECTATE.camSpeed * Math.max(0, dtSec)) / len : 0;
+  const x = Math.min(Math.max(cam.x + intent.x * k, 0), bounds.w);
+  const y = Math.min(Math.max(cam.y + intent.y * k, 0), bounds.h);
+  return { room: cam.room, x, y, free: cam.free || len > 0 };
+}
+
 
 export const PlayerLifeSchema = z.enum(['alive', 'downed', 'eliminated']);
 
@@ -32,6 +66,10 @@ export const DeathStateSchema = z.object({
   pingReadyIn: z.number().int().min(0),
   /** For a body: ticks of the revive window left (0 once eliminated or alive). */
   reviveLeft: z.number().int().min(0),
+  /** P4 step 6 (additive, optional): where a dead player's camera is (told about once a second and when it changes room; the client predicts the rest with `stepSpectatorCam`). */
+  cam: SpectatorCamSchema.optional(),
+  /** P4 step 6 (additive, optional): the rooms of the stage, in order, for switching rooms (ids only: nothing about what is in them). */
+  rooms: z.array(z.string().max(64)).max(SPECTATE.maxRooms).optional(),
   /** P4 step 3 (additive, optional): the body a living player is reviving right now and how far along (0..1). Told to the reviver only. */
   reviving: z.object({ id: z.string(), name: z.string(), progress: z.number().min(0).max(1) }).nullable().optional(),
   /** P4 step 3 (additive, optional): how far along a teammate is in bringing THIS body back (0..1; null = nobody is). Told to the body only. */

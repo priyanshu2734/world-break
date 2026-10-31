@@ -40,6 +40,11 @@ export interface Viewer {
    * `self` must be null.
    */
   spectator?: boolean;
+  /**
+   * P4 step 6: a free-fly spectator. With `spectator` they are shown EVERY teammate and EVERY ghost on the stage (position and look, hidden teammates included) and nothing
+   * else, wherever they are and whatever the light: the camera is theirs, so no teammate's eyes limit what they see. The stage state is still blanked.
+   */
+  fly?: boolean;
 }
 export interface RestrictedView { snapshot: GameSnapshot; stage: StageState }
 
@@ -60,6 +65,12 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
   });
 
   const specBase = (): GameSnapshot => { const b: GameSnapshot = { ...snapshot }; delete b.world; delete b.ghosts; return b; }; // a spectator is told no world props and no ghost but the ones in view
+
+  // P4 step 6: a free-fly spectator is shown every teammate and every ghost of the stage, and the team list. Nothing else.
+  if (viewer.spectator && viewer.fly) {
+    const every = [...(src.ghosts ?? [])];
+    return { snapshot: { ...specBase(), players: snapshot.players, team, ...(every.length > 0 ? { ghosts: every } : {}) }, stage: blank() };
+  }
 
   // No eyes (an unknown viewer, or one outside every room): the viewer sees nothing at all, only the team list.
   if (!eyesAt || !room) {
