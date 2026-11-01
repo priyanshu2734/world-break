@@ -2,6 +2,8 @@ import {
   cloneBody, stepBody, type Arena, type GamePlayer, type InputIntent, type PlayerBody, type StageState,
 } from '@wb/shared';
 import type { Room } from '../../src/room';
+import { strictGraph as platformGraph } from '../../src/rooms/reachStrict';
+import { piecesOf } from '../../src/salvage/dropRest';
 import type { EscapeResult } from '../../src/rooms/escape';
 
 const NEUTRAL: InputIntent = { moveX: 0, jump: false };
@@ -9,7 +11,10 @@ type Rect = Arena['solids'][number];
 
 /** The whole team of a Room under test. One call to `tick` advances the real room by one server tick. */
 export class Team {
-  private seq = 0;
+  /** The number of the last input this Team sent. (P3F step 1: public, so the solver can start a later stage's Team after the numbers the room has already seen, which it drops.) */
+  seq = 0;
+  /** P3F step 1: ticks played by this Team (the solver uses it to time a lone player's run between two switches). */
+  ticks = 0;
   latest: StageState | null = null;
   readonly notes: { id: string; text: string }[] = [];
   constructor(readonly room: Room, readonly arenaOf: (roomId: string) => Arena) {}
@@ -18,6 +23,7 @@ export class Team {
   tick(inputs: Readonly<Record<string, InputIntent>> = {}): void {
     for (const p of this.room.gameSnapshot()?.players ?? []) this.room.submitInput(p.id, ++this.seq, inputs[p.id] ?? NEUTRAL);
     this.room.tick();
+    this.ticks++;
     this.latest = this.room.consumeStageState() ?? this.latest;
   }
   idle(ticks: number): void { for (let i = 0; i < ticks; i++) this.tick(); }
@@ -86,6 +92,10 @@ export class Bot {
   goTo(x: number, y: number, tol = 20, maxTicks = 3000): void {
     const tried = new Set<Rect>();
     let plan: InputIntent[] = [];
+    // P3F step 1: rooms have walls, crates, pits and ledges at many heights, so the way to a goal on another platform is PLANNED over the real platform graph (the
+    // physics-built one the validators use): the route is a list of platforms, each step a hop found by `planHop` with the real movement function. The old greedy rules
+    // below remain the fallback when the graph knows no route.
+    let routeKey = '', spotTry = 0, walkTo: number | null = null;
     for (let n = 0; n < maxTicks; n++) {
       if (this.team.room.phase !== 'playing') return; // the stage ended (cleared) while walking
       const b = this.team.body(this.id), arena = this.arena();
@@ -96,6 +106,34 @@ export class Bot {
       if (!goal) throw new Error(`no surface at (${x}, ${y}) in ${this.team.roomOf(this.id)}`);
       x = Math.min(Math.max(x, goal.x), goal.x + goal.w);
       if (b.grounded && here === goal && Math.abs(b.x - x) <= tol) { this.act(NEUTRAL); return; }
+      // (the arena is cut into pieces where a crate or wall stands on a platform: a floor with a crate on it is two floors and the crate, so crossing it is a hop)
+      const pa = piecesOf(arena).arena;
+      const hereP = b.grounded ? surfaceUnder(pa, b) : undefined;
+      const goalP = pa.solids.find((s) => Math.abs(s.y - y) < 1.5 && x >= s.x - 14 && x <= s.x + s.w + 14);
+      if (b.grounded && hereP && goalP && hereP !== goalP) {
+        const route = routeOver(pa, hereP, goalP);
+        if (route && route.length > 1) {
+          const next = route[1]!;
+          const key = `${pa.solids.indexOf(hereP)}>${pa.solids.indexOf(next)}`;
+          if (key !== routeKey) { routeKey = key; spotTry = 0; walkTo = null; }
+          // walking to a run-up spot: no planning on the way (a plan is a search of thousands of simulated jumps), only on arrival
+          if (walkTo !== null) {
+            if (Math.abs(b.x - walkTo) > 2) { this.act({ moveX: Math.max(-1, Math.min(1, (walkTo - b.x) / 13)), jump: false }); continue; }
+            walkTo = null;
+            this.act(NEUTRAL);
+            continue;
+          }
+          const hop = planHop(b, pa, next);
+          if (hop) { plan = hop; continue; }
+          // no hop from where we stand: walk to the far end of this platform (a run-up), then to its near edge, and look again from each
+          // run-up spots: a little way back from where the next platform lies (the plan may itself run up to about 900 px), kept clear of the platform's ends
+          const toward = Math.sign(next.x + next.w / 2 - (hereP.x + hereP.w / 2)) || 1;
+          const anchor = Math.min(Math.max(next.x + next.w / 2, hereP.x), hereP.x + hereP.w);
+          const lo = Math.min(hereP.x + 18, hereP.x + hereP.w / 2), hi = Math.max(hereP.x + hereP.w - 18, hereP.x + hereP.w / 2);
+          const spots = [...new Set([250, 400, 120, 520, 0, 650, -150].map((off) => Math.round(Math.min(Math.max(anchor - toward * off, lo), hi))))];
+          if (spotTry < spots.length) { walkTo = spots[spotTry++]!; continue; }
+        }
+      }
       if (!b.grounded || !here || here === goal || goal.y >= here.y) {
         // same surface, or the goal is level or below: walk toward it (walking off an edge is a fall)
         let aimX = x;
@@ -125,6 +163,19 @@ export class Bot {
       }
       plan = found;
     }
-    throw new Error(`goTo (${x}, ${y}) timed out for ${this.id}`);
+    { const b = this.team.body(this.id); throw new Error(`goTo (${x}, ${y}) timed out for ${this.id} at (${Math.round(b.x)}, ${Math.round(b.y)}) in ${this.team.roomOf(this.id)} grounded=${b.grounded} route=${routeKey}`); }
   }
+}
+
+/** The platforms from `from` to `to` over the real platform graph (breadth first, ties by index), or null. Element 0 is `from`. */
+function routeOver(arena: Arena, from: Rect, to: Rect): Rect[] | null {
+  const g = platformGraph(arena), a = arena.solids.indexOf(from), z = arena.solids.indexOf(to);
+  if (a < 0 || z < 0) return null;
+  const prev = new Map<number, number>([[a, -1]]);
+  const queue = [a];
+  for (let q = 0; q < queue.length && !prev.has(z); q++) for (const n of [...(g.edges[queue[q]!] ?? [])].sort((p, r) => p - r)) if (!prev.has(n)) { prev.set(n, queue[q]!); queue.push(n); }
+  if (!prev.has(z)) return null;
+  const out: Rect[] = [];
+  for (let c = z; c !== -1; c = prev.get(c)!) out.push(arena.solids[c]!);
+  return out.reverse();
 }

@@ -1,4 +1,7 @@
 import { ESCAPE_LIMITS, EVIDENCE_PER_TYPE, ITEM_KIND_SPECS, evidenceOwner, ghostLineupForStage, ghostPickFor, ghostSeedFor, ITEM_LIMITS, MOVE_SPEED, TICK_DT, type RoomGraph } from '@wb/shared';
+import { platformIndex } from '../salvage/reach';
+import { strictReachableFrom as reachableFrom } from './reachStrict';
+import { canonicalArena } from './arenaKey';
 import { surfaceBelow } from '../salvage/rest';
 import type { StageDef } from '../systems/stageDef';
 import type { EscapeSpec, Lock } from './escapeSpec';
@@ -277,5 +280,52 @@ export function requireGhostLevel(def: Pick<StageDef, 'rooms' | 'escape'>, stage
     if (n < EVIDENCE_PER_TYPE) errs.push(`the ${type} left ${n} pieces of evidence (needs ${EVIDENCE_PER_TYPE})`);
   }
   for (const e of spec.ghostEvidence ?? []) if (!lineup.includes(e.ghost)) errs.push(`evidence ${e.id} belongs to a ${e.ghost}, which does not run on this stage`);
+  return errs;
+}
+
+/**
+ * P3F step 1: EVERYTHING a player must reach is reachable on foot. For every room this runs the real movement function (`stepBody`, through the salvage reach graph)
+ * from where players start (the four spawn slots) and arrive (the arrival point of every door that leads into the room), and demands that
+ *   1. every start stands on a platform;
+ *   2. (a room without a gate) every start can reach every other start, so a team can walk from the west door to the east door and back;
+ *   3. everything a player has to find or use (items, lockers, clues, keypads, safes, switches, hiding spots, evidence, the exit) and every door stands on a platform
+ *      that a lone player reaches from one of those starts, with no ability, crate or help.
+ * A room with a gate (one whose doors lead back into the same room) is cut by a wall: there the starts on each side are separate by design and only (1) and (3) hold.
+ * A thing that fails this is the generator's fault, and the attempt is thrown away.
+ */
+export function requireReachable(def: Pick<StageDef, 'rooms' | 'escape' | 'items' | 'stashes'>): string[] {
+  const errs: string[] = [];
+  const graph = def.rooms;
+  if (!graph) return errs;
+  const spec = def.escape;
+  const arrivals = new Map<string, { x: number; y: number }[]>();
+  for (const r of graph.rooms) for (const d of r.doors) { const list = arrivals.get(d.to) ?? []; list.push(d.arrive); arrivals.set(d.to, list); }
+  for (const r of graph.rooms) {
+    const a = canonicalArena(r.arena), gated = r.doors.some((d) => d.to === r.id);
+    const starts = [...a.spawns, ...(arrivals.get(r.id) ?? [])].map((p) => ({ p, i: platformIndex(a, p.x, p.y) }));
+    let ok = true;
+    for (const s of starts) if (s.i < 0 || Math.abs(a.solids[s.i]!.y - s.p.y) > 1.5) { errs.push(`room ${r.id}: a start at (${s.p.x}, ${s.p.y}) stands on nothing`); ok = false; }
+    if (!ok) continue;
+    const reach = new Set<number>();
+    for (const s of starts) for (const i of reachableFrom(a, s.i)) reach.add(i);
+    if (!gated) for (const s of starts) { const own = reachableFrom(a, s.i); for (const o of starts) if (!own.has(o.i)) errs.push(`room ${r.id}: a player starting at (${s.p.x}, ${s.p.y}) cannot reach (${o.p.x}, ${o.p.y})`); }
+    const check = (what: string, id: string, x: number, y: number) => {
+      const i = platformIndex(a, x, y);
+      if (i < 0 || !reach.has(i)) errs.push(`room ${r.id}: ${what} ${id} at (${x}, ${y}) cannot be reached on foot`);
+    };
+    for (const d of r.doors) check('door', d.id, d.x + d.w / 2, d.y + d.h);
+    const here = (room: string | undefined) => (room ?? graph.start) === r.id;
+    for (const i of def.items ?? []) if (here(i.room)) check('item', i.id, i.x, i.y);
+    for (const s of def.stashes ?? []) if (here(s.room)) check('stash', s.id, s.x, s.y);
+    if (spec) {
+      for (const c of spec.clues) if (c.room === r.id) check('clue', c.id, c.x, c.y);
+      for (const k of spec.keypads) if (k.room === r.id) check('keypad', k.id, k.x, k.y);
+      for (const s of spec.safes) if (s.room === r.id) check('safe', s.id, s.x, s.y);
+      for (const s of spec.switches) if (s.room === r.id) check('switch', s.id, s.x, s.y);
+      for (const h of spec.hidingSpots ?? []) if (h.room === r.id) check('hiding spot', h.id, h.x, h.y);
+      for (const v of spec.ghostEvidence ?? []) if (v.room === r.id) check('evidence', v.id, v.x, v.y);
+      if (spec.exit.room === r.id) check('exit', 'exit', spec.exit.x, spec.exit.y);
+    }
+  }
   return errs;
 }

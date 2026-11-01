@@ -12,3 +12,4 @@ export * from './salvage';
 export * from './rooms';
 export * from './ghost';
 export * from './death';
+export * from './variety';

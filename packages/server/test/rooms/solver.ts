@@ -22,6 +22,9 @@ export interface SolveStats {
 /** P4 step 5: what the solver tells a drill each time a player has just fetched a part that is needed later (the drill may kill them here). */
 export interface FetchedEvent { who: string; itemId: string; kind: string; index: number }
 
+/** The last input number each Room's solver Teams used. */
+const lastSeq = new WeakMap<Room, number>();
+
 export function newRun(players: number, runSeed = 7): { room: Room; ids: string[] } {
   const room = new Room('ABCD', 4, runSeed, { escape: true });
   const ids = Array.from({ length: players }, (_, i) => `p${i}`);
@@ -56,6 +59,8 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
   const graph = graphOf(def), spec = def.escape!;
   const arenas = new Map(graph.rooms.map((r) => [r.id, r.arena]));
   const team = opts.team ? opts.team(room, (id) => arenas.get(id)!) : new Team(room, (id) => arenas.get(id)!);
+  // P3F step 1: a Team made for a later stage of the same Room carries on after the input numbers the earlier ones used (the room ignores a number it has already seen)
+  team.seq = Math.max(team.seq, lastSeq.get(room) ?? 0);
   const bots = ids.map((id) => new Bot(team, id));
   const play: Play = { room, team, bots, ids, arenas };
   const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0, recovered: 0, leadChanges: 0 };
@@ -198,10 +203,19 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
         expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
         expectOk(esc(play, { action: 'press', switchId: b.id }, otherId));
       } else {
-        travel(lead, leadId, a.room); lead.goTo(a.x, a.y);
-        expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
-        lead.goTo(b.x, b.y); // a lone player runs to the second switch inside the hold time
-        expectOk(esc(play, { action: 'press', switchId: b.id }, leadId));
+        travel(lead, leadId, a.room);
+        // a lone player runs to the second switch inside the hold time. P3F step 1: a survival-reflex detour (or a longer run in a tall room) can use the time up; the player
+        // simply starts again, as a real one would (at most 6 tries, then the failure is reported)
+        for (let go = 1; ; go++) {
+          lead.goTo(a.x, a.y);
+          expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
+          const t0 = team.ticks;
+          lead.goTo(b.x, b.y);
+          const r = esc(play, { action: 'press', switchId: b.id }, leadId);
+          // the first switch holds ESCAPE_LIMITS.switchHoldTicks (120): a run that took longer (a scare in between) did not light both at once, so start again
+          if (!r.ok || team.ticks - t0 < 100 || go >= 6) { expectOk(r); break; }
+          team.idle(30);
+        }
       }
     } else {
       const s = spec.safes.find((x) => x.id === lock.safeId)!;
@@ -234,5 +248,6 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
   stats.ticks = room.gameSnapshot()?.tick ?? 0;
   if (room.phase !== 'stage_complete') throw new Error(`the stage is not cleared (phase ${room.phase})`);
   void seen;
+  lastSeq.set(room, team.seq);
   return stats;
 }

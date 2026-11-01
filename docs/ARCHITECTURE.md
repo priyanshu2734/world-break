@@ -340,3 +340,9 @@ No state machine is added and `phases.ts` is untouched. `Room.tick` sends `TEAM_
 ### P4 step 6: the free-fly spectator, safes and hiding spots
 `SpectateSystem` now owns a camera per dead player (`stepSpectatorCam`, shared with the client, is the only place a camera moves). `restrictedView` takes `spectator` + `fly`: every teammate and ghost of the stage, a blanked stage state, no doors in the layouts it sends; this REPLACES the step 2 rule that a spectator sees through a teammate's light (see the step 2 section above, superseded). New additive protocol: client `spectate:move` (an intent of -1, 0 or 1 per axis) and `spectate:room`; `DeathState` gains optional `cam` and `rooms`. The generator places a safe's pages in the safe's room and, on a ghost stage, hiding spots on a grid of their own (the tuning table's count, per room); `escapeValidate.ts` proves both. See `docs/DEATH.md`.
 
+
+## P3F step 1: room templates and height (see docs/VARIETY.md)
+* **Templates:** `shared/src/variety/` (`ROOM_TEMPLATES`, `templatesForStage`, `templateRoomFor`): 13 data-built room shapes plus the tutorial and the hall, odd/even pools so no stage repeats the previous template. `generate.ts` applies them from stage 3 (`applyTemplate`); rooms may now be up to 1040 px tall (the client camera already clamps by room height).
+* **Reach:** `server/src/rooms/reachStrict.ts` (graph with no start inside a solid), `arenaKey.ts` (shared instance per equal room), `requireReachable` in `escapeValidate.ts`.
+* **`dropRest`** cuts platforms at walls and crates (`piecesOf`, `reachablePieces`, `insideBody`); `reachablePlatforms` is unchanged.
+* **Test helpers:** `test/rooms/bot.ts` plans routes over the strict graph (`Bot.goTo`), `solver.ts` and `ghost/hideTeam.ts` follow.

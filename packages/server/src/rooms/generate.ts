@@ -1,12 +1,12 @@
 import {
-  ESCAPE_LIMITS, ITEM_LIMITS, TUTORIAL_AMBIENT_MIN, createRng, decoysForStage, deriveSeed, EVIDENCE_BY_TYPE, EVIDENCE_PER_TYPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, ghostTuning, hidingSpotsForStage, locksForStage, roomCountForStage,
-  type Difficulty, type LockType, type RoomDef, type RoomGraph, type Rng,
+  ESCAPE_LIMITS, ITEM_LIMITS, TUTORIAL_AMBIENT_MIN, createRng, decoysForStage, deriveSeed, EVIDENCE_BY_TYPE, EVIDENCE_PER_TYPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, ghostTuning, hidingSpotsForStage, locksForStage, roomCountForStage, templateRoomFor, templatesForStage,
+  type Difficulty, type DoorSite, type LockType, type RoomDef, type RoomGraph, type Rng, type Surface, type TemplateId,
 } from '@wb/shared';
 import { StageDefSchema, type StageDef } from '../systems/stageDef';
 import { validateStageDef } from '../systems/validate';
 import type { EscapeSpec, Lock } from './escapeSpec';
 import { bareEscapeStage } from './stageBase';
-import { requireGhostLevel, requireGun, requireRevive } from './escapeValidate';
+import { requireGhostLevel, requireGun, requireReachable, requireRevive } from './escapeValidate';
 
 /** P3E step 4: from this stage the Pulse Gun is in a SAFE (a 3-digit combination found on notes in the start room); before it, in a plain locker. */
 export const GUN_SAFE_FROM_STAGE = 5;
@@ -33,6 +33,8 @@ interface Solid { x: number; y: number; w: number; h: number }
 interface Plan {
   index: number; id: string; width: number; floorY: number; limitX: number;
   solids: Solid[]; platforms: Solid[]; taken: Pt[];
+  /** P3F step 1: the room's height, its template, where things may stand (template rooms only: the original rooms keep their floor grid and platform tops), and its doors and exit. */
+  height: number; template: TemplateId; surfaces?: Surface[]; west: DoorSite; east: DoorSite; exitAt: Pt;
 }
 
 const FLOOR_Y = 680;
@@ -46,17 +48,40 @@ const GATE = { wallX: 1380, wallW: 40, doorW: 40, intoAlcove: 1560, backOut: 124
 const DIGITS = '0123456789';
 const digitsOf = (rng: Rng, n: number): string => Array.from({ length: n }, () => DIGITS[rng.int(0, 9)]).join('');
 
-/** Free spots of a room: along the floor and on top of each platform. */
+/** P3F step 1: a floor-kind span holds a thing every this many px (centred in the span); a ledge holds one thing in its middle. */
+const SURFACE_STEP = 130;
+/** P3F step 1: a spot more than this far above the room's ground counts three times when a spot is picked, so high places are used often (one draw, as before). */
+const RAISED_AT = 60, RAISED_WEIGHT = 3;
+
+/** The places a thing may stand on a template room's surfaces. `floor` = the bulky things (lockers, safes, keypads, switches), `platform` = ledges and crate tops. */
+function surfaceSpots(plan: Plan, surface: 'floor' | 'platform' | 'any'): Pt[] {
+  const out: Pt[] = [];
+  for (const s of plan.surfaces ?? []) {
+    if (s.kind === 'floor' ? surface === 'platform' : surface === 'floor') continue;
+    if (s.kind === 'ledge') { out.push({ x: Math.round((s.x0 + s.x1) / 2), y: s.y }); continue; }
+    const n = Math.floor((s.x1 - s.x0) / SURFACE_STEP) + 1, start = s.x0 + (s.x1 - s.x0 - (n - 1) * SURFACE_STEP) / 2;
+    for (let k = 0; k < n; k++) out.push({ x: Math.round(start + k * SURFACE_STEP), y: s.y });
+  }
+  return out;
+}
+/** The same list with the raised spots repeated, so a uniform pick favours height. Original rooms are returned as they are. */
+const weighted = (plan: Plan, list: readonly Pt[]): Pt[] =>
+  plan.surfaces === undefined ? [...list] : list.flatMap((s) => (s.y < plan.floorY - RAISED_AT ? Array.from({ length: RAISED_WEIGHT }, () => s) : [s]));
+
+/** Free spots of a room: along the floor and on top of each platform (a template room: on its surfaces). */
 function spots(plan: Plan, surface: 'floor' | 'platform' | 'any'): Pt[] {
   const out: Pt[] = [];
-  if (surface !== 'platform') for (let x = FIRST_SPOT_X; x <= plan.limitX; x += 130) out.push({ x, y: plan.floorY });
-  if (surface !== 'floor') for (const p of plan.platforms) out.push({ x: Math.round(p.x + p.w / 2), y: p.y });
+  if (plan.surfaces !== undefined) out.push(...surfaceSpots(plan, surface));
+  else {
+    if (surface !== 'platform') for (let x = FIRST_SPOT_X; x <= plan.limitX; x += 130) out.push({ x, y: plan.floorY });
+    if (surface !== 'floor') for (const p of plan.platforms) out.push({ x: Math.round(p.x + p.w / 2), y: p.y });
+  }
   return out.filter((s) => !plan.taken.some((t) => t.y === s.y && Math.abs(t.x - s.x) < SPOT_GAP));
 }
 function take(plan: Plan, rng: Rng, surface: 'floor' | 'platform' | 'any', keep?: (s: Pt) => boolean): Pt {
   const c = spots(plan, surface).filter((s) => keep?.(s) ?? true);
   if (c.length === 0) throw new Error(`room ${plan.id}: no free ${surface} spot`);
-  const s = rng.pick(c);
+  const s = rng.pick(weighted(plan, c));
   plan.taken.push(s);
   return s;
 }
@@ -78,7 +103,10 @@ function planRoom(rng: Rng, stage: number, prefix: string, index: number, single
   }
   solids.push(...platforms);
   if (single) solids.push({ x: GATE.wallX, y: 0, w: GATE.wallW, h: FLOOR_Y }); // the wall the gate is set into: floor to ceiling
-  return { index, id, width, floorY: FLOOR_Y, limitX, solids, platforms, taken: [] };
+  return {
+    index, id, width, floorY: FLOOR_Y, limitX, solids, platforms, taken: [], height: HEIGHT, template: 'hall',
+    west: { x: 60, y: FLOOR_Y, arrive: { x: 200, y: FLOOR_Y } }, east: { x: width - 80, y: FLOOR_Y, arrive: { x: width - 180, y: FLOOR_Y } }, exitAt: { x: width - 300, y: FLOOR_Y },
+  };
 }
 
 const NOISE_NOTES = [
@@ -91,6 +119,26 @@ const CODE_NOTE = (d: string) => `A scorched log. Only these survive: ${d.split(
 const HALF_NOTE = (d: string, i: number) => `Scorched log, page ${i === 0 ? 'one' : 'two'}: ${d.split('').join(' ')}.`;
 const COMBO_NOTE = (n: number, d: string) => `Torn page: the ${['first', 'second', 'third'][n]} number of the safe is ${d}.`;
 
+/** The grid hiding spots may stand on: the item grid shifted by half a step (the original rooms: the floor; a template room: every floor-kind surface). */
+function hideGrid(p: Plan): Pt[] {
+  if (p.surfaces === undefined) {
+    const out: Pt[] = [];
+    for (let x = FIRST_SPOT_X + HIDE_SHIFT; x <= p.limitX; x += HIDE_STEP) out.push({ x, y: p.floorY });
+    return out;
+  }
+  return surfaceSpots(p, 'floor').map((c) => ({ x: c.x + HIDE_SHIFT, y: c.y })).filter((c) => (p.surfaces ?? []).some((s) => s.kind === 'floor' && s.y === c.y && c.x >= s.x0 && c.x <= s.x1));
+}
+
+/** P3F step 1: make room `p` a template room (a pure function of `(stage, seed, room index)`; the `hall` template keeps the original plan). */
+function applyTemplate(p: Plan, id: TemplateId, stage: number, seed: number): void {
+  p.template = id;
+  const room = templateRoomFor(stage, seed, p.index, id);
+  if (room === null) return;
+  p.width = room.width; p.height = room.height; p.floorY = room.floorY; p.limitX = room.width - 460;
+  p.solids = room.solids; p.platforms = []; p.surfaces = room.surfaces; p.taken = [];
+  p.west = room.west; p.east = room.east; p.exitAt = room.exit;
+}
+
 /** The result of one attempt. */
 /** One attempt (exported for the tests, which prove the first attempt of every tested stage and seed is valid). */
 export function attemptEscapeStage(stage: number, seed: number, tryNo: number, opts: GenerateOptions = {}): StageDef {
@@ -99,6 +147,10 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
   const single = count === 1;
   const prefix = `e${stage}_${(deriveSeed(seed, 'id', stage) >>> 0).toString(36).slice(0, 5)}`;
   const plans = Array.from({ length: count }, (_, i) => planRoom(rng, stage, prefix, i, single));
+  // P3F step 1: from stage 3 each room takes the shape of a template (`shared/src/variety`). The original room plan above is still drawn (its draws are kept, so every later
+  // draw of the stage stays where it was) and is used as it is by the `hall` rooms; a template room is built from its OWN generator, derived from the seed, so no draw of the
+  // main generator is spent on it.
+  if (!single) templatesForStage(stage, seed, count).forEach((id, i) => applyTemplate(plans[i]!, id, stage, seed));
 
   // ---- doors and links
   const doors: Record<string, RoomDef['doors']> = {};
@@ -115,8 +167,8 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
   } else {
     for (let i = 0; i + 1 < count; i++) {
       const a = plans[i]!, b = plans[i + 1]!;
-      doors[a.id]!.push({ id: `${a.id}_e`, x: a.width - 80, y: FLOOR_Y - 100, w: 40, h: 100, to: b.id, arrive: { x: 200, y: FLOOR_Y } });
-      doors[b.id]!.push({ id: `${b.id}_w`, x: 60, y: FLOOR_Y - 100, w: 40, h: 100, to: a.id, arrive: { x: a.width - 180, y: FLOOR_Y } });
+      doors[a.id]!.push({ id: `${a.id}_e`, x: a.east.x, y: a.east.y - 100, w: 40, h: 100, to: b.id, arrive: { ...b.west.arrive } });
+      doors[b.id]!.push({ id: `${b.id}_w`, x: b.west.x, y: b.west.y - 100, w: 40, h: 100, to: a.id, arrive: { ...a.east.arrive } });
       linkDoors.push([`${a.id}_e`, `${b.id}_w`]);
     }
   }
@@ -195,8 +247,11 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
       noise();
       lock = { type, keypadId: `${tag}_pad`, code, clueIds };
     } else if (type === 'two_person') {
-      const a = take(room, rng, 'floor');
-      const b = take(room, rng, 'floor', (s) => Math.abs(s.x - a.x) >= 260 && Math.abs(s.x - a.x) <= 800);
+      // P3F step 1: in a template room the two switches stand on ONE surface (one height), so one player can run from the first to the second inside the hold time
+      // (the validator's walking-time bound). The first switch is only drawn from spots that have such a partner; the original rooms keep their draws exactly.
+      const partner = (s: Pt, o: Pt) => Math.abs(s.x - o.x) >= 260 && Math.abs(s.x - o.x) <= 800 && (room.surfaces === undefined || s.y === o.y);
+      const a = take(room, rng, 'floor', room.surfaces === undefined ? undefined : (s) => spots(room, 'floor').some((o) => o !== s && partner(s, o)));
+      const b = take(room, rng, 'floor', (s) => partner(s, a));
       switches.push({ id: `${tag}_swa`, room: room.id, x: a.x, y: a.y }, { id: `${tag}_swb`, room: room.id, x: b.x, y: b.y });
       lock = { type, switchA: `${tag}_swa`, switchB: `${tag}_swb` };
     } else {
@@ -230,16 +285,12 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
     if (gunOn) {
       // P4 step 6: with the ghost, hiding spots have their OWN positions on the floor: the item grid shifted by half a step, so they never take a slot an item needs and never lie
       // on top of one (always at least HIDE_CLEAR from an item, and a whole step from another spot). A small room (stage 2) can therefore hold the 4 the tuning table asks for.
+      // P3F step 1: a template room offers the shifted grid of EVERY floor-kind surface (raised ones too), and the clearances are measured on one surface (one height) at a time.
       const chosen: Pt[] = [];
       for (let h = 0; h < perRoom; h++) {
-        const free: Pt[] = [];
-        for (let x = FIRST_SPOT_X + HIDE_SHIFT; x <= p.limitX; x += HIDE_STEP) {
-          if (p.taken.some((t) => t.y === p.floorY && Math.abs(t.x - x) < HIDE_CLEAR)) continue;
-          if (chosen.some((c) => Math.abs(c.x - x) < HIDE_STEP)) continue;
-          free.push({ x, y: p.floorY });
-        }
+        const free: Pt[] = hideGrid(p).filter((c) => !p.taken.some((t) => t.y === c.y && Math.abs(t.x - c.x) < HIDE_CLEAR) && !chosen.some((o) => o.y === c.y && Math.abs(o.x - c.x) < HIDE_STEP));
         if (free.length === 0) break;
-        const s = rng.pick(free);
+        const s = rng.pick(weighted(p, free));
         chosen.push(s);
         hidingSpots.push({ id: `${p.id}_h${h}`, room: p.id, x: s.x, y: s.y, kind: rng.pick(['closet', 'vent'] as const) });
       }
@@ -301,11 +352,11 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
 
   // ---- the exit: in the alcove behind the gate, or in the last room
   const last = plans[count - 1]!;
-  const exit = single ? { room: last.id, x: GATE.exitX, y: FLOOR_Y } : { room: last.id, x: last.width - 300, y: FLOOR_Y };
+  const exit = single ? { room: last.id, x: GATE.exitX, y: FLOOR_Y } : { room: last.id, x: last.exitAt.x, y: last.exitAt.y };
 
   const rooms: RoomDef[] = plans.map((p) => ({
     id: p.id,
-    arena: { id: p.id, name: `Room ${p.index + 1}`, width: p.width, height: HEIGHT, solids: p.solids, spawns: [300, 350, 400, 450].map((x) => ({ x, y: FLOOR_Y })) },
+    arena: { id: p.id, name: `Room ${p.index + 1}`, width: p.width, height: p.height, solids: p.solids, spawns: [300, 350, 400, 450].map((x) => ({ x, y: p.floorY })) },
     doors: doors[p.id]!,
   }));
   const graph: RoomGraph = { start: plans[0]!.id, rooms };
@@ -332,6 +383,7 @@ export function generateEscapeStageDetailed(stage: number, seed: number, opts: G
       const def = attemptEscapeStage(stage, seed, tryNo, opts);
       const start = def.rooms!.rooms.find((r) => r.id === def.rooms!.start)!.arena;
       const errs = validateStageDef(def, start);
+      errs.push(...requireReachable(def));
       if (opts.ghost === true && ghostPresentOnStage(stage)) errs.push(...requireGun(def), ...requireGhostLevel(def, stage, seed), ...requireRevive(def, opts.difficulty ?? 'easy'));
       if (errs.length === 0) return { def, attempts: tryNo + 1 };
       lastError = errs.join('; ');
