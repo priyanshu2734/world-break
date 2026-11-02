@@ -6,7 +6,8 @@ export type EscapeUse =
   | { kind: 'keypad'; id: string; length: number; solved: boolean; lockedUntilTick: number | null; x: number; y: number; halfW: number }
   | { kind: 'safe'; id: string; length: number; opened: boolean; lockedUntilTick: number | null; x: number; y: number; halfW: number }
   | { kind: 'clue'; id: string; label: string; x: number; y: number; halfW: number }
-  | { kind: 'switch'; id: string; active: boolean; x: number; y: number; halfW: number };
+  | { kind: 'switch'; id: string; active: boolean; x: number; y: number; halfW: number }
+  | { kind: 'evidence'; id: string; examined: boolean; x: number; y: number; halfW: number };
 
 /** Everything E can touch in `room`. Doorway positions come from the room layout the server sent; the rest from the public escape state. */
 export function usablesIn(room: string, es: EscapePublic | undefined, layout: RoomLayout | undefined): EscapeUse[] {
@@ -20,6 +21,7 @@ export function usablesIn(room: string, es: EscapePublic | undefined, layout: Ro
   for (const s of es.safes) if (s.room === room) out.push({ kind: 'safe', id: s.id, length: s.length, opened: s.opened, lockedUntilTick: s.lockedUntilTick, x: s.x, y: s.y, halfW: 0 });
   for (const c of es.clues) if (c.room === room) out.push({ kind: 'clue', id: c.id, label: c.label, x: c.x, y: c.y, halfW: 0 });
   for (const s of es.switches) if (s.room === room) out.push({ kind: 'switch', id: s.id, active: s.active, x: s.x, y: s.y, halfW: 0 });
+  for (const v of es.evidence ?? []) if (v.room === room) out.push({ kind: 'evidence', id: v.id, examined: v.examined, x: v.x, y: v.y, halfW: 0 });
   return out;
 }
 
@@ -46,15 +48,17 @@ export function usePrompt(u: EscapeUse, tick: number): string | null {
       return u.lockedUntilTick !== null && u.lockedUntilTick > tick ? 'The safe is locked out for a moment' : 'E  open the safe';
     case 'clue': return 'E  read';
     case 'switch': return u.active ? 'The switch is lit' : 'E  press the switch';
+    case 'evidence': return u.examined ? 'E  look again (already in the journal)' : 'E  examine the traces';
   }
 }
 
 /** The intent E sends for a thing, or null when it opens the code pad / does nothing. */
-export function useIntent(u: EscapeUse): { action: 'use_door'; doorId: string } | { action: 'read'; clueId: string } | { action: 'press'; switchId: string } | null {
+export function useIntent(u: EscapeUse): { action: 'use_door'; doorId: string } | { action: 'read'; clueId: string } | { action: 'press'; switchId: string } | { action: 'examine'; evidenceId: string } | null {
   switch (u.kind) {
     case 'door': return { action: 'use_door', doorId: u.id };
     case 'clue': return { action: 'read', clueId: u.id };
     case 'switch': return { action: 'press', switchId: u.id };
+    case 'evidence': return { action: 'examine', evidenceId: u.id };
     default: return null;
   }
 }
@@ -97,7 +101,7 @@ export function addNote(notes: { id: string; text: string }[], note: { id: strin
 }
 
 /** The keys of an escape stage (GAMEPLAY.md section 11). Q (ping) and Tab (team panel) are placeholders until their phases. */
-export const ESCAPE_KEYS_HINT = 'A/D move   W/Space jump   E interact   G drop/swap   F use   Q ping (soon)   Tab team (soon)   Mouse: aim your light';
+export const ESCAPE_KEYS_HINT = 'A/D move   W/Space jump   E interact   G drop/swap   F use   J ghost journal   Q ping (soon)   Tab team (soon)   Mouse: aim your light';
 
 /**
  * The ONE goal line of an escape stage, from what this player's view contains (the server sends only what they can see, so this

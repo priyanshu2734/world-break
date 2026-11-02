@@ -56,6 +56,8 @@ export interface GhostHost {
    * recover what the dead player dropped. Absent or 0 = the pre-P4 rule: it leaves at once (RESPAWN).
    */
   readonly satiatedTicks?: number;
+  /** P3F step 3 (additive, optional): extra ticks added to the WARNING of a ghost of this type (a correct journal entry). Never shortens the warning. */
+  warningBonus?(kind: GhostType): number;
 }
 
 /** Everything the server logs about the ghost (for the future death review, P4). Plain data; bounded ring. */

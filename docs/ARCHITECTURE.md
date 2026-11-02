@@ -361,3 +361,8 @@ No state machine is added and `phases.ts` is untouched. `Room.tick` sends `TEAM_
 * **Validator.** `validateEscape` has a rule per type (solo-solvable from the near side, words spell what the lock needs, walking-time bounds from the real movement speed, no wall between plates or between a timed
   switch and its door: `clearRun`). The "never the same lock type on two neighbouring doors" rule covers all 13.
 * **Tests.** `puzzles.runtime`, `puzzles.generate`, `puzzles.solve` (server), `puzzles` (shared). The solver (`test/rooms/solver.ts`) plays each type from what the notes say.
+
+## P3F step 3: identify the ghost (see docs/VARIETY.md, "Identify the ghost")
+`shared/ghost`: `IDENTIFY_FROM_STAGE`, `PUBLIC_GHOST_KINDS` (+ `'unknown'`), `shownKind`, `JOURNAL`, `gunCooldown`, `EVIDENCE_LABELS`, `GHOST_COUNTERS`, `IDENTIFY_TEACH_LINE`. `shared/rooms/escape`: intents `examine` and `mark`,
+public `evidence` and `journal`. Server: `EscapeRuntime` owns the journal (`identified()`), `StageEngine.identifiedGhosts()`, `GhostHost.warningBonus`, the gun's `cooldownTicks` is now a getter, `Room` masks the review cause and
+announces the teaching line. `view.ts` restricts `evidence` to what is in view and `journal` to living players. Client: `ui/journalLogic.ts`, `ui/JournalView.ts` (J), `escapeUse` (examine), an unnamed ghost look in `ghostLook.ts`.

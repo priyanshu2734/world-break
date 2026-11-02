@@ -46,9 +46,10 @@ export class EscapeView {
       keypads: es.keypads.filter((k) => k.room === room), safes: es.safes.filter((s) => s.room === room),
       clues: es.clues.filter((c) => c.room === room), switches: es.switches.filter((s) => s.room === room),
       exit: es.exit && es.exit.room === room ? es.exit : null,
+      evidence: (es.evidence ?? []).filter((v) => v.room === room),
     } : null;
     const lockedOut = (t: number | null) => t !== null && t > tick;
-    const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.exit?.x ?? null]) : '';
+    const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.evidence.map((v) => [v.id, v.examined]), mine.exit?.x ?? null]) : '';
     if (key === this.key) return;
     this.key = key;
     for (const o of this.art) o.destroy();
@@ -82,6 +83,12 @@ export class EscapeView {
       g.fillStyle(0x061622, 1).fillRect(s.x - 16, s.y - 12, 32, 12).lineStyle(2, c, 0.95).strokeRect(s.x - 16, s.y - 12, 32, 12);
       g.fillStyle(c, s.active ? 0.95 : 0.35).fillRect(s.x - 10, s.y - 20, 20, 8);
       label(s.x, s.y - 24, 'SWITCH', s.active ? '#9dffcb' : '#9fe9ff');
+    }
+    // P3F step 3: traces of a ghost. They all look alike from afar: what they ARE is learned by examining them.
+    for (const v of mine.evidence) {
+      const c = v.examined ? COLOR.cyanDim : 0xb9a7ff;
+      g.fillStyle(c, v.examined ? 0.18 : 0.3).fillEllipse(v.x, v.y - 4, 44, 10).lineStyle(1, c, 0.9).strokeEllipse(v.x, v.y - 4, 44, 10);
+      label(v.x, v.y - 12, v.examined ? 'TRACES (noted)' : 'TRACES', v.examined ? '#7fb7c9' : '#d6ccff');
     }
     if (mine.exit) {
       const e = mine.exit;

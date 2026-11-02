@@ -31,7 +31,7 @@ export class SoundScheduler {
     if (cue.warning) {
       this.nextStep.clear(); this.nextBeat = 0;
       if (this.nextWhisper === 0 || now >= this.nextWhisper) {
-        out.push(cue.warnKinds && cue.warnKinds[0] ? { kind: 'whisper', type: cue.warnKinds[0] } : { kind: 'whisper' });
+        { const w = cue.warnKinds?.[0]; out.push(w && w !== 'unknown' ? { kind: 'whisper', type: w } : { kind: 'whisper' }); }
         this.nextWhisper = now + WHISPER_PERIOD_MS;
       }
       return out;

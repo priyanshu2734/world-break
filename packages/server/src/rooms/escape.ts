@@ -1,6 +1,6 @@
 import {
-  ESCAPE_LIMITS, ESCAPE_NOTHING, POINT_HEIGHT, RANGE_DY, bodyInDoor, needText,
-  type EscapeAck, type EscapeAction, type EscapePublic, type RoomDef, type RoomGraph,
+  EVIDENCE_LABELS, JOURNAL, ESCAPE_LIMITS, ESCAPE_NOTHING, POINT_HEIGHT, RANGE_DY, bodyInDoor, needText,
+  type EscapeAck, type EscapeAction, type EscapePublic, type GhostType, type RoomDef, type RoomGraph,
 } from '@wb/shared';
 import type { ItemSystem } from '../salvage/system';
 import type { EscapeSpec, Lock } from './escapeSpec';
@@ -76,6 +76,11 @@ export class EscapeRuntime {
   private readonly lastIntent = new Map<string, number>();
   private readonly players = new Set<string>();
   private cleared = false;
+  /** P3F step 3: the shared team journal. `found` = evidence examined, `marks` = types entered (final for the stage). */
+  private readonly evidence = new Map<string, NonNullable<EscapeSpec['ghostEvidence']>[number]>();
+  private readonly found = new Set<string>();
+  private readonly marks: GhostType[] = [];
+  private readonly truth: ReadonlySet<GhostType>;
 
   constructor(private readonly spec: EscapeSpec, graph: RoomGraph, private readonly host: EscapeHost, private readonly items: ItemSystem | null) {
     for (const room of graph.rooms) for (const d of room.doors) this.doorRoom.set(d.id, { room, rect: { x: d.x, y: d.y, w: d.w, h: d.h } });
@@ -89,6 +94,38 @@ export class EscapeRuntime {
     for (const s of spec.switches) this.switches.set(s.id, { ...s, litUntil: 0, wasLit: false, latched: false });
     for (const l of this.links) this.arm(l);
     for (const c of spec.clues) this.clues.set(c.id, c);
+    for (const v of spec.ghostEvidence ?? []) this.evidence.set(v.id, v);
+    this.truth = new Set((spec.ghostEvidence ?? []).map((v) => v.ghost));
+  }
+
+  // ------------------------------------------------------------------ P3F step 3: the journal
+  /** The journal has one line per ghost on the stage; none at all on a stage without evidence. */
+  private get lines(): number { return this.truth.size; }
+  /** The types the team entered AND that really run on this stage (server side only: drives the warning bonus and the gun). */
+  identified(): GhostType[] { return this.marks.filter((g) => this.truth.has(g)); }
+
+  private examine(pid: string, id: string, me: EscapePos): EscapeResult {
+    const v = this.evidence.get(id);
+    if (!v || !this.inRoom(pid, v.room) || !this.host.canSee(pid, v.x, v.y - POINT_HEIGHT.clue)) return fail(ESCAPE_NOTHING);
+    if (!this.reach(me, v.x, v.y)) return fail('Too far away.');
+    const label = EVIDENCE_LABELS[v.kind];
+    if (this.found.has(id)) return ok(`${label}. Already in the team journal.`, { id, text: label });
+    this.found.add(id);
+    this.host.markDirty();
+    this.host.say(`${label} is noted in the team journal.`, 'info', v.room);
+    return ok(`${label}. It is written in the team journal.`, { id, text: label });
+  }
+
+  private mark(ghost: GhostType): EscapeResult {
+    if (this.lines === 0) return fail('There is nothing to enter in the journal.');
+    if (this.found.size < JOURNAL.minExamined) return fail('Examine some evidence first.');
+    if (this.marks.includes(ghost)) return fail('That is already in the journal.');
+    if (this.marks.length >= this.lines) return fail('Every line of the journal is used.');
+    this.marks.push(ghost);
+    if (!this.truth.has(ghost)) this.host.award(JOURNAL.category, -JOURNAL.wrongCost);
+    this.host.markDirty();
+    this.host.say(`The team journal now names a ${ghost}. Entries are final.`, 'info');
+    return ok(`Entered: ${ghost}. A right entry helps the team, a wrong one costs ${JOURNAL.wrongCost} points.`);
   }
 
   /** P3F step 2: tell each switch of a puzzle lock what it is for, and set the breakers to their starting positions. */
@@ -124,6 +161,8 @@ export class EscapeRuntime {
       case 'enter_code': return this.enterCode(playerId, a.targetId, a.code, me);
       case 'press': return this.press(playerId, a.switchId, me);
       case 'read': return this.read(playerId, a.clueId, me);
+      case 'examine': return this.examine(playerId, a.evidenceId, me);
+      case 'mark': return this.mark(a.ghost);
     }
   }
 
@@ -379,6 +418,13 @@ export class EscapeRuntime {
       safes: [...this.safes.values()].map((s) => ({ id: s.id, room: s.room, x: s.x, y: s.y, length: ESCAPE_LIMITS.comboLength, opened: s.opened, lockedUntilTick: lock(s.lockedUntil) })),
       clues: [...this.clues.values()].map((c) => ({ id: c.id, room: c.room, x: c.x, y: c.y, label: c.label })),
       switches: [...this.switches.values()].map((s) => ({ id: s.id, room: s.room, x: s.x, y: s.y, active: s.latched || s.litUntil > t })),
+      ...(this.evidence.size > 0 ? {
+        evidence: [...this.evidence.values()].map((v) => ({ id: v.id, room: v.room, x: v.x, y: v.y, examined: this.found.has(v.id) })),
+        journal: {
+          entries: [...this.found].flatMap((id) => { const v = this.evidence.get(id); return v ? [{ id, kind: v.kind }] : []; }),
+          marks: [...this.marks], lines: this.lines,
+        },
+      } : {}),
       exit: { room: this.spec.exit.room, x: this.spec.exit.x, y: this.spec.exit.y },
     };
   }

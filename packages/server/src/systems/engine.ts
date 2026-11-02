@@ -1,6 +1,6 @@
 import {
   ACTION_MIN_GAP_TICKS, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
-  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type ItemAction, type ItemKind, type StageAction, type StageState, type ToolId,
+  type AbilityAction, type Arena, type Difficulty, type EscapeAction, type GhostType, type ItemAction, type ItemKind, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
 import { evaluateFailures, topoOrder, type FailureEval } from './failures';
@@ -236,6 +236,9 @@ export class StageEngine {
       clear: () => self.clearStage('Someone reached the way out. Stage cleared.'),
     };
   }
+
+  /** P3F step 3: the ghost types the team's journal got right (empty without a journal). */
+  identifiedGhosts(): GhostType[] { return this.escape?.identified() ?? []; }
 
   /** P3D step 4: ids of the doors that are open (they no longer block sight). Empty on stages without an escape spec. */
   openDoorIds(): ReadonlySet<string> { return this.escape?.openDoorIds() ?? new Set<string>(); }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EVIDENCE_KINDS, GHOST_TYPES } from '../ghost';
 
 /** An id of a door, keypad, safe, clue or switch (same alphabet as room ids, which may contain dots). */
 export const EscapeIdSchema = z.string().regex(/^[a-z][a-z0-9_.]*$/).max(48);
@@ -71,6 +72,10 @@ export const EscapeActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('enter_code'), targetId: EscapeIdSchema, code: z.string().regex(/^[0-9]{1,8}$/) }).strict(),
   z.object({ action: z.literal('press'), switchId: EscapeIdSchema }).strict(),
   z.object({ action: z.literal('read'), clueId: EscapeIdSchema }).strict(),
+  /** P3F step 3: study a piece of ghost evidence (the finding goes in the team journal). */
+  z.object({ action: z.literal('examine'), evidenceId: EscapeIdSchema }).strict(),
+  /** P3F step 3: enter a suspected ghost type in the team journal (final for the stage). */
+  z.object({ action: z.literal('mark'), ghost: z.enum(GHOST_TYPES) }).strict(),
 ]);
 export type EscapeAction = z.infer<typeof EscapeActionSchema>;
 
@@ -92,6 +97,16 @@ export const EscapePublicSchema = z.object({
   })),
   clues: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), label: z.string() })),
   switches: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), active: z.boolean() })),
+  /** P3F step 3: ghost evidence in view (position only: what it IS is learned by examining it). */
+  evidence: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), examined: z.boolean() })).max(ESCAPE_LIMITS.maxEvidence).optional(),
+  /** P3F step 3: the shared team journal. Present on a ghost stage, for living players only. */
+  journal: z.object({
+    /** What the team has examined (kind only, never the ghost type). */
+    entries: z.array(z.object({ id: EscapeIdSchema, kind: z.enum(EVIDENCE_KINDS) })).max(ESCAPE_LIMITS.maxEvidence),
+    /** The types entered so far, and how many lines the journal has (one per ghost on the stage). */
+    marks: z.array(z.enum(GHOST_TYPES)).max(3),
+    lines: z.number().int().min(1).max(3),
+  }).optional(),
   /** Present only while the exit is in the viewer's view (a hidden exit is not in the snapshot). */
   exit: z.object({ room: EscapeIdSchema, x: z.number(), y: z.number() }).optional(),
 });

@@ -122,6 +122,9 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
       safes: es.safes.filter((s) => here(s.room) && see(s.x, s.y - POINT_HEIGHT.safe)),
       clues: es.clues.filter((c) => here(c.room) && see(c.x, c.y - POINT_HEIGHT.clue)),
       switches: es.switches.filter((s) => here(s.room) && see(s.x, s.y - POINT_HEIGHT.switch)),
+      // P3F step 3: traces only when in view; the team journal is the team's own notebook (kinds found and entries, never the true type), for living players only (a spectator's stage is blank)
+      ...(es.evidence ? { evidence: es.evidence.filter((v) => here(v.room) && see(v.x, v.y - POINT_HEIGHT.clue)) } : {}),
+      ...(es.journal ? { journal: es.journal } : {}),
       ...(es.exit && here(es.exit.room) && see(es.exit.x, es.exit.y - POINT_HEIGHT.exit) ? { exit: es.exit } : {}),
     };
   }

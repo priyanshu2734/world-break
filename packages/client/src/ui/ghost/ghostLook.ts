@@ -1,4 +1,4 @@
-import { GHOST_LOOK_SCALE, ghostLookTier, type GhostPublic, type GhostType } from '@wb/shared';
+import { GHOST_LOOK_SCALE, ghostLookTier, type GhostPublic, type GhostType, type PublicGhostKind } from '@wb/shared';
 
 /** P3E step 2: pure look parameters for the Wisp (a small pale glow). No Phaser here. */
 export interface GhostLook { tint: number; glowAlpha: number; bodyAlpha: number; glowScale: number; bob: number }
@@ -80,11 +80,17 @@ export function crown(n: number, w: number, topY: number, h: number): Pt[][] {
 /** Spikes a tier adds: none, none, 3, 5. */
 export const CROWN_SPIKES = [0, 0, 3, 5] as const;
 
-export function ghostShape(kind: GhostType, stage: number, state: GhostPublic['state'], ms: number, lit = false): GhostShape {
+export function ghostShape(kind: PublicGhostKind, stage: number, state: GhostPublic['state'], ms: number, lit = false): GhostShape {
   const tier = ghostLookTier(stage), scale = GHOST_LOOK_SCALE[tier];
   const menace = tier * 0.18; // the colour slides toward red as the stage grows
   const hunting = state === 'hunting';
   const base = { scale, tier, still: state === 'stunned' || lit } as const;
+  if (kind === 'unknown') {
+    // P3F step 3: an unnamed ghost has a plain grey silhouette; only what it DOES (freezing in light, screaming) tells the type
+    const body: Pt[] = [{ x: -7, y: -26 }, { x: 7, y: -26 }, { x: 10, y: 0 }, { x: 9, y: 24 }, { x: 0, y: 30 }, { x: -9, y: 24 }, { x: -10, y: 0 }];
+    const eyes: Eye[] = [{ x: -3, y: -18, r: 1.8 + tier * 0.3 }, { x: 3, y: -18, r: 1.8 + tier * 0.3 }];
+    return { ...base, body, extras: crown(CROWN_SPIKES[tier], 10, -26, 9), eyes, eyeColor: hunting ? 0xff5a4d : 0xe6efff, tint: mixColor(0x7d8391, 0x7a1020, menace), glowTint: mixColor(0x6a7080, 0xaa1c2c, menace), glowScale: 3.6, rim: null };
+  }
   if (kind === 'shade') {
     const wave = Math.sin(ms / 260) * 2.2;
     const body: Pt[] = [{ x: -6, y: -30 }, { x: 6, y: -30 }, { x: 9, y: -14 }, { x: 12, y: 20 }, { x: 7, y: 34 + wave }, { x: 0, y: 27 - wave }, { x: -7, y: 34 - wave }, { x: -12, y: 20 }, { x: -9, y: -14 }];

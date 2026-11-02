@@ -196,3 +196,6 @@ shared `ghostTypes.test.ts` (tuning at stages 1, 2, 7, 12, 100, 1,000,000; lineu
 
 ### NOT RUN
 Browser play of step 5 (look tiers, dissolve, scream ring, recharge bar, sounds), WebAudio output, Phaser drawing (`GhostView`, `GunView`, `GameScene` were NOT type-checked against Phaser in this sandbox), real `tsc`/`npm` (sandbox had no zod, socket.io types), the 9 `gateway.*` test files (no `socket.io-client` here), `npm run build`.
+
+## P3F step 3 note
+From stage 7 the type of a ghost is `unknown` in everything a client or the death review receives; players identify it from the evidence and the team journal (docs/VARIETY.md). The server still knows the real type.

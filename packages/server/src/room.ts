@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
+  ARENA, EYE_HEIGHT, IDENTIFY_FROM_STAGE, IDENTIFY_TEACH_LINE, JOURNAL, gunCooldown, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type GhostType, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -209,6 +209,9 @@ export class Room {
   /** Ticks of darkness left in a room (0 = lit). */
   private lightsOutLeft(roomId: string): number { return Math.max(0, (this.lightsOut.get(roomId) ?? 0) - (this.sim?.tick ?? 0)); }
 
+  /** P3F step 3: has this run been told that ghosts are no longer named? */
+  private identifyTaught = false;
+
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
     this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.reviveSys = null; this.pings = []; this.reviewLog = new ReviewLog(); this.reviewSeen = new WeakSet(); this.cueSigs = new Map(); this.reviews = new Map(); this.wipeLeft = 0; this.specLayouts = new Map(); this.lightsOut = new Map();
@@ -276,8 +279,9 @@ export class Room {
         this.reviewLog.add(body, 'rescue', t, theirs);
       },
     });
+    // P3F step 3: from stage 7 the review never names the type
     const causeOf = (ev?: GhostCatchEvent): KillCause => ({
-      how: ev?.how ?? 'touch', ghost: ev?.ghost ?? 'g0', ghostKind: ev?.ghostKind ?? null, because: ev ? [...ev.because] : [],
+      how: ev?.how ?? 'touch', ghost: ev?.ghost ?? 'g0', ghostKind: ev?.ghostKind && this.stage < IDENTIFY_FROM_STAGE ? ev.ghostKind : null, because: ev ? [...ev.because] : [],
     });
     const catchHost: CatchHost = {
       get tick() { return sim.tick; },
@@ -298,6 +302,8 @@ export class Room {
         contactTicks: death.tuning.contactTicks,
         satiatedTicks: death.tuning.satiatedTicks,
         canKill: (id: string) => death.canKill(id),
+        // P3F step 3: a correct journal entry makes that type's warning last longer
+        warningBonus: (kind: GhostType) => (engine.identifiedGhosts().includes(kind) ? JOURNAL.warningBonusTicks : 0),
         players: (): GhostPlayer[] => sim.senses().filter((s) => s.roomId !== null).map((s) => ({
           id: s.id, name: s.name, roomId: s.roomId!, x: s.x, y: s.y, connected: s.connected, moveX: s.moveX,
           crouch: s.sneak && Math.abs(s.moveX) <= 0.4, aim: s.aim, facing: s.facing,
@@ -311,6 +317,8 @@ export class Room {
       },
     );
     this.gun = this.buildGun(sim, engine);
+    // P3F step 3: teach before test. The first stage that stops naming the ghost says so once (per run), before any warning can come.
+    if (this.stage >= IDENTIFY_FROM_STAGE && !this.identifyTaught) { this.identifyTaught = true; engine.announce(IDENTIFY_TEACH_LINE, 'info'); }
   }
   /** P3E step 4: the Pulse Gun, built right after the ghost it stuns. */
   private buildGun(sim: GameSim, engine: StageEngine): PulseGun {
@@ -321,7 +329,8 @@ export class Room {
       carries: (id) => engine.carriesKind(id, 'pulse_gun'),
       trace: (room, from, to, radius) => ghost.trace(room, from, to, radius),
       destroy: (ghostId, by) => ghost.destroy(ghostId, by),
-      cooldownTicks: ghost.tuning.gunCooldownTicks,
+      // P3F step 3: any correct journal entry recharges the gun a quarter quicker (does not stack)
+      get cooldownTicks() { return gunCooldown(ghost.tuning.gunCooldownTicks, engine.identifiedGhosts().length); },
       noise: (room, x, y, by, name) => ghost.makeNoise({ room, x, y, loud: NOISE_KIND_LOUDNESS.shot, player: by, name, kind: 'shot' }),
       say: (text, tone, room) => engine.announce(text, tone, room),
       log: (by, phase, room, text, ghostId) => ghost.logPulse(by, phase, room, text, ghostId),
@@ -367,7 +376,7 @@ export class Room {
       tick: this.sim.tick, warning: c.warning, sounds: c.sounds,
       ...(this.catchSys ? { status: this.catchSys.statusFor(playerId) } : {}),
       ...(kinds.length > 0 ? { warnKinds: kinds } : {}),
-      ...(this.gun ? { gun: { left: this.gun.cooldownLeft(), total: this.ghost.tuning.gunCooldownTicks } } : {}),
+      ...(this.gun ? { gun: { left: this.gun.cooldownLeft(), total: gunCooldown(this.ghost.tuning.gunCooldownTicks, this.engine?.identifiedGhosts().length ?? 0) } } : {}),
       ...(dark > 0 ? { lightsOut: dark } : {}),
     };
   }

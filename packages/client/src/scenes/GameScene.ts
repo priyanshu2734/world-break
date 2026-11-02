@@ -16,6 +16,7 @@ import { Darkness } from '../ui/Darkness';
 import { DoorView } from '../ui/DoorView';
 import { EscapeView } from '../ui/EscapeView';
 import { CodePad } from '../ui/CodePad';
+import { JournalView } from '../ui/JournalView';
 import { ESCAPE_KEYS_HINT, goalLine, nearestUse, stateForRoom, takesCode, useIntent, usablesIn, type EscapeUse } from '../ui/escapeUse';
 import { cameraScroll, pickArena } from '../ui/roomMath';
 import { aimAngle as aimOf, darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
@@ -83,6 +84,7 @@ export class GameScene extends Phaser.Scene {
   private doors!: DoorView;
   /** P3D escape stages: keypads, safes, clues, switches, the exit, the E prompt and the player's notes. */
   private escapeView!: EscapeView;
+  private journalView!: JournalView;
   private pad!: CodePad;
   /** What E would act on this frame (null = nothing in reach). */
   private escapeNearest: EscapeUse | null = null;
@@ -99,7 +101,7 @@ export class GameScene extends Phaser.Scene {
   private arena: import('@wb/shared').Arena = ARENA;
   private arenaId = ARENA.id;
   private solidsArt: Phaser.GameObjects.GameObject[] = [];
-  private stageKeys!: Record<'E' | 'Q' | 'N' | 'G' | 'F' | 'H' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
+  private stageKeys!: Record<'E' | 'Q' | 'N' | 'G' | 'F' | 'H' | 'J' | 'ONE' | 'TWO' | 'THREE' | 'FOUR' | 'FIVE', Phaser.Input.Keyboard.Key>;
   /** Dev-only scripted movement override (set through __WB_DEBUG__ by the browser verification script). */
   private debugInput: InputIntent | null = null;
   /** Real wall-clock time of the previous frame. Phaser's `delta` is smoothed/clamped, so it is NOT used for simulation. */
@@ -153,7 +155,7 @@ export class GameScene extends Phaser.Scene {
     const kb = this.input.keyboard!;
     this.cursors = kb.createCursorKeys();
     this.keys = kb.addKeys('W,A,D,SPACE,R') as typeof this.keys;
-    this.stageKeys = kb.addKeys('E,Q,N,G,F,H,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
+    this.stageKeys = kb.addKeys('E,Q,N,G,F,H,J,ONE,TWO,THREE,FOUR,FIVE') as typeof this.stageKeys;
     this.specKeys = kb.addKeys('W,A,S,D,Q,E,Z,X,F') as typeof this.specKeys; // a spectator's own key objects (a press read here is not eaten by the stage keys)
     this.stageView = new StageView(this);
     this.stageHud = new StageHud(this);
@@ -165,6 +167,12 @@ export class GameScene extends Phaser.Scene {
     this.doors = new DoorView(this);
     this.escapeView = new EscapeView(this);
     this.events.once('shutdown', () => this.escapeView.destroy());
+    // P3F step 3: the team journal (J). The server validates every entry; a refusal known on this side is only shown as a notice.
+    this.journalView = new JournalView(this, (ghost, reason) => {
+      if (reason) this.session.notice = { text: reason, ok: false, at: performance.now() };
+      else void this.session.escapeAction({ action: 'mark', ghost });
+    });
+    this.events.once('shutdown', () => this.journalView.destroy());
     this.pad = new CodePad(this, (t, code) => { void this.session.escapeAction({ action: 'enter_code', targetId: t.id, code }); });
     this.events.once('shutdown', () => this.doors.destroy());
     this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
@@ -471,6 +479,7 @@ export class GameScene extends Phaser.Scene {
     const itemLine = stHere && meNow ? itemPrompt(stHere, s.playerId, meNow) : null;
     const goal = goalLine(st?.escape, myRoom, carriedItems(st, s.playerId).map((i) => i.kind), s.notes.length);
     this.escapeView.update(myRoom, st?.escape, st?.tick ?? 0, this.escapeNearest, g.phase === 'playing' && !this.pad.isOpen && !itemLine, s.notes, goal);
+    this.journalView.update(spectating ? undefined : st?.escape?.journal);
     const keysText = spectating ? FLY_HINT : st?.escape ? `${ESCAPE_KEYS_HINT}  Shift sneak  M mute ghost` : this.defaultHint;
     if (this.hint.text !== keysText) this.hint.setText(keysText);
     this.pad.update(g.phase === 'playing' ? meNow : null);
@@ -596,6 +605,7 @@ export class GameScene extends Phaser.Scene {
     const pressed = {
       E: J(K.E), Q: J(K.Q), tool: [J(K.ONE), J(K.TWO), J(K.THREE), J(K.FOUR), J(K.FIVE)],
     };
+    if (J(K.J) && st?.escape?.journal) this.journalView.toggle(); // P3F step 3: the team journal
     if (!canAct || !st || !me) return;
     // P3E step 3: hiding or caught: E comes out of a hiding place; nothing else works (the server refuses it too)
     const ghostSt = this.session.ghostStatus;

@@ -35,6 +35,8 @@ export class ReviewLog {
 
 const BAND = ['', 'close by', 'at a distance', 'far off'] as const;
 const DIR = { '-1': 'to your left', '0': 'ahead of you', '1': 'to your right' } as const;
+/** P3F step 3: from stage 7 a ghost's kind reaches the log as `'unknown'`: the review says "ghost", never the type. */
+const named = (kind: string): string => (kind === 'unknown' ? 'ghost' : kind);
 const label = (kind: keyof typeof ITEM_KIND_SPECS): string => ITEM_KIND_SPECS[kind].label;
 
 /** What changed in the cue a player was sent between two ticks, worded (only the changes, never the same thing twice). */
@@ -42,14 +44,14 @@ export function cueNotes(prev: ReviewCueSig | null, cue: GhostCue): { notes: str
   const notes: string[] = [];
   const sig: ReviewCueSig = { warning: cue.warning, sounds: new Map(cue.sounds.map((s) => [s.id, { band: s.band, inspecting: s.inspecting === true, screaming: s.screaming === true }])) };
   if (cue.warning && !(prev?.warning)) {
-    const kinds = cue.warnKinds ?? [];
+    const kinds = [...new Set((cue.warnKinds ?? []).map(named))];
     notes.push(`The lights flickered and a whisper warned that ${kinds.length > 0 ? `a ${kinds.join(' and a ')}` : 'a ghost'} was about to appear.`);
   }
   for (const s of cue.sounds) {
     const before = prev?.sounds.get(s.id);
-    if (!before || s.band < before.band) notes.push(`A ${s.kind} could be heard ${BAND[s.band]}, ${DIR[String(s.dir) as '-1' | '0' | '1']}.`);
-    if (s.inspecting && !before?.inspecting) notes.push(`A ${s.kind} stood at a hiding place, about to open it.`);
-    if (s.screaming && !before?.screaming) notes.push(`A ${s.kind} was winding up a scream.`);
+    if (!before || s.band < before.band) notes.push(`A ${named(s.kind)} could be heard ${BAND[s.band]}, ${DIR[String(s.dir) as '-1' | '0' | '1']}.`);
+    if (s.inspecting && !before?.inspecting) notes.push(`A ${named(s.kind)} stood at a hiding place, about to open it.`);
+    if (s.screaming && !before?.screaming) notes.push(`A ${named(s.kind)} was winding up a scream.`);
   }
   return { notes, sig };
 }

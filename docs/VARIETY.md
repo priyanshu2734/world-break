@@ -120,3 +120,27 @@ nothing here has been played in a browser.
 `shared/test/puzzles.test.ts` (tables, words, parsers), `server/test/rooms/puzzles.runtime.test.ts` (17 rule tests with a fake host), `puzzles.generate.test.ts` (19: pool, gating, never the same
 type twice in a row on 1,000+ doors, draw order kept, no method words, decoys, mandatory safes, a validator mutation per type), `puzzles.solve.test.ts` (the real-physics solver plays every type
 alone and with 2 players, a sweep of 144 solo stages and 54 co-op stages, and the jammed locker in a real Room).
+
+## Identify the ghost (P3F step 3)
+From stage `IDENTIFY_FROM_STAGE` (7) the ghost's TYPE is not named anywhere a client or a review can read it: public ghosts, cue sounds, warning kinds, fx and the death review say `unknown` or "ghost"
+(the mask is applied once, in `GhostSystem` output points via `shownKind`, and in `Room.causeOf` for the review). Before stage 7 nothing changes. A stage 1,000,000 masks the same way.
+What a player has instead:
+* **Evidence.** Every ghost stage already stores `escape.ghostEvidence` (2 pieces per type). The public state now shows the markers in view (`escape.evidence`: id, room, position, examined), never the kind.
+  E next to a marker EXAMINES it (`examine` intent): the finding (cold breath, wet footprints, scratched walls, a single dead lamp, a faint whisper, cracked glass) is written into the team journal.
+* **The shared team journal** (`escape.journal`, living players only; spectators get a blank stage): the evidence found (by kind, never by type), the types entered, and the number of lines (one per ghost on the stage).
+  The client shows it on J, with a field guide (which evidence belongs to which type, and the counter: Shade, keep the light on it; Howler, stay quiet; Wisp, hide and sneak).
+* **Entering a guess** (`mark` intent, one of wisp, shade, howler): needs at least one piece examined, is FINAL for the stage, and cannot exceed the lines (so one ghost = one guess: no fishing for the answer).
+  The reply never says whether the guess was right.
+
+| Rule | Value (`JOURNAL` in shared/ghost) |
+|---|---|
+| right entry: that type's warning lasts longer | +40 ticks (2 s); a bonus never shortens a warning |
+| right entry: the Pulse Gun recharges in | 75 percent of its time; two right entries do not stack |
+| wrong entry | -20 points once (category `journal`), uses the line |
+| teaching line | one per run, at the first stage from 7, before any warning (`IDENTIFY_TEACH_LINE`) |
+
+All of it is server-validated (room, reach, rate limit `minGapTicks`, "nothing there" for anything out of view or in another room), deterministic (no randomness) and bounded (at most 6 evidence pieces, 3 entries).
+Honest limits: the score change on a wrong entry tells a team it was wrong, but with one line per ghost there is nothing left to try; with two ghosts (stage 20+) a team has two lines for three types.
+Footstep pace and timbre of an unnamed ghost are one neutral value on the client (so they do not give the type away); a Shade freezing in the beam and a Howler's wind-up scream still do. Nothing was played in a browser.
+
+Tests: `shared/test/identify`, `server/test/rooms/identify.runtime` (10), `server/test/ghost/identify` (8), `server/test/death/identify.room` (4) and 1 new case in `death/review.test.ts`, `client/test/journalLogic` (4).
