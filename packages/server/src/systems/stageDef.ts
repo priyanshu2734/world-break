@@ -127,6 +127,8 @@ export const StashDefSchema = z.object({
   gate: z.enum(ITEM_GATES).optional(),
   /** P3D (additive, optional): the room the container is in. Omitted = the start room (or the only arena). */
   room: z.string().optional(),
+  /** P3F step 2 (additive, optional): the container is jammed and only opens for a player who carries a part of this kind (a tool). Never published. */
+  needs: ItemKindSchema.optional(),
 });
 
 /**

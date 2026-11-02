@@ -9,6 +9,7 @@ const Pt = { x: z.number(), y: z.number() };
  *  code      : a 4-digit keypad elsewhere; `clueIds` are the notes whose digits, read in order, spell the code.
  *  two_person: both switches lit at once (a lit switch holds `switchHoldTicks`, so one person can run between them).
  *  safe      : the door needs a key, and the key is inside a safe opened with a 3-digit combination spelled by its clues.
+ *  P3F step 2 adds eight more (lever_sequence, symbol_match, breaker_panel, pressure_plates, timed_switch, wiring, flashlight_sensor, tool_key): see below and docs/VARIETY.md.
  */
 export const LockSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('key_item') }),
@@ -16,6 +17,23 @@ export const LockSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('code'), keypadId: Id, code: z.string().regex(/^[0-9]{4}$/), clueIds: z.array(Id).min(1).max(4) }),
   z.object({ type: z.literal('two_person'), switchA: Id, switchB: Id }),
   z.object({ type: z.literal('safe'), safeId: Id }),
+  // ---- P3F step 2: the puzzle pool. Every switch named below is an entry of `switches`; levers, breakers, terminals and sensors are listed west to east.
+  /** levers pulled in `order` (indexes into `levers`, west to east); a wrong lever puts them all back; `clueId` is the log that spells the order. */
+  z.object({ type: z.literal('lever_sequence'), levers: z.array(Id).min(3).max(4), order: z.array(z.number().int().min(0).max(3)).min(3).max(4), clueId: Id }),
+  /** a keypad whose code is written in symbols: a picture of glyphs in one room, a legend (symbol to digit) in another. */
+  z.object({ type: z.literal('symbol_match'), keypadId: Id, code: z.string().regex(/^[0-9]{4}$/), pictureId: Id, legendId: Id }),
+  /** breakers that start in `start` and must end in `target` (true = on); a press toggles one; too many presses trip the panel. */
+  z.object({ type: z.literal('breaker_panel'), breakers: z.array(Id).min(3).max(4), start: z.array(z.boolean()).min(3).max(4), target: z.array(z.boolean()).min(3).max(4), clueId: Id }),
+  /** two plates that a body must be standing on; each stays lit `plateHoldTicks` after it was left. */
+  z.object({ type: z.literal('pressure_plates'), plates: z.tuple([Id, Id]) }),
+  /** one switch that unlocks the door for `timedDoorTicks`; whoever goes through in time keeps it open for the team. */
+  z.object({ type: z.literal('timed_switch'), switchId: Id }),
+  /** terminals, one of which (`right`, index west to east) is the live wire; a wrong one sparks and locks the panel out for a while. */
+  z.object({ type: z.literal('wiring'), terminals: z.array(Id).min(3).max(4), right: z.number().int().min(0).max(3), clueId: Id }),
+  /** sensors, one of which (`genuine`) opens the door once it has been lit for `sensorTicks` in a row; the others are dead. */
+  z.object({ type: z.literal('flashlight_sensor'), sensors: z.array(Id).min(2).max(3), genuine: Id }),
+  /** a door that needs an access key which lies in a jammed locker (`stashId`) that only opens for a carried `valve_wheel`. */
+  z.object({ type: z.literal('tool_key'), stashId: Id, tool: z.literal('valve_wheel') }),
 ]);
 export type Lock = z.infer<typeof LockSchema>;
 

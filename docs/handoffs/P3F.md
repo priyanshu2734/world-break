@@ -1,54 +1,63 @@
-# P3F handoff: variety and hook (STEP 1 of 6: room templates and height)
+# P3F handoff: variety and hook (STEPS 1 AND 2 of 6 delivered: room templates and height; the puzzle pool)
 
-Baseline: `p4-complete` plus the step 6 playtest fixes (the uploaded `p5-base.zip`). Only step 1 is delivered here. Steps 2 to 6 are not started; this file is rewritten at each step.
+Baseline: `p4-complete` plus the step 6 playtest fixes (the uploaded `p5-base.zip`). Step 1 was verified by the developer: commit `927d8be` on `phase/p3f`, typecheck clean, 1578 tests (client 198, server 1204, shared 176), build OK. Steps 3 to 6 are not started; this file is rewritten at each step.
 
 ## 1. Git branch and commit
-NOT RUN: developer to run `git rev-parse HEAD`. (No `.git` in my sandbox.)
+Branch `phase/p3f`. Step 1: `927d8be` (reported by the developer). Step 2: NOT RUN: developer to run `git rev-parse HEAD`. (No `.git` in my sandbox.)
 
 ## 2. Files changed
-Added: `docs/VARIETY.md`, `docs/handoffs/P3F.md`, `packages/shared/src/variety/{templates,pick,index}.ts`, `packages/server/src/rooms/{reachStrict,arenaKey}.ts`; tests `packages/shared/test/variety.test.ts`, `packages/server/test/rooms/{templates,variety.generate}.test.ts`, `packages/server/test/death/dropRest.walls.test.ts`.
-Modified: `docs/ARCHITECTURE.md` (P3F step 1 section), `packages/shared/src/index.ts` (one export line), `packages/server/src/rooms/{generate,escapeValidate}.ts`, `packages/server/src/salvage/dropRest.ts` (additive: old exports keep their meaning).
-Test helpers changed: `test/rooms/{bot,solver}.ts`, `test/ghost/hideTeam.ts` (route planning over the real jump graph, because rooms now have height, walls and pits).
-Not touched: `phases.ts`, `difficulty.ts`, `loop.ts`, `interpolation.ts`, `tutorial.ts`, shared `sim.ts`, `arena.ts`, client `prediction.ts`. No client file changed.
+### Step 2 (this delivery)
+Added: `packages/shared/src/rooms/puzzles.ts`, `packages/server/src/rooms/puzzleBuild.ts`; tests `packages/shared/test/puzzles.test.ts`, `packages/server/test/rooms/{puzzles.runtime,puzzles.generate,puzzles.solve}.test.ts`.
+Modified: `packages/shared/src/rooms/{escape,index}.ts` (13 lock types, `needText`, new limits, `maxSwitches` 10 to 24); `packages/server/src/rooms/{escape,escapeSpec,escapeValidate,generate}.ts`; `packages/server/src/salvage/system.ts` (a jammed container needs a tool); `packages/server/src/systems/stageDef.ts` (optional `needs` on a stash); `docs/{VARIETY,ARCHITECTURE}.md`; this file.
+Test files changed on purpose: `test/rooms/{generate,solve}.test.ts` (see section 5) and the solver `test/rooms/solver.ts` (plays the 8 new types).
+Not touched: `phases.ts`, `difficulty.ts`, `loop.ts`, `interpolation.ts`, `tutorial.ts`, shared `sim.ts`, `arena.ts`, client `prediction.ts`. No client file changed: the public state keeps its shape (levers, breakers, plates and sensors are `switches`, pictures and legends are `clues`).
+### Step 1 (verified by the developer)
+See the step 1 list in git (templates, `reachStrict`, `arenaKey`, `dropRest` pieces, `requireReachable`, their tests).
 
-## 3. Commands run (my sandbox; there is no registry, so `npm ci` could not run and I used a stand-in test runner)
-* Typecheck (`tsc` on shared and server): shared 0 errors. Server: 1 error in `test/disasters/runtime.test.ts` (line 129, TS7053), a file I did not touch; I believe it is an artefact of my vitest stand-in, so the developer's real `npm run typecheck` is the judge.
-* Shared tests: 19 files, **176** passed (baseline 165).
-* Server tests: 74 files, **1157** passed, 0 failed (baseline 1127 on the same file set; gateway files excluded, see NOT RUN).
-* Client tests: 198 passed on the last run, no client code changed.
-* NOT RUN: `npm ci`, `npm run build`, client typecheck (no Phaser types here), the 8 gateway test files (need socket.io), any play in a browser or Phaser.
+## 3. Commands run (my sandbox; no registry, so `npm ci` cannot run and I use a stand-in test runner)
+* Typecheck (`tsc`, shared and server): 0 errors except one in `test/disasters/runtime.test.ts` (TS7053), a file nobody touched, which I believe is an artefact of my stand-in; your real `npm run typecheck` is the judge.
+* Shared: 20 files, **181** passed (176 + 5).
+* Server: 77 files, **1212** passed, 0 failed (gateway files excluded; your 1204 includes 47 gateway tests, so expect about **1259** with my 55 new ones).
+* Client: **198** passed (no client change).
+* Expected total on your machine: 181 + 1259 + 198 = **1638** (was 1578).
+* NOT RUN: `npm ci`, `npm run build`, the 8 gateway test files, the client typecheck, any play in a browser or Phaser.
 
-## 4. Supported behaviour and its tests
+## 4. What is supported, and the tests behind it
 | Claim | Tests |
 |---|---|
-| 13 build templates plus tutorial and hall, pure data, inside room limits, deterministic | `shared/test/variety` |
-| Verticality: 9+ templates have a surface 285 px or more up, 2 reach 475 px, 8 are taller than 720 px | `shared/test/variety` |
-| No stage uses the previous stage's template (stages 2 to 300, many seeds; true by odd/even pools); stage 1,000,000 works; stage 1 stays the tutorial room | `shared/test/variety`, `server/test/rooms/variety.generate` |
-| Every template, width and 24 seeds: every spot reachable by real `stepBody` jumps, solo | `server/test/rooms/templates` |
-| Generated stages: `requireReachable` on every stage; refuses an unreachable note | `variety.generate` |
-| Dropped mandatory item never crosses a closed gate wall; point inside a wall is relocated; alcove behind an open gate keeps drops | `death/dropRest.walls` |
-| Solver, death drill and hiding reflex still pass in the new rooms | `rooms/solve`, `death/solve`, `gun.solve`, `ghost/*` |
+| 13 lock types: the five originals unchanged, eight new (lever sequence, symbol match across two rooms, flashlight sensor, pressure plates, timed switch, breaker panel, wiring, tool key with a jammed locker) | `shared/test/puzzles`, `puzzles.generate` |
+| Rules of each puzzle (order, reset, lockout, trip, hold, window, sensor light time, decoy sensors, jammed locker, cracked tool) | `puzzles.runtime` (17), `puzzles.solve` (jammed locker in a real Room) |
+| Every type is SOLVED by the real-physics solver reading the notes, alone and with 2 players; sweeps of 144 solo and 54 co-op stages (stages 6 to 1,000,000, 2 to 4 players) | `puzzles.solve` |
+| Never the same lock type twice in a row (neighbouring doors) on 1,000+ doors of 25 stages x 20 seeds, with and without the ghost, stage 1,000,000 included | `puzzles.generate` |
+| Clue text states the goal and never the method (30 instruction verbs banned in every note and refusal of every generated stage); superseded decoy notes are never accepted; sensors have dead twins; tool lockers have cracked tools | `puzzles.generate`, `shared/test/puzzles` |
+| A mandatory safe keeps all its code pages in its own room (kept, re-checked over the new pool) | `puzzles.generate`, `rooms/safes` |
+| Draw order kept: the stage with `puzzles: false` is the stage the original draws make; every link that kept its lock, the rooms, the exit and the hiding spots are equal; stages 1 to 5 never change; `death/revive.gen` green | `puzzles.generate`, `death/revive.gen` |
+| Every lock has a validator rule that refuses a broken instance (a mutation per type, an orphan switch, a shared switch) | `puzzles.generate` |
+| Ghost runs (hiding reflex, two ghosts, strict death drills) still clear stages that hold the new puzzles | `ghost/gun.solve`, `death/solve` |
 
-## 5. Deliberately changed existing assertions
-* `test/rooms/hiding.stages.test.ts`: spot-to-spot 130 px x-spacing now only asserted for spots at the same y (rooms have levels).
-* `test/death/solve.test.ts`: STRICT 4a skips points inside or beside bodies; STRICT 4b rewritten from "only stage 2 y=0" to the rule "nobody can stand there"; STRICT 2 threshold `cleared > 100` became `> 80` (97 of 114 cleared in my run).
+## 5. Deliberately changed existing assertions and helpers (step 2)
+* `test/rooms/generate.test.ts`: the lock types allowed on a stage are now `locksForStage` plus `puzzlesForStage`; "all five originals occur" replaces "exactly these five occur"; a decoy part may also be a `valve_wheel` (a cracked tool).
+* `test/rooms/solve.test.ts`: the "every one of the five lock types" loop runs until the FIVE ORIGINAL types were solved (`Set<string>`), since a door may now hold a puzzle.
+* `test/rooms/solver.ts`: new branches for the eight puzzles (it reads the notes as a player does); the lone player drops the valve wheel before taking the key (a player who also carries the Pulse Gun has only two hands) and waits out the 10-tick hand cooldown.
+* Step 1's list (hiding spacing at one height only, STRICT 4a/4b, STRICT 2 threshold 80) is unchanged.
 
 ## 6. Interfaces to preserve
-`templatesForStage`, `templatePool`, `templateRoomFor`; `dropRest`, `piecesOf`, `reachablePieces`, `insideBody`; `strictGraph`/`strictReachableFrom`; `canonicalArena`; `requireReachable`. Generator draw order kept (new draws after old; spot picking is still one draw). Revive Cell rule, `heard`/`inspect` events, `canKill`/`contactTicks`/`satiatedTicks` untouched.
+`LOCK_TYPES` (the five, unchanged), `locksForStage`, `PUZZLE_TYPES`, `ANY_LOCK_TYPES`, `puzzlesForStage`, `puzzleChance`, `needText` (all 13), the `Lock` union, `StashDef.needs`, `GenerateOptions.puzzles`, `buildPuzzle`, `switchIdsOf`, `clearRun`, `EscapeRuntime.pressPuzzle/stepPuzzles`. The generator draws the puzzle pass AFTER every earlier draw: a later step must append its own draws after it. Revive Cell rule, `heard`/`inspect` events, `canKill`/`contactTicks`/`satiatedTicks` untouched.
 
-## 7. Known bugs and limits
-* No browser check of tall rooms (the client is untouched, the camera is as before).
-* Even-stage hall rooms keep the original flat layout (the "classic" option).
-* No moving platforms (`sim.ts` is frozen).
-* Server suite is slower (generate and death/solve about 100 to 200 s each).
-* Stage 2 seed 8 with a ghost needs generation attempt 2: legacy behaviour.
-* The strict reach graph is a lower bound: a jump the graph misses is never used by a template.
+## 7. Known issues and limits
+* The "same lock type twice in a row" rule is tested for NEIGHBOURING DOORS of one stage. The HOOK rule "no stage repeats the previous stage's lock type" needs the newness weighting of step 4 (the early stages have only 3 to 5 types available) and is not implemented.
+* The stage table is a first cut (breaker 6, timed 7, plates 8, wiring and sensor 9, levers 11, tool key 12, symbols 14, chance 40 to 75 percent). Step 4 replaces it with the curriculum in docs/HOOK.md.
+* Without the ghost option the flashlight has no cone, so a sensor lights whenever it is in view. With it, the player's aim counts, but my bots never aim, so the cone itself is not exercised by the solver.
+* A body lying on a plate keeps it lit (a dead teammate can hold a plate).
+* A breaker panel has at most 16 states; brute force is bounded only by the trip rule.
+* Nothing is verified in a browser. Rooms of the early stages (1 to 5) are unchanged; the hall rooms of even stages keep the flat layout.
+* Test time: `death/solve` about 190 s and `rooms/generate` about 100 s in my sandbox.
 
 ## 8. Env vars, DB changes
 None.
 
 ## 9. Files the next step may modify
-Step 2 (puzzle pool): `packages/server/src/rooms/generate.ts`, `escapeValidate.ts`, the lock/puzzle modules under `packages/server/src/`, shared lock types, and new tests. Do not touch the frozen files above.
+Step 3 (identify-the-ghost): `death/review.ts` (hide the ghost type only), the ghost evidence modules, shared protocol additions for the journal, new tests. Step 4 (curriculum, second ghost, draft, loot): `packages/server/src/rooms/generate.ts` (append draws after the puzzle pass), `shared/src/rooms/{puzzles,tables}.ts`, `shared/src/variety/*`, new draft and loot modules. Do not touch the frozen files above.
 
 ## 10. Outstanding acceptance criteria
-Steps 2 to 6 (puzzle pool of 12+, identify-the-ghost, curriculum, themes, solver extension and final docs). Step 1's only open item is the developer's `npm ci`, typecheck, test and build run.
+Steps 3 to 6. For step 2 the only open item is your own `npm ci`, typecheck, test and build run.

@@ -1,4 +1,4 @@
-import { ESCAPE_LIMITS, EVIDENCE_PER_TYPE, ITEM_KIND_SPECS, evidenceOwner, ghostLineupForStage, ghostPickFor, ghostSeedFor, ITEM_LIMITS, MOVE_SPEED, TICK_DT, type RoomGraph } from '@wb/shared';
+import { ESCAPE_LIMITS, EVIDENCE_PER_TYPE, ITEM_KIND_SPECS, PLAYER_HEIGHT, evidenceOwner, ghostLineupForStage, ghostPickFor, ghostSeedFor, ITEM_LIMITS, MOVE_SPEED, TICK_DT, parseBreaker, parseGlyphs, parseLegend, parseLever, parseWiring, symbolCode, type RoomGraph } from '@wb/shared';
 import { platformIndex } from '../salvage/reach';
 import { strictReachableFrom as reachableFrom } from './reachStrict';
 import { canonicalArena } from './arenaKey';
@@ -13,6 +13,27 @@ const restsNear = (arena: Parameters<typeof surfaceBelow>[0], x: number, y: numb
 };
 
 type Item = NonNullable<StageDef['items']>[number];
+type SwitchSpec = EscapeSpec['switches'][number];
+
+/** Is the walk along the top of a platform at height `y` between two x positions free of walls and crates (nothing to hop over)? */
+export const clearRun = (solids: readonly { x: number; y: number; w: number; h: number }[], y: number, x0: number, x1: number): boolean => {
+  const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
+  return !solids.some((w) => w.x < hi && w.x + w.w > lo && w.y < y - 1 && w.y + w.h > y - PLAYER_HEIGHT);
+};
+
+/** The ids of the switches a lock is made of (none for the locks that have no switch). */
+export function switchIdsOf(lock: Lock): readonly string[] {
+  switch (lock.type) {
+    case 'two_person': return [lock.switchA, lock.switchB];
+    case 'lever_sequence': return lock.levers;
+    case 'breaker_panel': return lock.breakers;
+    case 'wiring': return lock.terminals;
+    case 'pressure_plates': return lock.plates;
+    case 'timed_switch': return [lock.switchId];
+    case 'flashlight_sensor': return lock.sensors;
+    default: return [];
+  }
+}
 
 /**
  * P3D: structural validation of an escape stage. Returns human-readable errors; a stage with any error must not launch.
@@ -124,7 +145,7 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
   const safeKeys = new Set(spec.safes.map((s) => s.contains).filter((x): x is string => x !== undefined));
   const free = (kind: string, side: Set<string>, gate: { room: string; x: number } | null = null) =>
     items.filter((i) => i.kind === kind && genuine(i) && !safeKeys.has(i.id) && side.has(itemRoom(i)) && !(gate && itemRoom(i) === gate.room && i.x >= gate.x));
-  const needsKind = (l: Lock): 'access_key' | 'battery' | null => (l.type === 'key_item' ? 'access_key' : l.type === 'power' ? 'battery' : null);
+  const needsKind = (l: Lock): 'access_key' | 'battery' | null => (l.type === 'key_item' || l.type === 'tool_key' ? 'access_key' : l.type === 'power' ? 'battery' : null);
 
   spec.links.forEach((l, n) => {
     const side = sides[n]!, lock = l.lock, tag = `link ${n} (${lock.type})`;
@@ -138,10 +159,23 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
       }
       if (digitsOf(ids) !== code) err(`${tag}: the digits in its clues (${digitsOf(ids)}) do not spell the code ${code}`);
     };
-    if (lock.type === 'key_item' || lock.type === 'power') {
+    if (lock.type === 'key_item' || lock.type === 'power' || lock.type === 'tool_key') {
       const kind = needsKind(lock)!;
       const needed = spec.links.filter((m, k) => needsKind(m.lock) === kind && [...sides[k]!].every((r) => side.has(r))).length;
       if (free(kind, side, gate ?? null).length < needed) err(`${tag}: only ${free(kind, side, gate ?? null).length} ${kind} on its near side for ${needed} lock(s) that need one`);
+      if (lock.type === 'tool_key') {
+        // the key lies in a jammed locker that only a carried valve wheel opens; the wheel is a genuine, loose part of the near side; key and wheel together fit in the two slots
+        const st = stashes.find((x) => x.id === lock.stashId);
+        if (!st) err(`${tag}: unknown locker ${lock.stashId}`);
+        else {
+          if (st.needs !== lock.tool) err(`${tag}: its locker must need a ${lock.tool}`);
+          if (!inSide(stashRoom(st), st.x)) err(`${tag}: its locker is beyond the door`);
+          if (!items.some((i) => i.kind === 'access_key' && genuine(i) && i.hidden?.stashId === st.id)) err(`${tag}: its locker must hold a genuine access_key`);
+        }
+        const wheels = items.filter((i) => i.kind === lock.tool && genuine(i) && !i.hidden && inSide(itemRoom(i), i.x));
+        if (wheels.length === 0) err(`${tag}: no genuine ${lock.tool} lies on its near side`);
+        if (2 * 1 > ITEM_LIMITS.carrySlots) err(`${tag}: key and tool do not fit in the slots`);
+      }
     } else if (lock.type === 'code') {
       const k = spec.keypads.find((x) => x.id === lock.keypadId);
       if (!k) err(`${tag}: unknown keypad ${lock.keypadId}`);
@@ -155,7 +189,7 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
       // one person must reach the second switch before the first one goes dark: a conservative walking-time bound
       const ticks = Math.abs(a.x - b.x) / (MOVE_SPEED * TICK_DT) + (Math.abs(a.y - b.y) / 100) * 20;
       if (ticks > ESCAPE_LIMITS.switchHoldTicks * 0.7) err(`${tag}: the switches are too far apart for one player (${Math.ceil(ticks)} ticks > ${Math.floor(ESCAPE_LIMITS.switchHoldTicks * 0.7)})`);
-    } else {
+    } else if (lock.type === 'safe') {
       const s = spec.safes.find((x) => x.id === lock.safeId);
       if (!s) { err(`${tag}: unknown safe ${lock.safeId}`); return; }
       if (!inSide(s.room, s.x)) err(`${tag}: its safe is beyond the door`);
@@ -165,6 +199,111 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
       else {
         if (itemRoom(key) !== s.room) err(`${tag}: the key must be in the safe's room`);
         if (key.hidden?.reveal !== 'interact' || key.hidden.stashId) err(`${tag}: the key must be hidden for the safe (interact, no stash)`);
+      }
+    } else {
+      // ---- P3F step 2: the puzzle pool. Every rule proves the lock is solvable by ONE player with what lies on its near side, and that its words say the truth.
+      const switchGroup = (ids: readonly string[], what: string): SwitchSpec[] => {
+        const g: SwitchSpec[] = [];
+        for (const id of ids) {
+          const x = spec.switches.find((q) => q.id === id);
+          if (!x) err(`${tag}: unknown ${what} ${id}`); else g.push(x);
+        }
+        if (new Set(ids).size !== ids.length) err(`${tag}: a ${what} is named twice`);
+        if (g.length !== ids.length) return [];
+        if (g.some((x) => !inSide(x.room, x.x))) err(`${tag}: a ${what} is beyond the door`);
+        if (new Set(g.map((x) => x.room)).size !== 1) err(`${tag}: its ${what}s must all be in one room`);
+        return g;
+      };
+      /** a row: one height, listed west to east, at least 110 px apart (so "counted from the left" is unambiguous and one press reaches one of them). */
+      const needRow = (g: readonly SwitchSpec[], what: string) => {
+        for (let k = 0; k < g.length; k++) {
+          const a = g[k]!, b = g[k + 1];
+          if (b === undefined) continue;
+          if (b.x - a.x < 110) err(`${tag}: its ${what}s must be listed west to east and at least 110 px apart`);
+          if (a.y !== b.y) err(`${tag}: its ${what}s must stand at one height`);
+        }
+      };
+      const clueIn = (id: string, what: string) => {
+        const c = clueById.get(id);
+        if (!c) { err(`${tag}: unknown ${what} ${id}`); return undefined; }
+        if (!inSide(c.room, c.x)) err(`${tag}: its ${what} is beyond the door`);
+        return c;
+      };
+      const solids = (room: string) => rooms.get(room)?.arena.solids ?? [];
+      switch (lock.type) {
+        case 'lever_sequence': {
+          const g = switchGroup(lock.levers, 'lever');
+          needRow(g, 'lever');
+          if (lock.order.length !== lock.levers.length || [...lock.order].sort((a, b) => a - b).some((v, k) => v !== k)) err(`${tag}: its order must use every lever once`);
+          const c = clueIn(lock.clueId, 'log');
+          if (c && JSON.stringify(parseLever(c.text)) !== JSON.stringify(lock.order)) err(`${tag}: its log does not spell the order of the levers`);
+          break;
+        }
+        case 'breaker_panel': {
+          const g = switchGroup(lock.breakers, 'breaker');
+          needRow(g, 'breaker');
+          if (lock.start.length !== lock.breakers.length || lock.target.length !== lock.breakers.length) err(`${tag}: its start and target must name every breaker`);
+          if (lock.start.every((v, k) => v === lock.target[k])) err(`${tag}: the panel starts already solved`);
+          const c = clueIn(lock.clueId, 'chart');
+          if (c && JSON.stringify(parseBreaker(c.text)) !== JSON.stringify(lock.target)) err(`${tag}: its chart does not spell the right circuits`);
+          break;
+        }
+        case 'wiring': {
+          const g = switchGroup(lock.terminals, 'terminal');
+          needRow(g, 'terminal');
+          if (lock.right >= lock.terminals.length) err(`${tag}: the live wire is not one of the terminals`);
+          const c = clueIn(lock.clueId, 'plan');
+          if (c && parseWiring(c.text) !== lock.right) err(`${tag}: its plan does not name the live wire`);
+          break;
+        }
+        case 'pressure_plates': {
+          const g = switchGroup(lock.plates, 'plate');
+          const a = g[0], b = g[1];
+          if (a === undefined || b === undefined || a.id === b.id) { err(`${tag}: needs two different plates`); break; }
+          const dx = Math.abs(a.x - b.x);
+          if (a.y !== b.y) err(`${tag}: both plates must stand at one height`);
+          if (dx < 200 || dx > 520) err(`${tag}: its plates must be 200 to 520 px apart (they are ${Math.round(dx)})`);
+          if (!clearRun(solids(a.room), a.y, a.x, b.x)) err(`${tag}: a wall or crate stands between its plates`);
+          // a lone player leaves the first plate and must reach the second before the first goes dark
+          const ticks = Math.max(0, dx - 2 * ESCAPE_LIMITS.plateRadius) / (MOVE_SPEED * TICK_DT);
+          if (ticks > ESCAPE_LIMITS.plateHoldTicks * 0.7) err(`${tag}: its plates are too far apart for one player`);
+          break;
+        }
+        case 'timed_switch': {
+          const g = switchGroup([lock.switchId], 'switch');
+          const a = g[0];
+          if (a === undefined) break;
+          // the near door is the one of this link that stands in a room of the near side
+          const near = graph.rooms.flatMap((r) => r.doors.filter((d) => linkOf.get(d.id) === n && side.has(r.id) && r.id === a.room));
+          const d = near[0];
+          if (d === undefined) { err(`${tag}: its switch must be in the room of the door it opens`); break; }
+          const dx = Math.abs(a.x - (d.x + d.w / 2));
+          if (a.y !== d.y + d.h) err(`${tag}: its switch must stand at the height of the door`);
+          if (dx < 200 || dx > 700) err(`${tag}: its switch must be 200 to 700 px from the door (it is ${Math.round(dx)})`);
+          if (!clearRun(solids(a.room), a.y, a.x, d.x + d.w / 2)) err(`${tag}: a wall or crate stands between its switch and the door`);
+          if (dx / (MOVE_SPEED * TICK_DT) + ESCAPE_LIMITS.doorDelayTicks > ESCAPE_LIMITS.timedDoorTicks * 0.6) err(`${tag}: its switch is too far from the door for the time it gives`);
+          break;
+        }
+        case 'flashlight_sensor': {
+          const g = switchGroup(lock.sensors, 'sensor');
+          if (!lock.sensors.includes(lock.genuine)) err(`${tag}: the working sensor is not one of its sensors`);
+          for (const a of g) for (const b of g) if (a.id < b.id && Math.abs(a.x - b.x) < 110 && a.y === b.y) err(`${tag}: two sensors stand too close together`);
+          break;
+        }
+        case 'symbol_match': {
+          const k = spec.keypads.find((x) => x.id === lock.keypadId);
+          if (!k) err(`${tag}: unknown keypad ${lock.keypadId}`); else if (!inSide(k.room, k.x)) err(`${tag}: its keypad is beyond the door`);
+          const pic = clueIn(lock.pictureId, 'picture'), leg = clueIn(lock.legendId, 'legend');
+          if (pic && leg) {
+            if (pic.room === leg.room) err(`${tag}: its picture and its legend must be in two different rooms`);
+            if (k && k.room !== pic.room && k.room !== leg.room) err(`${tag}: its keypad must be in the room of one of its two halves`);
+            const glyphs = parseGlyphs(pic.text), legend = parseLegend(leg.text);
+            const spelled = glyphs && legend ? symbolCode(glyphs, legend) : null;
+            if (spelled !== lock.code) err(`${tag}: its picture and legend spell ${String(spelled)}, not the code ${lock.code}`);
+          }
+          break;
+        }
+        default: break;
       }
     }
   });
@@ -194,7 +333,11 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
     const holdsGun = items.find((i) => i.id === s.contains)?.kind === 'pulse_gun'; // P3E step 4: the gun's own safe belongs to no door
     if (s.contains !== undefined && !holdsGun && !spec.links.some((l) => l.lock.type === 'safe' && l.lock.safeId === s.id)) err(`safe ${s.id} holds a part but no door uses it`);
   }
-  for (const k of spec.keypads) if (!spec.links.some((l) => l.lock.type === 'code' && l.lock.keypadId === k.id)) err(`keypad ${k.id} opens nothing`);
+  for (const k of spec.keypads) if (!spec.links.some((l) => (l.lock.type === 'code' || l.lock.type === 'symbol_match') && l.lock.keypadId === k.id)) err(`keypad ${k.id} opens nothing`);
+  // P3F step 2: every switch belongs to exactly one lock
+  const switchOwner = new Map<string, number>();
+  spec.links.forEach((l, n) => { for (const id of switchIdsOf(l.lock)) { if (switchOwner.has(id) && switchOwner.get(id) !== n) err(`switch ${id} belongs to two locks`); switchOwner.set(id, n); } });
+  for (const x of spec.switches) if (!switchOwner.has(x.id)) err(`switch ${x.id} opens nothing`);
   // a hidden part with no way to reveal it can never be found
   for (const i of items) {
     if (i.hidden && !i.hidden.stashId && !safeKeys.has(i.id)) err(`item ${i.id} is hidden but nothing reveals it`);

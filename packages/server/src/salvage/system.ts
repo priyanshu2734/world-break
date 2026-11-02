@@ -410,6 +410,13 @@ export class ItemSystem {
     if (!st || !this.here(pid, st.room) || !this.sees(pid, st.room, st.def.x, st.def.y - POINT_HEIGHT.stash)) return fail(NOTHING_THERE);
     if (!this.reachOf(me, st.def.x, st.def.y, ITEM_LIMITS.openRange)) return fail('Too far away.');
     if (st.opened) return fail('That is already open.');
+    // P3F step 2: a jammed container opens only for a carried tool of the kind it needs. A genuine tool stays in the hands (it is not used up); a cracked one snaps.
+    const tool = st.def.needs;
+    if (tool !== undefined) {
+      const held = this.carriedBy(pid).map((i) => this.items.get(i)!).find((i) => i.def.kind === tool);
+      if (!held) return fail('Jammed shut.');
+      if (held.def.decoy === true) { this.destroy(held.def.id); this.host.say(`The cracked ${ITEM_KIND_SPECS[tool].label} snaps in the bolt.`, 'bad'); return fail('The tool was cracked and snapped.'); }
+    }
     st.opened = true;
     let n = 0;
     for (const id of this.order) {

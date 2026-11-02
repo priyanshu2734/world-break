@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ITEM_LIMITS, ROOM_LIMITS, StageStateSchema, TUTORIAL_AMBIENT_MIN, VIEW_WIDTH, ambientFor, locksForStage, roomCountForStage, validateRoomGraph, type Difficulty,
+  ITEM_LIMITS, ROOM_LIMITS, StageStateSchema, TUTORIAL_AMBIENT_MIN, VIEW_WIDTH, ambientFor, locksForStage, puzzlesForStage, roomCountForStage, validateRoomGraph, type Difficulty,
 } from '@wb/shared';
 import { attemptEscapeStage, generateEscapeStage, generateEscapeStageDetailed } from '../../src/rooms/generate';
 import { validateEscape } from '../../src/rooms/escapeValidate';
@@ -40,9 +40,10 @@ describe('P3D escape generator: every stage, every seed', () => {
     for (const stage of STAGES) for (const seed of SEEDS) {
       const types = generateEscapeStage(stage, seed).escape!.links.map((l) => l.lock.type);
       for (let i = 1; i < types.length; i++) expect(types[i]).not.toBe(types[i - 1]);
-      for (const t of types) { expect(locksForStage(stage)).toContain(t); seen.add(t); }
+      // P3F step 2 (deliberately changed): a door may also hold one of the new puzzle types the stage table allows
+      for (const t of types) { expect([...locksForStage(stage), ...puzzlesForStage(stage)]).toContain(t); seen.add(t); }
     }
-    expect([...seen].sort()).toEqual(['code', 'key_item', 'power', 'safe', 'two_person']); // all five do occur
+    for (const t of ['code', 'key_item', 'power', 'safe', 'two_person']) expect(seen.has(t), t).toBe(true); // all five originals do occur
   });
 
   it('stage 1 is the tutorial: one room, one gate, one hidden key in a visible locker, an exit, high ambient, nothing else', () => {
@@ -86,7 +87,7 @@ describe('P3D escape generator: every stage, every seed', () => {
   it('every decoy is a cracked look-alike of a part some lock needs; every genuine part has one', () => {
     for (const stage of [2, 8, 40]) for (const seed of SEEDS.slice(0, 10)) {
       const d = generateEscapeStage(stage, seed);
-      for (const i of d.items ?? []) if (i.decoy) { expect(i.tell).toBe(true); expect(['access_key', 'battery']).toContain(i.kind); }
+      for (const i of d.items ?? []) if (i.decoy) { expect(i.tell).toBe(true); expect(['access_key', 'battery', 'valve_wheel']).toContain(i.kind); } // P3F step 2 (deliberately changed): a cracked valve wheel is the decoy of a tool key
       const needsKey = d.escape!.links.some((l) => l.lock.type === 'key_item'), needsBattery = d.escape!.links.some((l) => l.lock.type === 'power');
       if (needsKey) expect((d.items ?? []).some((i) => i.kind === 'access_key' && i.decoy)).toBe(true);
       if (needsBattery) expect((d.items ?? []).some((i) => i.kind === 'battery' && i.decoy)).toBe(true);

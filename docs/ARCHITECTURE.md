@@ -346,3 +346,18 @@ No state machine is added and `phases.ts` is untouched. `Room.tick` sends `TEAM_
 * **Reach:** `server/src/rooms/reachStrict.ts` (graph with no start inside a solid), `arenaKey.ts` (shared instance per equal room), `requireReachable` in `escapeValidate.ts`.
 * **`dropRest`** cuts platforms at walls and crates (`piecesOf`, `reachablePieces`, `insideBody`); `reachablePlatforms` is unchanged.
 * **Test helpers:** `test/rooms/bot.ts` plans routes over the strict graph (`Bot.goTo`), `solver.ts` and `ghost/hideTeam.ts` follow.
+
+## P3F step 2: the puzzle pool (see docs/VARIETY.md, "Puzzle pool")
+* **13 lock types.** `LOCK_TYPES` (the five originals) is unchanged and still what `locksForStage` draws from. `PUZZLE_TYPES` (8 new), `ANY_LOCK_TYPES` (13) and `AnyLockType` are new in `shared/src/rooms/escape.ts`;
+  `needText` covers all 13. Tables, the words of every note, and their parsers are in `shared/src/rooms/puzzles.ts`.
+* **Server-private spec.** `LockSchema` (`rooms/escapeSpec.ts`) gained eight variants. The public state is unchanged in shape: levers, breakers, wire terminals, plates, sensors and the timed switch are
+  ordinary `switches` (a lit flag), pictures and legends are `clues`, the symbol keypad is a `keypad`. So the client needed no change and sees nothing it did not see before. A switch belongs to exactly one lock
+  (validator: `switchIdsOf`, "opens nothing", "belongs to two locks").
+* **Runtime** (`rooms/escape.ts`): `arm` gives each switch a role; `pressPuzzle` handles levers, breakers, wires and the timed switch; `stepPuzzles` runs once per tick for plates (a body within 36 px, feet at the plate's height),
+  sensors (the host's `canSee`, the same rule that cuts a player's view, so with the ghost option the light cone counts) and the timed door (locks again, unless somebody went through). Per-link counters live in `LinkRt`.
+* **Jammed locker.** `StashDef.needs` (optional item kind, never published). `ItemSystem.open` refuses without a carried part of that kind (`Jammed shut.`); a cracked one snaps; a genuine one is not used up.
+* **Generator.** `rooms/puzzleBuild.ts` builds a puzzle; `attemptEscapeStage` runs ONE extra pass after every earlier draw (see VARIETY.md); `GenerateOptions.puzzles: false` gives the stage the original draws make.
+  `ESCAPE_LIMITS.maxSwitches` is now 24 (it was 10).
+* **Validator.** `validateEscape` has a rule per type (solo-solvable from the near side, words spell what the lock needs, walking-time bounds from the real movement speed, no wall between plates or between a timed
+  switch and its door: `clearRun`). The "never the same lock type on two neighbouring doors" rule covers all 13.
+* **Tests.** `puzzles.runtime`, `puzzles.generate`, `puzzles.solve` (server), `puzzles` (shared). The solver (`test/rooms/solver.ts`) plays each type from what the notes say.

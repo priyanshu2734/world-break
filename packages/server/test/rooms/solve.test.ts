@@ -31,15 +31,16 @@ describe('P3D: every generated stage is solvable by one player, within two hand 
   }, SLOW);
 
   it('every one of the five lock types is solved, alone, on generated stages', () => {
-    const solved = new Set<LockType>();
-    for (let runSeed = 100; runSeed < 160 && solved.size < LOCK_TYPES.length; runSeed++) {
+    // P3F step 2 (deliberately changed): doors may now hold one of the eight new puzzles too, so the loop runs until all FIVE ORIGINAL types were solved
+    const solved = new Set<string>();
+    for (let runSeed = 100; runSeed < 160 && !LOCK_TYPES.every((t: LockType) => solved.has(t)); runSeed++) {
       const { room, ids } = newRun(1, runSeed);
       const def = advanceTo(room, ids, 12 + (runSeed % 30));
       solveStage(room, ids, def);
       expect(room.phase).toBe('stage_complete');
       for (const l of def.escape!.links) solved.add(l.lock.type);
     }
-    expect([...solved].sort()).toEqual([...LOCK_TYPES].sort());
+    for (const t of LOCK_TYPES) expect(solved.has(t), t).toBe(true);
   }, SLOW);
 });
 

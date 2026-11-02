@@ -1,12 +1,13 @@
 import {
-  ESCAPE_LIMITS, ITEM_LIMITS, TUTORIAL_AMBIENT_MIN, createRng, decoysForStage, deriveSeed, EVIDENCE_BY_TYPE, EVIDENCE_PER_TYPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, ghostTuning, hidingSpotsForStage, locksForStage, roomCountForStage, templateRoomFor, templatesForStage,
-  type Difficulty, type DoorSite, type LockType, type RoomDef, type RoomGraph, type Rng, type Surface, type TemplateId,
+  ESCAPE_LIMITS, ITEM_LIMITS, TUTORIAL_AMBIENT_MIN, createRng, decoysForStage, deriveSeed, EVIDENCE_BY_TYPE, EVIDENCE_PER_TYPE, ghostLineupForStage, ghostPickFor, ghostPresentOnStage, ghostSeedFor, ghostTuning, hidingSpotsForStage, locksForStage, NEEDS_BACK_ROOM, puzzleChance, puzzlesForStage, roomCountForStage, templateRoomFor, templatesForStage,
+  type AnyLockType, type Difficulty, type DoorSite, type LockType, type RoomDef, type RoomGraph, type Rng, type Surface, type TemplateId,
 } from '@wb/shared';
 import { StageDefSchema, type StageDef } from '../systems/stageDef';
 import { validateStageDef } from '../systems/validate';
 import type { EscapeSpec, Lock } from './escapeSpec';
 import { bareEscapeStage } from './stageBase';
 import { requireGhostLevel, requireGun, requireReachable, requireRevive } from './escapeValidate';
+import { buildPuzzle } from './puzzleBuild';
 
 /** P3E step 4: from this stage the Pulse Gun is in a SAFE (a 3-digit combination found on notes in the start room); before it, in a plain locker. */
 export const GUN_SAFE_FROM_STAGE = 5;
@@ -14,7 +15,7 @@ export const GUN_SAFE_FROM_STAGE = 5;
 /** P4 step 6: hiding spots of a ghost stage lie on their own grid, half a step off the item grid. */
 const HIDE_STEP = 130, HIDE_SHIFT = 65, HIDE_CLEAR = 60;
 /** Options of the generator. `ghost: true` = the run has a ghost: every ghost stage then holds one Pulse Gun. Default (off) = exactly the earlier stages. */
-export interface GenerateOptions { ghost?: boolean; /** P3E step 5: the mode (hiding spots per room come from the tuning table). Default easy. */ difficulty?: Difficulty }
+export interface GenerateOptions { /** P3F step 2: false = the puzzle pool is not used (every door keeps its original lock): exactly the stage the original draws make. Tests compare against it. Default true. */ puzzles?: boolean; ghost?: boolean; /** P3E step 5: the mode (hiding spots per room come from the tuning table). Default easy. */ difficulty?: Difficulty }
 
 /**
  * P3D step 5: the seeded escape-stage generator. It builds EVERY stage of an escape run (stage 1 included) from `(stage, seed)` alone, so a
@@ -347,6 +348,44 @@ export function attemptEscapeStage(stage: number, seed: number, tryNo: number, o
     if (open.length > 0) {
       const p = rng.pick(open), s = take(p, rng, 'floor');
       items.push({ id: `${prefix}_revive`, kind: 'revive_cell', x: s.x, y: s.y, room: p.id });
+    }
+  }
+
+  // ---- P3F step 2: THE PUZZLE POOL. Every draw above is exactly what it was; this pass comes AFTER all of them and draws last, so a stage in which nothing is replaced is
+  //      byte for byte the stage it was. A door's original lock may be replaced by one of the eight new puzzle types (`shared/src/rooms/puzzles.ts`): the original lock's own parts
+  //      (every id that starts with the lock's tag) are taken away and their spots freed, and the puzzle's parts are placed on the near side. Never the type of the door before it.
+  const finalTypes: AnyLockType[] = [...types];
+  if (!single && opts.puzzles !== false) {
+    const pool = puzzlesForStage(stage), chance = puzzleChance(stage);
+    for (let i = 0; i < types.length && pool.length > 0; i++) {
+      if (!rng.chance(chance)) continue;
+      const where = plans[i]!, back = i > 0 ? plans[i - 1]! : null, tag = `${prefix}_l${i}`;
+      const cands = pool.filter((t) => t !== finalTypes[i - 1] && (back !== null || !NEEDS_BACK_ROOM.has(t)));
+      if (cands.length === 0) continue;
+      const type = rng.pick(cands);
+      const mine = (o: { id: string }) => o.id.startsWith(`${tag}_`);
+      const gone: { room: string; x: number; y: number }[] = [];
+      for (const o of items) if (mine(o)) gone.push({ room: o.room ?? plans[0]!.id, x: o.x, y: o.y });
+      for (const o of [...stashes, ...clues, ...keypads, ...safes, ...switches]) if (mine(o)) gone.push({ room: o.room ?? plans[0]!.id, x: o.x, y: o.y });
+      const saved = plans.map((p) => p.taken);
+      plans.forEach((p) => { p.taken = p.taken.filter((t) => !gone.some((g) => g.room === p.id && g.x === t.x && g.y === t.y)); });
+      try {
+        const keptItems = items.filter((o) => !mine(o)), keptStashes = stashes.filter((o) => !mine(o)), keptClues = clues.filter((o) => !mine(o));
+        const built = buildPuzzle(type, {
+          rng, decoys, tag, room: where, back, itemBudget: ITEM_LIMITS.maxItemsPerStage - keptItems.length,
+          spots: (r, surface) => spots(r, surface), take: (r, surface, keep) => take(r, rng, surface, keep),
+        });
+        const nextItems = [...keptItems, ...built.items], nextStashes = [...keptStashes, ...built.stashes], nextClues = [...keptClues, ...built.clues];
+        const nextKeypads = [...keypads.filter((o) => !mine(o)), ...built.keypads], nextSafes = safes.filter((o) => !mine(o)), nextSwitches = [...switches.filter((o) => !mine(o)), ...built.switches];
+        if (nextItems.length > ITEM_LIMITS.maxItemsPerStage || nextStashes.length > ITEM_LIMITS.maxStashesPerStage || nextClues.length > ESCAPE_LIMITS.maxClues
+          || nextKeypads.length > ESCAPE_LIMITS.maxKeypads || nextSwitches.length > ESCAPE_LIMITS.maxSwitches) throw new Error('over a stage cap');
+        const swap = <T,>(list: T[], next: T[]): void => { list.splice(0, list.length, ...next); };
+        swap(items, nextItems); swap(stashes, nextStashes); swap(clues, nextClues); swap(keypads, nextKeypads); swap(safes, nextSafes); swap(switches, nextSwitches);
+        links[i]!.lock = built.lock;
+        finalTypes[i] = type;
+      } catch {
+        plans.forEach((p, k) => { p.taken = saved[k]!; }); // it did not fit: this door keeps its original lock
+      }
     }
   }
 
