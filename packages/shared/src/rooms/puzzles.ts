@@ -6,12 +6,12 @@ import { PUZZLE_TYPES, type PuzzleType } from './escape';
  * The words are produced here and read back by `parse*` below, so the generator, the validator and the solver tests can never disagree about them.
  */
 
-/** From which stage each puzzle type may appear (docs/VARIETY.md). Stage 11 and 14 follow docs/HOOK.md (lever sequence, symbol match). */
+/** From which stage each puzzle type may appear: the curriculum of docs/HOOK.md (`variety/curriculum.ts`), one new puzzle per stage from 7 to 15 (P3F step 4; step 2 had a first-cut table). */
 export const PUZZLE_FROM_STAGE: Readonly<Record<PuzzleType, number>> = {
-  breaker_panel: 6, timed_switch: 7, pressure_plates: 8, wiring: 9, flashlight_sensor: 9, lever_sequence: 11, tool_key: 12, symbol_match: 14,
+  breaker_panel: 7, pressure_plates: 8, flashlight_sensor: 9, lever_sequence: 11, tool_key: 12, timed_switch: 13, symbol_match: 14, wiring: 15,
 };
 
-/** The puzzle types a stage may use, in table order. Stages 1 to 5 have none: the original locks teach the basics first. */
+/** The puzzle types a stage may use, in table order. Stages 1 to 6 have none: the original locks teach the basics first. */
 export function puzzlesForStage(stage: number): readonly PuzzleType[] {
   const s = Number.isFinite(stage) ? Math.max(1, Math.floor(stage)) : 1;
   return PUZZLE_TYPES.filter((t) => PUZZLE_FROM_STAGE[t] <= s);

@@ -16,7 +16,7 @@ function armed(n = 2) {
   expect(room.start('p0').ok).toBe(true);
   for (let i = 0; i < 20 && room.phase !== 'playing'; i++) room.tick();
   const rec = room.stageRecord!;
-  const def = generateEscapeStage(rec.stage, rec.seed, { ghost: true });
+  const def = room.stageDef ?? generateEscapeStage(rec.stage, rec.seed, { ghost: true }); // P3F step 4: a later stage depends on the run's history, so the room's own definition is the truth
   expect(def.id).toBe(rec.defId);
   const arenas = new Map(def.rooms!.rooms.map((r) => [r.id, r.arena]));
   const team = new Team(room, (id) => arenas.get(id)!);

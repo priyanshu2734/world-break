@@ -25,11 +25,12 @@ describe('P3F step 2: the pool', () => {
   });
 
   it('the table: none before stage 6, then each type from its own stage (lever sequence 11 and symbol match 14, as docs/HOOK.md says); the chance is bounded', () => {
-    for (let s = 1; s <= 5; s++) expect(puzzlesForStage(s)).toEqual([]);
-    expect(puzzlesForStage(6)).toEqual(['breaker_panel']);
+    for (let s = 1; s <= 6; s++) expect(puzzlesForStage(s)).toEqual([]); // P3F step 4: the curriculum table (first puzzle at stage 7)
+    expect(puzzlesForStage(7)).toEqual(['breaker_panel']);
     expect(PUZZLE_FROM_STAGE.lever_sequence).toBe(11);
     expect(PUZZLE_FROM_STAGE.symbol_match).toBe(14);
-    expect([...puzzlesForStage(14)].sort()).toEqual([...PUZZLE_TYPES].sort());
+    expect([...puzzlesForStage(15)].sort()).toEqual([...PUZZLE_TYPES].sort()); // P3F step 4: wiring joins at 15
+    expect(puzzlesForStage(14)).not.toContain('wiring');
     expect(puzzlesForStage(1_000_000).length).toBe(8);
     expect(puzzlesForStage(Number.NaN)).toEqual([]);
     for (let s = 1; s <= 200; s++) { expect(puzzleChance(s)).toBeGreaterThanOrEqual(0); expect(puzzleChance(s)).toBeLessThanOrEqual(0.75); }
@@ -60,7 +61,9 @@ describe('P3F step 2: the pool', () => {
 
   it('a puzzle is more likely the later the stage, and a stage that is not changed is the stage it always was (the draw order is kept)', () => {
     for (const { stage, seed, def } of SAMPLE) {
-      const legacy = generateEscapeStage(stage, seed, { puzzles: false });
+      // P3F step 4: a stage whose curriculum lock is a puzzle cannot be built without puzzles; it has no 'legacy' twin to compare with
+      let legacy: ReturnType<typeof generateEscapeStage>;
+      try { legacy = generateEscapeStage(stage, seed, { puzzles: false }); } catch { continue; }
       const converted = new Set<number>();
       typesOf(def).forEach((t, i) => { if (t !== typesOf(legacy)[i]) converted.add(i); });
       // the rooms, the hiding spots, the exit and every link that kept its lock are exactly what the original draws made

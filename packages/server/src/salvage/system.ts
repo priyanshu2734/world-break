@@ -84,13 +84,17 @@ export class ItemSystem {
   /** Targets where a repair or install was attempted: this is what unlocks the hardcore listing. */
   private readonly tried = new Set<string>();
   private readonly clarity: Difficulty;
+  private readonly extraSlots: () => number;
+  /** Slots a player may carry: the table's two, plus the upgrade's (never more than one extra). */
+  private get cap(): number { return ITEM_LIMITS.carrySlots + Math.min(1, Math.max(0, Math.floor(this.extraSlots()))); }
   private readonly arenaOfRoom: ((room: string) => Arena | undefined) | null;
 
   constructor(
     defs: readonly ItemDef[], needs: readonly NeedDef[], private readonly arena: Arena, private readonly host: ItemHost,
-    opts: { stashes?: readonly StashDef[]; clarity?: Difficulty; arenaOf?: (room: string) => Arena | undefined; defaultRoom?: string } = {},
+    opts: { stashes?: readonly StashDef[]; clarity?: Difficulty; /** P3F step 4: extra carry slots from the team's upgrades (read each time, so a pick counts at once). */ extraSlots?: () => number; arenaOf?: (room: string) => Arena | undefined; defaultRoom?: string } = {},
   ) {
     this.clarity = opts.clarity ?? 'easy';
+    this.extraSlots = opts.extraSlots ?? (() => 0);
     this.arenaOfRoom = opts.arenaOf ?? null;
     for (const st of opts.stashes ?? []) this.stashes.set(st.id, { def: st, opened: false, room: st.room ?? opts.defaultRoom ?? null });
     for (const d of defs) {
@@ -350,7 +354,7 @@ export class ItemSystem {
     if (locked) return fail(locked);
     if (!this.reachOf(me, item.x, item.y, ITEM_LIMITS.pickupRange)) return fail('Too far away.');
     const used = this.usedSlots(p);
-    if (used + item.slots > ITEM_LIMITS.carrySlots) {
+    if (used + item.slots > this.cap) {
       return fail(item.slots === 2 ? 'That is heavy. It needs both hands free.' : 'Your hands are full. Drop or swap something.');
     }
     item.state = 'carried'; item.carrierId = pid; item.targetId = null;
@@ -379,7 +383,7 @@ export class ItemSystem {
     const locked = this.pickLocked(p);
     if (locked) return fail(locked);
     if (!this.reachOf(me, incoming.x, incoming.y, ITEM_LIMITS.pickupRange)) return fail('Too far away.');
-    if (this.usedSlots(p) - out.slots + incoming.slots > ITEM_LIMITS.carrySlots) return fail('That will not fit in your hands, even after dropping that.');
+    if (this.usedSlots(p) - out.slots + incoming.slots > this.cap) return fail('That will not fit in your hands, even after dropping that.');
     this.place(dropId, me.x, me.y, this.playerRoom(pid));
     incoming.state = 'carried'; incoming.carrierId = pid; incoming.targetId = null;
     p.carried.push(pickId);
@@ -396,7 +400,7 @@ export class ItemSystem {
     if (!to || !toPos || !toPos.connected || !this.here(pid, this.playerRoom(toId))) return fail(NO_RECEIVER);
     if (this.host.tick < p.nextHandoverTick) return fail('You just handed something over. Wait a moment.');
     if (!this.reachOf(me, toPos.x, toPos.y, ITEM_LIMITS.handoverRange)) return fail('Too far away.');
-    if (this.usedSlots(to) + it.slots > ITEM_LIMITS.carrySlots) return fail('Their hands are full.');
+    if (this.usedSlots(to) + it.slots > this.cap) return fail('Their hands are full.');
     p.carried = p.carried.filter((id) => id !== itemId);
     to.carried.push(itemId);
     it.carrierId = toId;
@@ -461,7 +465,7 @@ export class ItemSystem {
   /** Hidden, consumed and destroyed items are not listed, and the decoy flag is never published. */
   publicState(): ItemsPublic {
     return {
-      carrySlots: ITEM_LIMITS.carrySlots,
+      carrySlots: this.cap,
       items: this.order.map((id) => this.items.get(id)!).filter((i) => isVisible(i.state)).map((i) => ({
         id: i.def.id, kind: i.def.kind, label: ITEM_KIND_SPECS[i.def.kind].label, slots: i.slots,
         state: i.state as 'in_world' | 'carried' | 'installed',

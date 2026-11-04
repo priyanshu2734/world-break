@@ -65,7 +65,7 @@ export function drill(stage: number, seed: number, players: number, o: DrillOpti
   const lethal = o.lethal === true;
   death.setLethal(lethal);
   const rec = room.stageRecord!;
-  const def = generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty });
+  const def = room.stageDef ?? generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty }); // P3F step 4: a later stage depends on the run's history, so the room's own definition is the truth
   if (def.id !== rec.defId) throw new Error('room and generator disagree');
   const plan = o.plan ?? 'none';
   const sim = (room as unknown as { sim: GameSim }).sim;

@@ -57,6 +57,8 @@ export const EscapeSpecSchema = z.object({
    * (they must stand on a solid). They are never published.
    */
   /** P3E step 5 (additive, optional): evidence each ghost type of the stage leaves (data only; P3F uses it). */
+  /** P3F step 4: the optional loot cache (its outcome is fixed by the stage seed and never leaves the server). */
+  loot: z.object({ id: Id, room: Id, ...Pt, outcome: z.enum(['score', 'upgrade', 'hazard']) }).optional(),
   ghostEvidence: z.array(z.object({ id: Id, room: Id, ...Pt, kind: z.enum(EVIDENCE_KINDS), ghost: z.enum(GHOST_TYPES) })).max(ESCAPE_LIMITS.maxEvidence).optional(),
   hidingSpots: z.array(z.object({ id: Id, room: Id, ...Pt, kind: z.enum(['closet', 'vent']) })).max(ESCAPE_LIMITS.maxHidingSpots).optional(),
 });

@@ -17,6 +17,8 @@ import { DoorView } from '../ui/DoorView';
 import { EscapeView } from '../ui/EscapeView';
 import { CodePad } from '../ui/CodePad';
 import { JournalView } from '../ui/JournalView';
+import { DraftView } from '../ui/DraftView';
+import { voteFromKeys } from '../ui/draftLogic';
 import { ESCAPE_KEYS_HINT, goalLine, nearestUse, stateForRoom, takesCode, useIntent, usablesIn, type EscapeUse } from '../ui/escapeUse';
 import { cameraScroll, pickArena } from '../ui/roomMath';
 import { aimAngle as aimOf, darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
@@ -85,6 +87,7 @@ export class GameScene extends Phaser.Scene {
   /** P3D escape stages: keypads, safes, clues, switches, the exit, the E prompt and the player's notes. */
   private escapeView!: EscapeView;
   private journalView!: JournalView;
+  private draftView!: DraftView;
   private pad!: CodePad;
   /** What E would act on this frame (null = nothing in reach). */
   private escapeNearest: EscapeUse | null = null;
@@ -173,6 +176,8 @@ export class GameScene extends Phaser.Scene {
       else void this.session.escapeAction({ action: 'mark', ghost });
     });
     this.events.once('shutdown', () => this.journalView.destroy());
+    this.draftView = new DraftView(this);
+    this.events.once('shutdown', () => this.draftView.destroy());
     this.pad = new CodePad(this, (t, code) => { void this.session.escapeAction({ action: 'enter_code', targetId: t.id, code }); });
     this.events.once('shutdown', () => this.doors.destroy());
     this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
@@ -420,6 +425,18 @@ export class GameScene extends Phaser.Scene {
     const nAction = stageKeyAction({ nPressed, isHost, phase: room.phase });
     if (nAction === 'next') void s.nextStage();
     else if (nAction === 'retry') void s.retryStage();
+    // P3F step 4: the draft pick between stages (keys 1 to 3 vote; the server counts and settles it)
+    // (the keys are only READ between stages: during play 1 to 3 belong to the tools)
+    if (room.phase === 'stage_complete') {
+      const KD = this.stageKeys, JD = Phaser.Input.Keyboard.JustDown;
+      const votePress = [JD(KD.ONE), JD(KD.TWO), JD(KD.THREE)];
+      if (room.draft && !room.draft.picked) {
+        const v = voteFromKeys(votePress, room.draft.options.length);
+        if (v !== null) void s.voteDraft(v);
+      }
+    }
+    if (room.phase !== 'stage_complete') s.draftVote = null;
+    this.draftView.update(room.phase === 'stage_complete' ? room.draft : undefined, s.draftVote, isHost);
     this.reviewView.update({ phase: room.phase, review: s.review, isHost, stage: g.stage });
     this.holdBar.width = Math.min(1, this.resetHeld / RESET_HOLD_MS) * 200;
     if (this.resetHeld >= RESET_HOLD_MS) { this.resetHeld = 0; void s.resetArena(); }

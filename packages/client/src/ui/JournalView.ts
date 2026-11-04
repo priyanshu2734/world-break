@@ -10,6 +10,7 @@ export class JournalView {
   private readonly head: Phaser.GameObjects.Text;
   private readonly rows: Phaser.GameObjects.Text[] = [];
   private readonly buttons: Phaser.GameObjects.Text[] = [];
+  private readonly teach: Phaser.GameObjects.Text;
   private shown = false;
   private journal: Journal | null = null;
   private last = '';
@@ -19,6 +20,8 @@ export class JournalView {
     this.head = scene.add.text(344, 70, '', { ...FONT, fontSize: '15px', color: '#d6ccff' }).setDepth(121).setScrollFactor(0);
     const rules = scene.add.text(344, 94, JOURNAL_RULES, { ...FONT, fontSize: '12px', color: '#ffd9a0', wordWrap: { width: 592 } }).setDepth(121).setScrollFactor(0);
     this.parts.push(bg, this.head, rules);
+    // the one line that explains the missing ghost names: shown while the server sends it (a player who joins later still gets it)
+    this.teach = scene.add.text(16, 120, '', { ...FONT, fontSize: '13px', color: '#d6ccff', backgroundColor: '#1a1530', padding: { x: 6, y: 4 }, wordWrap: { width: 420 } }).setDepth(119).setScrollFactor(0).setVisible(false);
     (['wisp', 'shade', 'howler'] as const).forEach((g, i) => {
       const y = 140 + i * 90;
       this.rows.push(scene.add.text(344, y, '', { ...FONT, fontSize: '12px', color: '#bfe8ff', wordWrap: { width: 470 } }).setDepth(121).setScrollFactor(0));
@@ -37,6 +40,8 @@ export class JournalView {
   /** `journal` undefined = no ghost stage (or a spectator): the panel is closed and empty. */
   update(journal: Journal | undefined): void {
     this.journal = journal ?? null;
+    const line = journal?.teach ?? '';
+    this.teach.setVisible(line !== '' && !this.shown).setText(line);
     if (!journal && this.shown) { this.shown = false; this.apply(); }
     const key = JSON.stringify(journal ?? null);
     if (key === this.last) return;
@@ -50,5 +55,5 @@ export class JournalView {
   }
 
   private apply(): void { for (const p of this.parts) (p as unknown as { setVisible(v: boolean): unknown }).setVisible(this.shown); }
-  destroy(): void { for (const p of this.parts) p.destroy(); }
+  destroy(): void { for (const p of this.parts) p.destroy(); this.teach.destroy(); }
 }

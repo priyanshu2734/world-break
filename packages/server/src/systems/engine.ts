@@ -1,5 +1,5 @@
 import {
-  ACTION_MIN_GAP_TICKS, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
+  ACTION_MIN_GAP_TICKS, LOOT, ambientFor, ANCHOR_RULES, ARENA, CHANNEL_RANGE_SLACK, INTERACT_RANGE, PLATE_DY, PLATE_HALF_W, RANGE_DY, TICK_DT, TOOL_SPECS,
   type AbilityAction, type Arena, type Difficulty, type EscapeAction, type GhostType, type ItemAction, type ItemKind, type StageAction, type StageState, type ToolId,
 } from '@wb/shared';
 import type { Entity, Objective, StageDef } from './stageDef';
@@ -94,6 +94,8 @@ export class StageEngine {
     /** `difficulty` sets the clue clarity of requirements (easy: names + hint, intermediate: silhouettes, hardcore: nothing until tried). */
     opts: {
       revBase?: number; arena?: Arena; difficulty?: Difficulty; stage?: number;
+      /** P3F step 4: extra carry slots from the team's upgrades. */
+      extraSlots?: () => number;
       /** P3D: how the escape mechanics reach the rooms (who is where, carrying a player through a door). Omitted = everyone in the start room. */
       rooms?: {
         roomOf(playerId: string): string | undefined; sendThrough(playerId: string, doorId: string): boolean;
@@ -116,7 +118,7 @@ export class StageEngine {
     this.objectives = new Map(def.objectives.map((o) => [o.id, o]));
     this.disaster = def.disaster ? new DisasterRuntime(def.disaster) : null;
     this.items = def.items && def.items.length > 0 ? new ItemSystem(def.items, def.needs ?? [], this.arena, this.itemHost(), {
-      stashes: def.stashes ?? [], clarity: opts.difficulty ?? 'easy',
+      stashes: def.stashes ?? [], clarity: opts.difficulty ?? 'easy', ...(opts.extraSlots ? { extraSlots: opts.extraSlots } : {}),
       ...(def.rooms ? { arenaOf: (room: string) => def.rooms!.rooms.find((r) => r.id === room)?.arena, defaultRoom: def.rooms.start } : {}),
     }) : null;
     this.escape = def.escape && def.rooms ? new EscapeRuntime(def.escape, def.rooms, this.escapeHost(opts.rooms, def.rooms.start), this.items) : null;
@@ -234,8 +236,17 @@ export class StageEngine {
       sendThrough: (id, doorId) => rooms?.sendThrough(id, doorId) ?? false,
       canSee: (id, x, y) => rooms?.canSee(id, x, y) ?? true,
       clear: () => self.clearStage('Someone reached the way out. Stage cleared.'),
+      // P3F step 4: the optional cache. Score and the penalty are paid here; the upgrade and the noise belong to the Room (`lootHook`)
+      loot: (o: { outcome: 'score' | 'upgrade' | 'hazard'; room: string; x: number; y: number; by: string }): string => {
+        if (o.outcome === 'score') { self.award(LOOT.category, LOOT.scorePoints); return `The cache holds salvage: +${LOOT.scorePoints} points.`; }
+        if (o.outcome === 'hazard') { self.award(LOOT.category, -LOOT.hazardPenalty); self.lootHook?.(o); return `The cache was rigged. It cracks loudly (-${LOOT.hazardPenalty} points) and everything nearby heard it.`; }
+        return self.lootHook?.(o) ?? 'The cache held a spare part, but nothing came of it.';
+      },
     };
   }
+
+  /** P3F step 4: set by the Room: pays the parts of a cache the engine cannot (an upgrade, the noise of a hazard). Returns the words the opener reads. */
+  lootHook: ((o: { outcome: 'score' | 'upgrade' | 'hazard'; room: string; x: number; y: number; by: string }) => string) | null = null;
 
   /** P3F step 3: the ghost types the team's journal got right (empty without a journal). */
   identifiedGhosts(): GhostType[] { return this.escape?.identified() ?? []; }

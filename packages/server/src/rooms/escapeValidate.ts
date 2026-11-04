@@ -1,4 +1,4 @@
-import { ESCAPE_LIMITS, EVIDENCE_PER_TYPE, ITEM_KIND_SPECS, PLAYER_HEIGHT, evidenceOwner, ghostLineupForStage, ghostPickFor, ghostSeedFor, ITEM_LIMITS, MOVE_SPEED, TICK_DT, parseBreaker, parseGlyphs, parseLegend, parseLever, parseWiring, symbolCode, type RoomGraph } from '@wb/shared';
+import { ESCAPE_LIMITS, EVIDENCE_PER_TYPE, ITEM_KIND_SPECS, PLAYER_HEIGHT, evidenceOwner, featuredLock, ghostLineupForStage, ghostPickWith, ghostSeedFor, type VarietyHistory, ITEM_LIMITS, MOVE_SPEED, TICK_DT, parseBreaker, parseGlyphs, parseLegend, parseLever, parseWiring, symbolCode, type RoomGraph } from '@wb/shared';
 import { platformIndex } from '../salvage/reach';
 import { strictReachableFrom as reachableFrom } from './reachStrict';
 import { canonicalArena } from './arenaKey';
@@ -19,6 +19,18 @@ type SwitchSpec = EscapeSpec['switches'][number];
 export const clearRun = (solids: readonly { x: number; y: number; w: number; h: number }[], y: number, x0: number, x1: number): boolean => {
   const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
   return !solids.some((w) => w.x < hi && w.x + w.w > lo && w.y < y - 1 && w.y + w.h > y - PLAYER_HEIGHT);
+};
+
+/** Is there ONE unbroken surface at height `y` under both x positions (no pit or gap to jump between them)? A body may stand 14 px past an edge. */
+export const sameSurface = (solids: readonly { x: number; y: number; w: number; h: number }[], y: number, x0: number, x1: number): boolean => {
+  const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
+  const tops = solids.filter((w) => Math.abs(w.y - y) < 1.5).sort((p, q) => p.x - q.x);
+  let from = Number.NaN, to = Number.NaN;
+  for (const w of tops) {
+    if (Number.isNaN(from) || w.x > to + 4) { if (!Number.isNaN(from) && from - 14 <= lo && to + 14 >= hi) return true; from = w.x; to = w.x + w.w; }
+    else to = Math.max(to, w.x + w.w);
+  }
+  return !Number.isNaN(from) && from - 14 <= lo && to + 14 >= hi;
 };
 
 /** The ids of the switches a lock is made of (none for the locks that have no switch). */
@@ -264,6 +276,7 @@ export function validateEscape(spec: EscapeSpec, graph: RoomGraph, def: Pick<Sta
           if (a.y !== b.y) err(`${tag}: both plates must stand at one height`);
           if (dx < 200 || dx > 520) err(`${tag}: its plates must be 200 to 520 px apart (they are ${Math.round(dx)})`);
           if (!clearRun(solids(a.room), a.y, a.x, b.x)) err(`${tag}: a wall or crate stands between its plates`);
+          if (!sameSurface(solids(a.room), a.y, a.x, b.x)) err(`${tag}: a gap lies between its plates (both must be on one unbroken surface)`);
           // a lone player leaves the first plate and must reach the second before the first goes dark
           const ticks = Math.max(0, dx - 2 * ESCAPE_LIMITS.plateRadius) / (MOVE_SPEED * TICK_DT);
           if (ticks > ESCAPE_LIMITS.plateHoldTicks * 0.7) err(`${tag}: its plates are too far apart for one player`);
@@ -404,7 +417,7 @@ export function requireGun(def: Pick<StageDef, 'items'>): string[] {
  * walking and jumping, which the stage's own solvability proof covers), no room holds more than the cap, and every ghost type that runs on the stage left
  * its pieces of evidence (and only its own kind).
  */
-export function requireGhostLevel(def: Pick<StageDef, 'rooms' | 'escape'>, stage: number, stageSeed: number): string[] {
+export function requireGhostLevel(def: Pick<StageDef, 'rooms' | 'escape'>, stage: number, stageSeed: number, history: VarietyHistory = []): string[] {
   const errs: string[] = [];
   const graph = def.rooms, spec = def.escape;
   if (!graph || !spec) return ['a ghost stage needs rooms and an escape spec'];
@@ -417,7 +430,7 @@ export function requireGhostLevel(def: Pick<StageDef, 'rooms' | 'escape'>, stage
       if (!floor) errs.push(`hiding spot ${h.id} is not on a floor of ${r.id}`);
     }
   }
-  const lineup = ghostLineupForStage(stage, ghostPickFor(ghostSeedFor(stageSeed, stage)));
+  const lineup = ghostLineupForStage(stage, ghostPickWith(stage, ghostSeedFor(stageSeed, stage), history));
   for (const type of lineup) {
     const n = (spec.ghostEvidence ?? []).filter((e) => e.ghost === type).length;
     if (n < EVIDENCE_PER_TYPE) errs.push(`the ${type} left ${n} pieces of evidence (needs ${EVIDENCE_PER_TYPE})`);
@@ -467,8 +480,16 @@ export function requireReachable(def: Pick<StageDef, 'rooms' | 'escape' | 'items
       for (const s of spec.switches) if (s.room === r.id) check('switch', s.id, s.x, s.y);
       for (const h of spec.hidingSpots ?? []) if (h.room === r.id) check('hiding spot', h.id, h.x, h.y);
       for (const v of spec.ghostEvidence ?? []) if (v.room === r.id) check('evidence', v.id, v.x, v.y);
+      if (spec.loot && spec.loot.room === r.id) check('loot cache', spec.loot.id, spec.loot.x, spec.loot.y);
       if (spec.exit.room === r.id) check('exit', 'exit', spec.exit.x, spec.exit.y);
     }
   }
   return errs;
+}
+
+/** P3F step 4: a stage of the curriculum (1 to 15) holds the lock the curriculum names for it. A stage that lacks it is thrown away and the next derived attempt is used. */
+export function requireFeatured(def: Pick<StageDef, 'escape'>, stage: number): string[] {
+  const want = featuredLock(stage);
+  if (want === null || !def.escape) return [];
+  return def.escape.links.some((l) => l.lock.type === want) ? [] : [`stage ${stage} must feature a ${want} lock`];
 }

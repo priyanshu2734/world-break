@@ -131,6 +131,9 @@ export const JOURNAL = {
 /** The Pulse Gun's recharge with `correct` right journal entries (any right entry makes it a quarter quicker; two do not stack). */
 export function gunCooldown(base: number, correct: number): number { return correct > 0 ? Math.max(1, Math.round(base * JOURNAL.gunShare)) : base; }
 
+/** The same, scaled by the team's upgrades (`draft/effectsOf(...).gunMul`): rounded, never below one tick. */
+export function gunCooldownWith(base: number, correct: number, mul: number): number { return Math.max(1, Math.round(gunCooldown(base, correct) * mul)); }
+
 /** The field guide: what each kind of evidence looks like, who leaves it, and the counter to each type. Static lore, the same on every stage. */
 export const EVIDENCE_LABELS: Readonly<Record<EvidenceKind, string>> = {
   cold_breath: 'Cold breath', faint_whisper: 'A faint whisper', wet_footprints: 'Wet footprints',
@@ -142,6 +145,8 @@ export const GHOST_COUNTERS: Readonly<Record<GhostType, string>> = {
   wisp: 'Hide and sneak: a Wisp hunts by sight and sound.',
 };
 /** The one line a first-time player reads before it matters (shown at the first stage from `IDENTIFY_FROM_STAGE`). */
+/** Connected play ticks (20 s) a player is sent the teaching line for. */
+export const TEACH_TICKS = 400;
 export const IDENTIFY_TEACH_LINE = 'From now on the ghost will not be named. Examine the evidence you find, talk, and mark your guess in the team journal: a right guess helps, a wrong one costs points.';
 
 // ------------------------------------------------------------------------------------------------ the Howler

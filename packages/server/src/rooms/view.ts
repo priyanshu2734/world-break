@@ -125,6 +125,7 @@ export function restrictedView(src: ViewSource, viewer: Viewer): RestrictedView 
       // P3F step 3: traces only when in view; the team journal is the team's own notebook (kinds found and entries, never the true type), for living players only (a spectator's stage is blank)
       ...(es.evidence ? { evidence: es.evidence.filter((v) => here(v.room) && see(v.x, v.y - POINT_HEIGHT.clue)) } : {}),
       ...(es.journal ? { journal: es.journal } : {}),
+      ...(es.loot && here(es.loot.room) && see(es.loot.x, es.loot.y - POINT_HEIGHT.clue) ? { loot: es.loot } : {}),
       ...(es.exit && here(es.exit.room) && see(es.exit.x, es.exit.y - POINT_HEIGHT.exit) ? { exit: es.exit } : {}),
     };
   }

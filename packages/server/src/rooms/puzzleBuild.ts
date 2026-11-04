@@ -1,7 +1,7 @@
 import { GOAL_NOTE, SYMBOLS, breakerClue, glyphClue, leverClue, legendClue, wiringClue, type PuzzleType, type Rng } from '@wb/shared';
 import type { ItemDef, StashDef } from '../systems/stageDef';
 import type { EscapeSpec, Lock } from './escapeSpec';
-import { clearRun } from './escapeValidate';
+import { clearRun, sameSurface } from './escapeValidate';
 
 /**
  * P3F step 2: builds ONE puzzle lock (its switches, notes, keypad, parts and locker) for a door. Pure apart from the generator it is handed and the two
@@ -96,7 +96,7 @@ export function buildPuzzle<R extends PuzzleRoom>(type: PuzzleType, c: PuzzleCtx
       break;
     }
     case 'pressure_plates': {
-      const partner = (s: Pt, o: Pt): boolean => s.y === o.y && Math.abs(s.x - o.x) >= 200 && Math.abs(s.x - o.x) <= 520 && clearRun(room.solids, s.y, s.x, o.x);
+      const partner = (s: Pt, o: Pt): boolean => s.y === o.y && Math.abs(s.x - o.x) >= 200 && Math.abs(s.x - o.x) <= 520 && clearRun(room.solids, s.y, s.x, o.x) && sameSurface(room.solids, s.y, s.x, o.x);
       const a = c.take(room, 'floor', (s) => c.spots(room, 'floor').some((o) => o !== s && partner(s, o)));
       const b = c.take(room, 'floor', (s) => partner(s, a));
       const [first, second] = ids('pl', 2);

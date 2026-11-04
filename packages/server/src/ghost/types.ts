@@ -58,6 +58,10 @@ export interface GhostHost {
   readonly satiatedTicks?: number;
   /** P3F step 3 (additive, optional): extra ticks added to the WARNING of a ghost of this type (a correct journal entry). Never shortens the warning. */
   warningBonus?(kind: GhostType): number;
+  /** P3F step 4 (additive, optional): ticks added to every warning by the team's upgrades (zero or negative; the warning is never below `GHOST_LIMITS.minWarningTicks`). */
+  warningShift?(): number;
+  /** P3F step 4 (additive, optional): the share of its hearing range a ghost keeps (the soft-steps and loud-lamp upgrades). Absent = 1. */
+  hearingShare?(): number;
 }
 
 /** Everything the server logs about the ghost (for the future death review, P4). Plain data; bounded ring. */

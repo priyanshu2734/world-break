@@ -283,13 +283,22 @@ export class GhostSystem {
 
   private update(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>, t: number): void {
     switch (a.state) {
-      case 'dormant': if (t >= a.until) this.go(a, 'warning', 'the first interval elapsed'); break;
-      case 'respawn': if (t >= a.until) this.go(a, 'warning', 'the interval elapsed'); break;
+      case 'dormant': if (t >= a.until) this.beginWarning(a, t, 'the first interval elapsed'); break;
+      case 'respawn': if (t >= a.until) this.beginWarning(a, t, 'the interval elapsed'); break;
       case 'stunned': if (t >= a.until) this.go(a, 'respawn', 'the stun wore off'); break;
       case 'warning': if (t >= a.until) this.tryAppear(a, players, open, t); break;
       case 'roaming': case 'hunting': { const px = a.x, py = a.y; a.lit = false; this.act(a, players, open, t); a.moving = Math.hypot(a.x - px, a.y - py) > 0.01 && !a.opening; break; }
     }
     if (a.state !== 'roaming' && a.state !== 'hunting') a.moving = false;
+  }
+
+  /**
+   * P3F step 4: each ghost has its OWN warning. A ghost that is due while another one is in its warning waits (re-checked every 10 ticks) until
+   * that one has ended, so two warnings never run at the same time and a player can tell them apart. Never skipped, only delayed, and bounded by the other's length.
+   */
+  private beginWarning(a: Actor, t: number, cause: string): void {
+    if (this.actors.some((o) => o !== a && o.state === 'warning')) { a.until = t + 10; return; }
+    this.go(a, 'warning', cause);
   }
 
   // ------------------------------------------------------------------------------------------------------- the state machine
@@ -298,7 +307,7 @@ export class GhostSystem {
     const t = this.host.tick;
     this.record({ tick: t, ghost: a.id, kind: 'state', from: a.state, to, cause });
     a.state = to; a.since = t; a.contact.clear();
-    if (to === 'warning') { a.until = t + GHOST_LIMITS.warningTicks + Math.max(0, this.host.warningBonus?.(a.kind) ?? 0); a.warnedAt = t; a.present = false; a.blockedLogged = false; }
+    if (to === 'warning') { a.until = t + Math.max(GHOST_LIMITS.minWarningTicks, GHOST_LIMITS.warningTicks + Math.max(0, this.host.warningBonus?.(a.kind) ?? 0) + Math.min(0, this.host.warningShift?.() ?? 0)); a.warnedAt = t; a.present = false; a.blockedLogged = false; }
     if (to === 'respawn') { a.satiatedUntil = 0; a.present = false; a.until = t + this.tuning.intervalTicks; this.clearPlan(a); a.quarry = null; a.lastSeen = null; a.chain = []; a.opening = null; }
     if (to === 'stunned') { this.clearPlan(a); a.opening = null; }
   }
@@ -398,7 +407,7 @@ export class GhostSystem {
       if (!a.present || a.room !== n.room || a.state !== 'roaming' || a.satiatedUntil > this.host.tick) continue;
       const open = this.host.openDoorIds();
       const clear = hasLineOfSight({ x: a.x, y: a.y }, { x: n.x, y: n.y }, this.occ(n.room, open));
-      const range = this.tuning.hearingPx * n.loud * (clear ? 1 : NOISE_MUFFLE);
+      const range = this.tuning.hearingPx * (this.host.hearingShare?.() ?? 1) * n.loud * (clear ? 1 : NOISE_MUFFLE);
       if (Math.hypot(a.x - n.x, a.y - n.y) <= range) this.hear(a, n, this.host.tick, '');
     }
   }

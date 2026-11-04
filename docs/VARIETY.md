@@ -144,3 +144,67 @@ Honest limits: the score change on a wrong entry tells a team it was wrong, but 
 Footstep pace and timbre of an unnamed ghost are one neutral value on the client (so they do not give the type away); a Shade freezing in the beam and a Howler's wind-up scream still do. Nothing was played in a browser.
 
 Tests: `shared/test/identify`, `server/test/rooms/identify.runtime` (10), `server/test/ghost/identify` (8), `server/test/death/identify.room` (4) and 1 new case in `death/review.test.ts`, `client/test/journalLogic` (4).
+
+# Curriculum, second ghost, draft pick and loot (P3F step 4)
+
+## The curriculum (`shared/src/variety/curriculum.ts`, rows 1 to 15)
+Each stage from 1 to 15 introduces one new thing. The "featured lock" of a row is guaranteed to be on one door of that stage (the generator forces it without spending a random draw, and `requireFeatured` rejects a stage without it).
+
+| Stage | Featured lock | What is new |
+|---|---|---|
+| 1 | key_item | Tutorial: locker key, door, exit |
+| 2 | seeded | First ghost (Wisp), the flicker warning, a hiding place. Stages 1 and 2 keep their original draws, so old seeds keep their stage |
+| 3 | code | Code lock and notes, a decoy note |
+| 4 | seeded | Pulse Gun in a safe |
+| 5 | two_person | Two-person lock (a solo route exists), 2 rooms |
+| 6 | power | Battery and power lock |
+| 7 | breaker_panel | Shade, ghosts no longer named, breaker panel |
+| 8 | pressure_plates | Pressure plates |
+| 9 | flashlight_sensor | Flashlight sensor |
+| 10 | safe | Major breach: 3 rooms, a safe |
+| 11 | lever_sequence | Lever sequence |
+| 12 | tool_key | Howler (scream breaks lights), tool key |
+| 13 | timed_switch | Optional loot cache, timed switch |
+| 14 | symbol_match | Symbol match across two rooms |
+| 15 | wiring | Wiring choice |
+
+`PUZZLE_FROM_STAGE`: breaker_panel 7, pressure_plates 8, flashlight_sensor 9, lever_sequence 11, tool_key 12, timed_switch 13, symbol_match 14, wiring 15. `locksForStage`: key, code, power up to stage 4; two_person from 5.
+**Not built in P3F** (rows of docs/HOOK.md that belong to other milestones): the gravity pickup, the lights-out room and flare, the mini-boss, the spark hazard, the disaster layer.
+
+## Newness after stage 15 (and for every stage with a history)
+The Room records what each stage used (`rooms/variety.ts`: locks, room templates, ghost types, theme) and hands the last 3 (`HISTORY_KEEP`) to the generator as `GenerateOptions.history`. `newnessScore` counts recent use (newest = 3, then 2, then 1); `newnessPick` picks at random among the freshest. With an empty history it is exactly `rng.pick`, so a stage generated alone is the stage it always was.
+* The first door of a stage never has the lock type of the last door of the stage before (stage 3 and the tutorial boundary are exempt: stage 3 must show the code lock whatever stage 2 drew).
+* Two stages in a row share no room template; the theme (`lab, hospital, factory, library`, drawn by step 5) always changes; the ghost type changes whenever the seeded pick would repeat the last stage's lineup (`ghostPickWith`).
+* New random draws come after the old ones. From the fifth attempt of a stage that cannot be built, the lock and template newness is dropped (a stage always gets built); the ghost pick and theme keep the real history.
+* Because a later stage depends on the run's history, it cannot be regenerated from (stage, seed) alone: `Room.stageDef` is the stage being played (tests use it).
+
+## Two ghosts (from stage 20)
+The count was already 2 from stage 20, never more (`MAX_GHOSTS`). Each ghost has its own warning cue. Two warnings never run at once: a ghost that is due while the other warns waits in 10-tick steps (`beginWarning`). Fairness rules (warning length, minimum 60 ticks, gun, hiding) apply per ghost. The journal has two lines for three types.
+
+## Draft pick (`shared/src/draft`, `Room.draftVote`)
+After every cleared escape stage (not the lab) the team is offered 3 different upgrades; they are kept for the run.
+| Upgrade | Effect | Max |
+|---|---|---|
+| Wide beam | light +10 percent | 2 |
+| Soft steps | ghosts hear 15 percent closer | 2 |
+| Extra hand | +1 carry slot | 1 |
+| Quick rescue | revive hold 25 percent shorter | 1 |
+| Quick charge | gun recharge 20 percent quicker | 2 |
+| Hair trigger | gun recharge 35 percent quicker; trade-off: warnings 1 s shorter | 1 |
+| Loud lamp | light +20 percent; trade-off: ghosts hear 15 percent further | 1 |
+
+Hard bounds (`UPGRADE_BOUNDS`): vision 1 to 1.3, hearing 0.7 to 1.3, gun 0.45 to 1, rescue 0.75 to 1, extra slots 0 to 1, warning shift -20 to 0 (the warning never goes under 60 ticks).
+* Offer: a pure function of the run seed, the stage and what the team owns (the least-owned first, distinct; every tenth stage includes Wide beam). Works at stage 1,000,000.
+* Voting: key 1, 2 or 3 on the client (`draft:vote`, strict `{index 0..2}`); everyone connected has voted: the pick is made (most votes, a tie goes to the first listed). The host's "next stage" settles it with the votes so far (no vote: the first option).
+* **After a team wipe:** a retry keeps the upgrades on Easy and Intermediate; on Hardcore the newest upgrade is lost; a new run starts with none.
+* Everything is applied by the server (light radius, noise hearing, gun cooldown, carry slots, revive hold, warning length).
+
+## Loot cache (`shared/src/rooms/loot.ts`)
+From stage 13 (always on 13, then a seeded half of the stages) one optional cache stands on the floor of a room that is not the start room. Nothing needs it. Opening it (E, once, same reach and light rules as everything else) pays one outcome fixed by the stage seed: 50 percent +150 points, 25 percent a free upgrade, 25 percent a hazard (a loud crack every ghost in the room hears, and -30 points). The outcome is never in the public state. It is a cache in an existing room, not a room of its own.
+
+## Fixes in step 4
+* A dead teammate's body never keeps a pressure plate lit (the engine sees a dead player as not connected; pinned by `rooms/loot.test.ts`).
+* The teaching line reaches a player who has had fewer than `TEACH_TICKS` (400) connected ticks since stage 7, in the journal view (`journal.teach`), not only the one-time announcement.
+
+## Tests added in step 4
+`shared/test/{curriculum,draft}.test.ts`, `server/test/rooms/{curriculum.generate,loot}.test.ts`, `server/test/ghost/second.test.ts`, `server/test/death/draft.room.test.ts`, `client/test/draftLogic.test.ts`.

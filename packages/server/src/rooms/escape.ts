@@ -25,6 +25,8 @@ export interface EscapeHost {
   canSee(playerId: string, x: number, y: number): boolean;
   /** Carry the player through a door (the door's own room). Returns false if that was not possible. */
   sendThrough(playerId: string, doorId: string): boolean;
+  /** P3F step 4: a loot cache was opened. The host pays the outcome (score, an upgrade, or a hazard) and answers with the words the opener reads. */
+  loot?(o: { outcome: 'score' | 'upgrade' | 'hazard'; room: string; x: number; y: number; by: string }): string;
   /** The exit was reached alive: clear the stage (the existing STAGE_CLEAR transition does the rest). */
   clear(): void;
 }
@@ -81,6 +83,7 @@ export class EscapeRuntime {
   private readonly found = new Set<string>();
   private readonly marks: GhostType[] = [];
   private readonly truth: ReadonlySet<GhostType>;
+  private lootOpened = false;
 
   constructor(private readonly spec: EscapeSpec, graph: RoomGraph, private readonly host: EscapeHost, private readonly items: ItemSystem | null) {
     for (const room of graph.rooms) for (const d of room.doors) this.doorRoom.set(d.id, { room, rect: { x: d.x, y: d.y, w: d.w, h: d.h } });
@@ -114,6 +117,18 @@ export class EscapeRuntime {
     this.host.markDirty();
     this.host.say(`${label} is noted in the team journal.`, 'info', v.room);
     return ok(`${label}. It is written in the team journal.`, { id, text: label });
+  }
+
+  /** P3F step 4: the optional cache. Same refusals as everything else out of view; it can be opened once. */
+  private openLoot(pid: string, id: string, me: EscapePos): EscapeResult {
+    const c = this.spec.loot;
+    if (!c || c.id !== id || !this.inRoom(pid, c.room) || !this.host.canSee(pid, c.x, c.y - POINT_HEIGHT.clue)) return fail(ESCAPE_NOTHING);
+    if (!this.reach(me, c.x, c.y)) return fail('Too far away.');
+    if (this.lootOpened) return fail('The cache is empty.');
+    this.lootOpened = true;
+    this.host.markDirty();
+    const text = this.host.loot?.({ outcome: c.outcome, room: c.room, x: c.x, y: c.y, by: pid }) ?? 'The cache is empty.';
+    return ok(text);
   }
 
   private mark(ghost: GhostType): EscapeResult {
@@ -163,6 +178,7 @@ export class EscapeRuntime {
       case 'read': return this.read(playerId, a.clueId, me);
       case 'examine': return this.examine(playerId, a.evidenceId, me);
       case 'mark': return this.mark(a.ghost);
+      case 'loot': return this.openLoot(playerId, a.lootId, me);
     }
   }
 
@@ -418,6 +434,7 @@ export class EscapeRuntime {
       safes: [...this.safes.values()].map((s) => ({ id: s.id, room: s.room, x: s.x, y: s.y, length: ESCAPE_LIMITS.comboLength, opened: s.opened, lockedUntilTick: lock(s.lockedUntil) })),
       clues: [...this.clues.values()].map((c) => ({ id: c.id, room: c.room, x: c.x, y: c.y, label: c.label })),
       switches: [...this.switches.values()].map((s) => ({ id: s.id, room: s.room, x: s.x, y: s.y, active: s.latched || s.litUntil > t })),
+      ...(this.spec.loot ? { loot: { id: this.spec.loot.id, room: this.spec.loot.room, x: this.spec.loot.x, y: this.spec.loot.y, opened: this.lootOpened } } : {}),
       ...(this.evidence.size > 0 ? {
         evidence: [...this.evidence.values()].map((v) => ({ id: v.id, room: v.room, x: v.x, y: v.y, examined: this.found.has(v.id) })),
         journal: {

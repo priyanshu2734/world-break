@@ -47,9 +47,10 @@ export class EscapeView {
       clues: es.clues.filter((c) => c.room === room), switches: es.switches.filter((s) => s.room === room),
       exit: es.exit && es.exit.room === room ? es.exit : null,
       evidence: (es.evidence ?? []).filter((v) => v.room === room),
+      loot: es.loot && es.loot.room === room ? es.loot : null,
     } : null;
     const lockedOut = (t: number | null) => t !== null && t > tick;
-    const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.evidence.map((v) => [v.id, v.examined]), mine.exit?.x ?? null]) : '';
+    const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.evidence.map((v) => [v.id, v.examined]), mine.loot ? [mine.loot.id, mine.loot.opened] : null, mine.exit?.x ?? null]) : '';
     if (key === this.key) return;
     this.key = key;
     for (const o of this.art) o.destroy();
@@ -89,6 +90,13 @@ export class EscapeView {
       const c = v.examined ? COLOR.cyanDim : 0xb9a7ff;
       g.fillStyle(c, v.examined ? 0.18 : 0.3).fillEllipse(v.x, v.y - 4, 44, 10).lineStyle(1, c, 0.9).strokeEllipse(v.x, v.y - 4, 44, 10);
       label(v.x, v.y - 12, v.examined ? 'TRACES (noted)' : 'TRACES', v.examined ? '#7fb7c9' : '#d6ccff');
+    }
+    // P3F step 4: the optional cache. Amber with a red edge: worth something, and it may bite.
+    if (mine.loot) {
+      const l = mine.loot, c = l.opened ? COLOR.cyanDim : COLOR.danger;
+      g.fillStyle(l.opened ? 0x10202a : 0x2a1a0a, 1).fillRect(l.x - 18, l.y - 26, 36, 26).lineStyle(2, c, 0.95).strokeRect(l.x - 18, l.y - 26, 36, 26);
+      g.lineStyle(2, COLOR.amber, 0.9).lineBetween(l.x - 18, l.y - 16, l.x + 18, l.y - 16);
+      label(l.x, l.y - 30, l.opened ? 'CACHE (empty)' : 'CACHE (risky)', l.opened ? '#7fb7c9' : '#ffb3a8');
     }
     if (mine.exit) {
       const e = mine.exit;

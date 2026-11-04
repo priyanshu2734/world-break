@@ -6,7 +6,7 @@ import {
 
 describe('P3F step 2: puzzle words and tables', () => {
   it('every type has an introduction stage and a refusal text; the pool grows with the stage and never shrinks', () => {
-    for (const t of PUZZLE_TYPES) { expect(PUZZLE_FROM_STAGE[t]).toBeGreaterThanOrEqual(6); expect(needText(t)).toMatch(/^Locked\./); }
+    for (const t of PUZZLE_TYPES) { expect(PUZZLE_FROM_STAGE[t]).toBeGreaterThanOrEqual(7); expect(needText(t)).toMatch(/^Locked\./); }
     let before = 0;
     for (let s = 1; s <= 40; s++) { const n = puzzlesForStage(s).length; expect(n).toBeGreaterThanOrEqual(before); before = n; }
     expect(ANY_LOCK_TYPES.length).toBe(13);

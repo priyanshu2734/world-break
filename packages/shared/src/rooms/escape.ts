@@ -76,6 +76,8 @@ export const EscapeActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('examine'), evidenceId: EscapeIdSchema }).strict(),
   /** P3F step 3: enter a suspected ghost type in the team journal (final for the stage). */
   z.object({ action: z.literal('mark'), ghost: z.enum(GHOST_TYPES) }).strict(),
+  /** P3F step 4: open the optional loot cache (risk and reward). */
+  z.object({ action: z.literal('loot'), lootId: EscapeIdSchema }).strict(),
 ]);
 export type EscapeAction = z.infer<typeof EscapeActionSchema>;
 
@@ -99,6 +101,8 @@ export const EscapePublicSchema = z.object({
   switches: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), active: z.boolean() })),
   /** P3F step 3: ghost evidence in view (position only: what it IS is learned by examining it). */
   evidence: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), examined: z.boolean() })).max(ESCAPE_LIMITS.maxEvidence).optional(),
+  /** P3F step 4: the optional loot cache, in view only. What it pays is not here (it is told when it is opened). */
+  loot: z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), opened: z.boolean() }).optional(),
   /** P3F step 3: the shared team journal. Present on a ghost stage, for living players only. */
   journal: z.object({
     /** What the team has examined (kind only, never the ghost type). */
@@ -106,6 +110,8 @@ export const EscapePublicSchema = z.object({
     /** The types entered so far, and how many lines the journal has (one per ghost on the stage). */
     marks: z.array(z.enum(GHOST_TYPES)).max(3),
     lines: z.number().int().min(1).max(3),
+    /** P3F step 4: the explanatory line, sent to a player until they have had time to read it (so a player who connects later still gets it). */
+    teach: z.string().max(240).optional(),
   }).optional(),
   /** Present only while the exit is in the viewer's view (a hidden exit is not in the snapshot). */
   exit: z.object({ room: EscapeIdSchema, x: z.number(), y: z.number() }).optional(),

@@ -1,5 +1,6 @@
 import { createRng, deriveSeed } from '../disasters/rng';
 import { ROOM_TEMPLATES, TEMPLATE_IDS, type TemplateId, type TemplateRoom } from './templates';
+import { freshestFirst, templatesOf, type VarietyHistory } from './curriculum';
 
 /**
  * P3F step 1: which template each room of a stage uses. A pure function of `(stage, seed)`.
@@ -17,9 +18,10 @@ export function templatePool(stage: number): readonly TemplateId[] {
 }
 
 /** The template of each of the `count` rooms of a stage, in room order. Deterministic in `(stage, seed)`. */
-export function templatesForStage(stage: number, seed: number, count: number): TemplateId[] {
+export function templatesForStage(stage: number, seed: number, count: number, history: VarietyHistory = []): TemplateId[] {
   const pool = templatePool(stage);
-  const order = createRng(deriveSeed(seed, 'template', stage)).shuffle(pool);
+  // P3F step 4: the newness rule. The seeded shuffle is kept; templates used in the last stages move to the back (a stable sort, so an empty history changes nothing).
+  const order = freshestFirst(createRng(deriveSeed(seed, 'template', stage)).shuffle(pool), history, templatesOf);
   return Array.from({ length: count }, (_, i) => order[i % order.length]!);
 }
 

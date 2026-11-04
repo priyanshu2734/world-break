@@ -37,7 +37,7 @@ export function newRun(players: number, runSeed = 7): { room: Room; ids: string[
 /** The definition the room is playing (the generator is deterministic in (stage, seed), so this is the very same stage). */
 export function currentDef(room: Room): StageDef {
   const rec = room.stageRecord!;
-  const def = generateEscapeStage(rec.stage, rec.seed);
+  const def = room.stageDef ?? generateEscapeStage(rec.stage, rec.seed); // P3F step 4: a later stage depends on the run's history, so the room's own definition is the truth
   if (def.id !== rec.defId) throw new Error(`room plays ${rec.defId}, generator says ${def.id}`);
   return def;
 }
@@ -217,12 +217,12 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
           team.idle(3);
         } else {
           // alone: step on the first plate, then on the second before the first goes dark (a scare on the way can use the time up: start again, at most 6 times)
-          for (let go = 1; go <= 6; go++) {
+          for (let go = 1; go <= 14; go++) {
             lead.goTo(a.x, a.y);
             lead.goTo(b.x, b.y);
             team.idle(2);
             if (isOpen(nearDoor)) break;
-            if (go === 6) throw new Error('the plates never held together');
+            if (go === 14) throw new Error('the plates never held together');
             team.idle(ESCAPE_LIMITS.plateHoldTicks + 5);
           }
         }

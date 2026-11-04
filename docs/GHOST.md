@@ -199,3 +199,6 @@ Browser play of step 5 (look tiers, dissolve, scream ring, recharge bar, sounds)
 
 ## P3F step 3 note
 From stage 7 the type of a ghost is `unknown` in everything a client or the death review receives; players identify it from the evidence and the team journal (docs/VARIETY.md). The server still knows the real type.
+
+## P3F step 4 note
+From stage 20 two ghosts of different types play at once. Each has its own warning and the warnings are never simultaneous (a due ghost waits in 10-tick steps). Upgrades change the warning length (Hair trigger: -20 ticks, never under 60), the hearing range (Soft steps / Loud lamp) and the gun's recharge; see docs/VARIETY.md.
