@@ -939,6 +939,7 @@ export class Room {
         id: m.id, name: m.name, ready: m.ready || m.id === this.hostId, isHost: m.id === this.hostId,
       })),
       ...(this.isLab ? { lab: true } : {}),
+      ...(this.variety.get(this.stage) ? { theme: this.variety.get(this.stage)!.theme } : {}),
       ...(this.draftPublic() ? { draft: this.draftPublic()! } : {}),
       ...(this.pickOrder.length > 0 ? { upgrades: (Object.keys(this.owned) as UpgradeId[]).filter((k) => (this.owned[k] ?? 0) > 0).map((k) => ({ id: k, count: this.owned[k]! })) } : {}),
     };

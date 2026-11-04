@@ -8,6 +8,7 @@ import type { EscapeAck } from './rooms/escape';
 import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
 import type { DeathReviewMsg, DeathState, GhostPing } from './death';
 import { DraftPublicSchema, OwnedUpgradesSchema } from './draft';
+import { THEME_IDS } from './variety/curriculum';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -46,6 +47,8 @@ export const RoomSnapshotSchema = z.object({
   /** P3F step 4 (additive, optional): the draft pick while a stage is complete, and the upgrades the team owns. */
   draft: DraftPublicSchema.optional(),
   upgrades: OwnedUpgradesSchema.optional(),
+  /** P3F step 5 (additive, optional): the visual theme of the stage being played (looks only; it never changes a rule). */
+  theme: z.enum(THEME_IDS).optional(),
 });
 export type RoomSnapshot = z.infer<typeof RoomSnapshotSchema>;
 

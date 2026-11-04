@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, visionRadius, quantiseAim, stepSpectatorCam, type ActiveAbilityId, type GamePlayer, type InputIntent, type SpectateMove, type SpectatorCam, type StageAction } from '@wb/shared';
+import { ARENA, getArena, PLAYER_HEIGHT, PLAYER_WIDTH, visionRadius, quantiseAim, stepSpectatorCam, type ActiveAbilityId, type GamePlayer, type InputIntent, type SpectateMove, type SpectatorCam, type StageAction, type ThemeId } from '@wb/shared';
 import type { Session } from '../net/session';
 import { INTERP_DELAY_MS } from '../net/interpolation';
 import { LocalPredictor } from '../sim/prediction';
@@ -24,6 +24,9 @@ import { cameraScroll, pickArena } from '../ui/roomMath';
 import { aimAngle as aimOf, darkSettings, resolveAmbient, type DarkSettings } from '../ui/darkParam';
 import { carriedItems, carryChanges, dropIntent, handoverIntent, installIntent, itemPrompt, pickIntent, type ItemIntent } from '../ui/itemView';
 import { GhostAudio } from '../ui/ghost/GhostAudio';
+import { ThemeView } from '../ui/theme/ThemeView';
+import { ThemeAudio } from '../ui/theme/ThemeAudio';
+import { lookFlags, slabLook, themeLook, type LookFlags } from '../ui/theme/themeLogic';
 import { GhostView } from '../ui/ghost/GhostView';
 import { SoundScheduler } from '../ui/ghost/soundScheduler';
 import { cueIndicator } from '../ui/ghost/cueMath';
@@ -112,6 +115,11 @@ export class GameScene extends Phaser.Scene {
   /** P3E: ghost look and sound. Sound needs a user gesture before the browser lets it play (armed on the first key or click). */
   private ghostView!: GhostView;
   private ghostAudio!: GhostAudio;
+  /** P3F step 5: the visual theme of the stage (looks only), its background, its hum, and the player's reduced-motion setting. */
+  private theme: ThemeId | undefined;
+  private themeView!: ThemeView;
+  private themeAudio!: ThemeAudio;
+  private look: LookFlags = { reducedMotion: false };
   private sounds = new SoundScheduler();
   private ghostFlags = ghostFlags('');
   private cueText!: Phaser.GameObjects.Text;
@@ -152,6 +160,9 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     if (!this.session) { this.scene.start('Lobby'); return; }
     this.predictor = new LocalPredictor((seq, input) => this.session.sendInput(seq, input));
+    this.look = lookFlags(window.location.search, typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    this.themeView = new ThemeView(this);
+    this.events.once('shutdown', () => this.themeView.destroy());
     this.drawWorld();
     this.buildHud();
 
@@ -168,7 +179,7 @@ export class GameScene extends Phaser.Scene {
     this.worldView = new WorldView(this);
     this.darkCfg = darkSettings(window.location.search);
     this.doors = new DoorView(this);
-    this.escapeView = new EscapeView(this);
+    this.escapeView = new EscapeView(this, this.look.reducedMotion);
     this.events.once('shutdown', () => this.escapeView.destroy());
     // P3F step 3: the team journal (J). The server validates every entry; a refusal known on this side is only shown as a notice.
     this.journalView = new JournalView(this, (ghost, reason) => {
@@ -189,7 +200,7 @@ export class GameScene extends Phaser.Scene {
 
     // P3E: ghost look and sound
     this.ghostFlags = ghostFlags(window.location.search);
-    this.ghostView = new GhostView(this);
+    this.ghostView = new GhostView(this, this.look.reducedMotion);
     this.hideView = new HideView(this);
     this.gunView = new GunView(this);
     this.spectateView = new SpectateView(this);
@@ -197,10 +208,12 @@ export class GameScene extends Phaser.Scene {
     this.events.once('shutdown', () => { this.spectateView.destroy(); this.reviewView.destroy(); });
     this.warnTipShown = GameScene.tipSeen();
     this.ghostAudio = new GhostAudio(this.ghostFlags.muted);
+    this.themeAudio = new ThemeAudio(this.ghostFlags.muted);
+    this.events.once('shutdown', () => this.themeAudio.destroy());
     this.muteKey = kb.addKey('M');
     this.cueText = this.add.text(W / 2, H - 44, '', { ...FONT, fontSize: '18px', color: '#cfe8ff', backgroundColor: '#04101acc' })
       .setOrigin(0.5, 1).setDepth(105).setPadding(10, 4).setVisible(false);
-    const arm = () => this.ghostAudio.arm();
+    const arm = () => { this.ghostAudio.arm(); this.themeAudio.arm(); };
     this.input.on('pointerdown', arm);
     kb.on('keydown', arm);
     // P3E step 4: a left click fires the Pulse Gun when one is in hand (the server checks everything: gun, aim, range, hit); the crack plays when a shot arrives
@@ -228,7 +241,7 @@ export class GameScene extends Phaser.Scene {
         .setScale(0.5 + Math.random() * 2).setAlpha(0.04 + Math.random() * 0.1)
         .setTint(Math.random() < 0.25 ? COLOR.amber : COLOR.cyan).setAngle(Math.random() * 360);
       this.decor.push(s);
-      this.tweens.add({ targets: s, y: s.y + 40, angle: s.angle + 25, duration: 6000 + Math.random() * 5000,
+      if (!this.look.reducedMotion) this.tweens.add({ targets: s, y: s.y + 40, angle: s.angle + 25, duration: 6000 + Math.random() * 5000,
         yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
     }
 
@@ -243,7 +256,7 @@ export class GameScene extends Phaser.Scene {
     };
     this.decor.push(glow, core);
     path(glow, 22, COLOR.amber, 0.12); path(glow, 8, COLOR.amber, 0.25); path(core, 2, 0xfff1c9, 0.9);
-    this.tweens.add({ targets: glow, alpha: 0.45, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    if (!this.look.reducedMotion) this.tweens.add({ targets: glow, alpha: 0.45, duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 
     this.drawSolids();
   }
@@ -254,23 +267,41 @@ export class GameScene extends Phaser.Scene {
     this.solidsArt = [];
     const arena = this.arena;
     const dark = this.solidsDark;
+    // P3F step 5: under a theme the platforms take its palette (looks only: the rectangles are the same); with no theme (the lab, the old stages) they are drawn as before
+    const th = this.theme;
+    const look = th !== undefined ? themeLook(th, { reducedMotion: this.look.reducedMotion, assist: this.darkness?.assist ?? false }) : null;
+    const sl = th !== undefined && look ? slabLook(th, dark, look) : null;
     const g = this.add.graphics().setDepth(-5);
     this.solidsArt.push(g);
     for (const r of arena.solids) {
-      g.fillStyle(0x0a1822, 1).fillRect(r.x, r.y, r.w, r.h);
+      g.fillStyle(sl ? sl.fill : 0x0a1822, 1).fillRect(r.x, r.y, r.w, r.h);
       if (dark) continue; // dark view: plain slabs, no grid lines or warning strip (nothing decorative outside the light)
-      g.lineStyle(1, COLOR.cyanDim, 0.55);
+      g.lineStyle(1, sl && sl.line !== null ? sl.line : COLOR.cyanDim, 0.55);
       for (let x = r.x + 40; x < r.x + r.w; x += 40) g.lineBetween(x, r.y + 4, x, r.y + r.h);
-      g.fillStyle(COLOR.amberDim, 0.9).fillRect(r.x, r.y + r.h - 2, r.w, 2); // underside warning strip
+      if (!sl) g.fillStyle(COLOR.amberDim, 0.9).fillRect(r.x, r.y + r.h - 2, r.w, 2); // underside warning strip
     }
     const edge = this.add.graphics().setDepth(-4).setBlendMode(Phaser.BlendModes.ADD);
     this.solidsArt.push(edge);
+    const ec = sl ? sl.edge : COLOR.cyan;
     for (const r of arena.solids) {
-      if (dark) { edge.lineStyle(2, COLOR.cyan, 0.5).lineBetween(r.x, r.y, r.x + r.w, r.y); continue; } // steady, no glow, no pulse
-      edge.lineStyle(8, COLOR.cyan, 0.12).lineBetween(r.x, r.y, r.x + r.w, r.y);
-      edge.lineStyle(2, COLOR.cyan, 0.95).lineBetween(r.x, r.y, r.x + r.w, r.y);
+      if (dark) { edge.lineStyle(2, ec, 0.5).lineBetween(r.x, r.y, r.x + r.w, r.y); continue; } // steady, no glow, no pulse
+      edge.lineStyle(8, ec, 0.12).lineBetween(r.x, r.y, r.x + r.w, r.y);
+      edge.lineStyle(2, ec, sl ? sl.edgeAlpha : 0.95).lineBetween(r.x, r.y, r.x + r.w, r.y);
     }
-    if (!dark) this.tweens.add({ targets: edge, alpha: 0.6, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    if (!dark && !this.look.reducedMotion) this.tweens.add({ targets: edge, alpha: 0.6, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+  }
+
+  /** P3F step 5: the stage's theme changed (a new stage), or the view went dark or bright: redraw what depends on it. */
+  private syncTheme(theme: ThemeId | undefined, myRoom: string | undefined, stage: number): void {
+    const assist = this.darkness?.assist ?? false;
+    if (theme !== this.theme) {
+      this.theme = theme;
+      this.drawSolids();
+      for (const d of this.decor) (d as unknown as { setVisible(v: boolean): void }).setVisible(theme === undefined && !this.solidsDark); // a themed stage replaces the P1 shards and the amber zigzag
+    }
+    this.themeView.setVisible(!this.solidsDark);
+    this.themeView.set(theme, myRoom, stage, this.arena, { reducedMotion: this.look.reducedMotion, assist });
+    this.themeAudio.set(theme, this.look.reducedMotion);
   }
 
   /** P3D: switch the dark view on or off as the URL flag and the stage's published `darkness` dictate. */
@@ -283,7 +314,7 @@ export class GameScene extends Phaser.Scene {
       this.darkness?.destroy();
       this.darkness = null;
     }
-    for (const d of this.decor) (d as unknown as { setVisible(v: boolean): void }).setVisible(!wantDark);
+    for (const d of this.decor) (d as unknown as { setVisible(v: boolean): void }).setVisible(!wantDark && this.theme === undefined);
     this.solidsDark = wantDark;
     this.drawSolids();
   }
@@ -388,6 +419,7 @@ export class GameScene extends Phaser.Scene {
       this.drawSolids();
       this.darkness?.setArena(this.arena);
     }
+    this.syncTheme(room.phase === 'lobby' ? undefined : room.theme, myRoom, g.stage);
     const es = s.stage?.escape;
     this.doors.set(myRoom !== undefined ? s.layouts.get(myRoom)?.doors ?? [] : [], es ? new Map(es.doors.map((d) => [d.id, d.open])) : undefined);
     // Stage content lives in the start room on a plain multi-room stage; on an escape stage every room has its own (filtered by room below).
@@ -516,7 +548,7 @@ export class GameScene extends Phaser.Scene {
     // --- P3E: the ghost (drawn only if the server put it in my view), its sound, the visual cue and the WARNING flicker ---
     const nowMs = performance.now();
     this.ghostView.update(g.ghosts ?? [], myRoom, nowMs, delta, g.stage);
-    if (Phaser.Input.Keyboard.JustDown(this.muteKey)) { this.ghostAudio.setMuted(!this.ghostAudio.muted); this.flash(this.ghostAudio.muted ? 'Ghost sounds muted (M)' : 'Ghost sounds on (M)'); }
+    if (Phaser.Input.Keyboard.JustDown(this.muteKey)) { this.ghostAudio.setMuted(!this.ghostAudio.muted); this.themeAudio.setMuted(this.ghostAudio.muted); this.flash(this.ghostAudio.muted ? 'Ghost sounds muted (M)' : 'Ghost sounds on (M)'); }
     const cue = g.phase === 'playing' ? s.ghostCue : null;
     for (const ev of this.sounds.tick(cue, s.ghostCueAt, nowMs)) this.ghostAudio.play(ev);
     const cueLine = cueIndicator(cue && nowMs - s.ghostCueAt < 1600 ? cue : null);

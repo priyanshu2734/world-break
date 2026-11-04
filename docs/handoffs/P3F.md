@@ -1,58 +1,55 @@
-# P3F handoff: variety and hook (STEPS 1 TO 4 of 6 delivered: room templates and height; the puzzle pool; identify the ghost; curriculum, second ghost, draft pick, loot)
+# P3F handoff: variety and hook (STEPS 1 TO 5 of 6 delivered: room templates and height; the puzzle pool; identify the ghost; curriculum, second ghost, draft pick, loot; themes and look)
 
-Baseline: `p4-complete` plus the step 6 playtest fixes (the uploaded `p5-base.zip`). Step 1: commit `927d8be` (verified: 1578 tests, client 198, server 1204, shared 176). Step 2: commit `3c632c0`. Step 3: commit `48a78f5` (your message had unfilled placeholders `<clean>`, `<OK>`, `<all passed>`, so I treated it as a pass but have no real totals). Steps 5 and 6 are not started; this file is rewritten at each step.
+Baseline: `p4-complete` plus the step 6 playtest fixes (the uploaded `p5-base.zip`). Step 1: `927d8be`. Step 2: `3c632c0`. Step 3: `48a78f5`. Step 4: `b659d96` (verified by the developer after one fix, which is kept: `usePrompt(u, 0)` and `usePrompt(done, 0)` in `client/test/draftLogic.test.ts`; at that point shared 203, client 206, server 1312 with the gateway files, 1721 in all). Step 6 is not started; this file is rewritten at each step.
+
+**Rule I broke in step 4 and now follow:** when a parameter is added to an exported function, every caller INCLUDING tests is updated. In step 5 I added optional trailing parameters (`calm`) to `ghostShape`, `ghostLook`, `GhostView`, `EscapeView`; all callers were searched (`grep`) and the new parameters have defaults.
 
 ## 1. Git branch and commit
-Branch `phase/p3f`. Step 4: NOT RUN: developer to run `git rev-parse HEAD`. (No `.git` in my sandbox.)
+Branch `phase/p3f`. Step 5: NOT RUN: developer to run `git rev-parse HEAD`. (No `.git` in my sandbox.)
 
-## 2. Files changed (step 4)
-Added: `shared/src/variety/curriculum.ts`, `shared/src/draft/index.ts`, `shared/src/rooms/loot.ts`, `server/src/rooms/variety.ts`, `client/src/ui/{draftLogic,DraftView}.ts`; tests `shared/test/{curriculum,draft}.test.ts`, `server/test/rooms/{curriculum.generate,loot}.test.ts`, `server/test/ghost/second.test.ts`, `server/test/death/draft.room.test.ts`, `client/test/draftLogic.test.ts`.
-Modified (shared): `ghost/index.ts`, `rooms/{escape,index,puzzles,tables}.ts`, `variety/{index,pick}.ts`, `index.ts`, `protocol.ts`. (server): `room.ts`, `gateway.ts`, `ghost/{system,types}.ts`, `death/revive.ts`, `rooms/{generate,escape,escapeSpec,escapeValidate,puzzleBuild,view}.ts`, `salvage/system.ts`, `systems/engine.ts`. (client): `net/session.ts`, `scenes/GameScene.ts`, `ui/{escapeUse,EscapeView,JournalView,journalLogic}.ts`. Docs: `VARIETY.md`, `ARCHITECTURE.md`, `GHOST.md`, this file.
-Not touched: `phases.ts`, `difficulty.ts`, `loop.ts`, `interpolation.ts`, `tutorial.ts`, shared `sim.ts`, `arena.ts`, client `prediction.ts`.
+## 2. Files changed (step 5)
+Added: `shared/src/variety/themes.ts`; `client/src/ui/theme/{prims,propArt,themeLogic,evidenceArt,drawPrims,ThemeView,ThemeAudio}.ts`; tests `shared/test/themes.test.ts`, `client/test/{theme,evidenceArt,ghostTiers}.test.ts`, `server/test/rooms/theme.room.test.ts`.
+Modified: `shared/src/{protocol.ts,variety/index.ts}` (optional `RoomSnapshot.theme`); `server/src/room.ts` (snapshot adds `theme`); `client/src/ui/ghost/{ghostLook,GhostView}.ts`, `client/src/ui/EscapeView.ts`, `client/src/scenes/GameScene.ts`; `client/test/draftLogic.test.ts` (your `usePrompt(.., 0)` fix kept); `docs/{VARIETY,ARCHITECTURE,polish/VISUAL_ISSUES}.md`; this file.
+Not touched: `phases.ts`, `difficulty.ts`, `loop.ts`, `interpolation.ts`, `tutorial.ts`, shared `sim.ts`, `arena.ts`, client `prediction.ts`, the generator, the validators, any rule.
 
 ## 3. Commands run (my sandbox; no registry, so `npm ci` cannot run; stand-in test runner)
-* Baseline before step 4 (reported at step 3): shared 187, client 202, server 1236 without gateway (about 1283 with the 47 gateway tests), about 1672 in all.
-* Now: shared **203** (+16), client **206** (+4), server **1265** without gateway (+29), all 0 failed, run file by file. Expected on your machine: about **1721** (203 + 206 + 1265 + 47 gateway).
-* Typecheck: shared, server and client: 0 errors apart from the stand-in artefacts (TS7006 on `it.each` callbacks, `test/disasters/runtime.test.ts` TS7053, gateway/`socket.io`, client Phaser and `vite/client` types missing here). Your real typecheck is the judge.
-* Generation sweep: 1500 stages over many seeds and both ghost settings, 0 failures; `death/solve` (every stage on the grid, every difficulty) green; `death/revive.gen` green. Whole server suite takes about 5 minutes per file in 4 parallel streams here (slowest: `death/solve` 213 s, `rooms/generate` 97 s, `curriculum.generate` 88 s).
-* NOT RUN: `npm ci`, `npm run build`, the 8 gateway test files (including the new `draft:vote` handler), the real client typecheck, any play in a browser (the draft screen, the loot cache drawing, the journal teaching banner were never seen), `git rev-parse HEAD`.
+* After step 4 (yours): shared 203, client 206, server 1312 (with the 47 gateway tests), 1721 in all.
+* Now: shared **212** (+9), client **225** (+19), server **1269** without the gateway files (+4), all 0 failed, run file by file. Expected on your machine: server **1316** (1269 + 47), total about **1753**.
+* Typecheck: shared and server 0 errors apart from the stand-in artefacts (TS7006 on `it.each` callbacks, `test/disasters/runtime.test.ts`, gateway/`socket.io`). Client: checked with a temporary config without the Phaser and vite types: no error outside the missing-Phaser ones (the real client typecheck is yours).
+* NOT RUN: `npm ci`, `npm run build`, the 8 gateway test files, the real client typecheck, any play in a browser. **None of the step 5 art was seen on a screen.** `git rev-parse HEAD`.
 
 ## 4. What is supported, and the tests behind it
 | Claim | Tests |
 |---|---|
-| The curriculum rows 1 to 15 are pinned; each stage features its lock; stage 1,000,000 is generated | `shared/curriculum`, `rooms/curriculum.generate` |
-| Newness: no lock type repeats across stages (stage 3 and the tutorial boundary exempt), no template or theme repeats, ghost types rotate; empty history = the old draws | `shared/curriculum`, `rooms/curriculum.generate` |
-| Two ghosts from stage 20, never a third, own warning each, never overlapping; warning never under 60 ticks; hearing share | `ghost/second` |
-| Draft: 3 distinct offers, votes, tie and no-vote rules, host settles, bounds, strict vote schema, stage 1,000,000 | `shared/draft`, `death/draft.room`, `client/draftLogic` |
-| After a wipe: upgrades kept on Easy, newest lost on Hardcore, none on a new run | `death/draft.room` |
-| Loot: stage 13 always has one cache, none before, never in the start room, outcome by seed and hidden, once, reach/light refusals | `rooms/loot` |
-| A dead body does not keep a plate lit | `rooms/loot` |
-| The teaching line reaches a player with little connected time since stage 7 | `death/draft.room` |
-| Plates must lie on one unbroken surface (no gap between them) | `rooms/puzzles.generate`, `death/solve` |
+| Four themes (lab, hospital, factory, library) as data: palette, props, hum; chosen by the seed and the newness score (never the previous theme, stage 1 is the lab, all four appear) | `shared/themes`, `server/rooms/theme.room` |
+| The theme reaches the client only as the optional `RoomSnapshot.theme`, and is not part of the stage definition: no rule, draw, validator or solver reads it | `server/rooms/theme.room`, `shared/themes` |
+| Colour language kept: theme colours are muted or far from red, amber, green and cyan; props at most alpha 0.4, behind everything, 3 to 14 per room, inside the room | `shared/themes`, `client/theme` |
+| Props are pure functions of (theme, room, seed, size) with their own seeded stream | `shared/themes`, `client/theme` |
+| Hum gain bounded (0.05); reduced motion stops the wobble and all motion; the brightness assist never darkens and strengthens props within the cap | `shared/themes`, `client/theme` |
+| Ghost tiers: stage 25 is 1.7 times larger than stage 2 with an aura, scars, spikes, bigger eyes and a redder body, for all four looks; monotone up to stage 1,000,000 | `client/ghostTiers` |
+| Unnamed ghost: a veiled figure matching no type, frays with the tier, hem frozen under reduced motion | `client/ghostTiers` |
+| Evidence markers: identical smudge with cyan ring before examining (never tells the type), six different glyphs plus a green tick after, inside the glyph box, steady under reduced motion | `client/evidenceArt` |
 
-## 5. Deliberately changed existing tests and helpers
-* `server/test/rooms/puzzles.generate.test.ts`: stages 1 to 6 have no puzzles, `puzzlesForStage(7)` is `['breaker_panel']`, wiring joins at 15; a stage whose curriculum lock is a puzzle has no puzzle-free twin, so the legacy comparison skips it.
-* `shared/test/puzzles.test.ts`: `PUZZLE_FROM_STAGE >= 7`.
-* Test helpers `server/test/rooms/solver.ts`, `test/ghost/{gun.room,gun.solve}.test.ts`, `test/death/drill.ts`: the stage definition now comes from `room.stageDef` (a later stage depends on the run history and cannot be regenerated from stage and seed alone); the fallback is the old call.
+## 5. Deliberately changed existing assertions
+None. (The `calm` parameters are optional additions; `EscapeView` and `GhostView` constructors gained an optional second parameter.)
 
 ## 6. Interfaces to preserve
-Step 3 list, plus: `CURRICULUM`, `featuredLock`, `VarietyHistory`, `GenerateOptions.history`, `newnessPick`, `UPGRADES`, `UPGRADE_BOUNDS`, `effectsOf`, `draftOffer`, `RoomSnapshot.draft/upgrades`, the client event `draft:vote`, intent `loot`, `EscapePublic.loot`, `Room.stageDef`, `Room.effects`, hooks `GhostHost.warningShift/hearingShare`, `ReviveHost.holdShare`, `ItemSystem` opt `extraSlots`. The draft lives inside `stage_complete` (the phase machine is unchanged). New draws always come after the old ones.
+Step 4 list, plus: `THEMES`, `ThemeDef`, `propsFor`, `themeLook`, `themeColourOk`, `HUM_MAX_GAIN`, `PROP_MAX_ALPHA`, `RoomSnapshot.theme`, `lookFlags`, `roomDecor`, `evidencePrims`, `veiledBody`, `AURA_ALPHA`, `SCAR_COUNT`, the `calm` parameters. A theme must stay data: never read by the server's rules.
 
 ## 7. Known issues and limits
-* Stages 1 and 2 are exempt from the curriculum (they keep their original draws so old seeds keep their stage); stage 2 may therefore end on `code` and stage 3 must show `code` again: the no-repeat rule is not applied to stage 3.
-* From the fifth attempt of a stage that cannot be built, the lock and template newness is dropped (the stage is still built); the record may then differ slightly.
-* Loot is a cache in an existing room, not a room of its own. The upgrade outcome takes the first offer.
-* Not built in P3F (docs/HOOK.md rows for other milestones): gravity pickup, lights-out room and flare, mini-boss, spark hazard, disaster layer.
-* The teaching line is counted per player by connected ticks; late joining is only possible in the lobby, so this covers reconnects.
-* The draft needs the host to press go on if somebody is away; the host's go-on settles it.
-* Nothing played in a browser; the second ghost's look and the draft screen layout are unseen.
-* A single cache can pay a hazard noise that a ghost in the room hears; there is no warning on the cache.
+* Nothing of step 5 has been seen in a browser: the props, the wash, the hum, the aura and scars, the veiled ghost and the glyphs may need tuning for readability, scale and taste.
+* The props are background only; they do not follow the room's template (a bench may float where a platform stands). They are at low alpha and behind everything for that reason.
+* The theme hum is a simple oscillator; there is no per-theme sound design beyond pitch, wave, a partial and a slow wobble.
+* The theme is sent with the room snapshot at each stage start; a client that reconnects mid-stage gets it with the next snapshot.
+* Lab and the old demo stages have no theme and keep the old backdrop.
+* VISUAL_ISSUES.md: the yellow zigzag is hidden under themes; the ability slot overflow, message log overlap, disaster panel and stacked-label items are NOT fixed (outside P3F's files). Stage 1 container hint belongs to P3G.
+* Step 4's limits still stand (stage 2 and 3 exemptions, the cache is not its own room, etc.).
 
 ## 8. Env vars, DB changes
-None.
+None. New URL flag `?reducemotion=1` (client only).
 
 ## 9. Files the next step may modify
-Step 5 (themes, ghost look tiers, unnamed ghost and evidence look): client `ui/*` and `ui/ghost/*`, `scenes/GameScene.ts`, new theme data under `shared/src/variety/` (data only, `THEME_IDS` exists), `docs/polish/VISUAL_ISSUES.md`. Step 6 (solver, drills, docs): `server/test/rooms/solver.ts`, `test/death/drill.ts`, docs. Do not touch the frozen files.
+Step 6 (solver, drills, docs): `server/test/rooms/solver.ts`, `server/test/death/drill.ts`, `server/test/rooms/bot.ts`, the generator only to fix a stage that cannot be solved, `docs/VARIETY.md`, `docs/ARCHITECTURE.md`, this file. Do not touch the frozen files.
 
 ## 10. Outstanding acceptance criteria
-Steps 5 and 6. For step 4 the open items are your own `npm ci`, typecheck, test and build run, and a look at the draft screen (keys 1 to 3, N), the loot cache (E) and the journal teaching line in the browser.
+Step 6. For step 5 the open items are your own `npm ci`, typecheck, test and build run, and a look in the browser at: each of the four themes, the veiled ghost (from stage 7), a stage 25 ghost against a stage 2 one, the evidence markers before and after examining, reduced motion (`?reducemotion=1`) and the brightness assist (B).

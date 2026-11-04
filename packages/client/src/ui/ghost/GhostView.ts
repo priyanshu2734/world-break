@@ -13,7 +13,8 @@ interface One { box: Phaser.GameObjects.Container; glow: Phaser.GameObjects.Imag
  */
 export class GhostView {
   private ones = new Map<string, One>();
-  constructor(private scene: Phaser.Scene) {}
+  /** `calm` = reduced motion: no bob, no pulse, no flutter. */
+  constructor(private scene: Phaser.Scene, private calm = false) {}
 
   /** `stage` picks the look tier (a stage 25 ghost is bigger and more menacing than a stage 2 one). */
   update(ghosts: readonly GhostPublic[], myRoom: string | undefined, ms: number, dtMs: number, stage = 2): void {
@@ -23,7 +24,7 @@ export class GhostView {
       live.add(g.id);
       let o = this.ones.get(g.id);
       if (!o) { o = this.make(g); this.ones.set(g.id, o); }
-      const look = ghostLook(g.state, ms), shape = ghostShape(g.kind, stage, g.state, ms, g.lit === true);
+      const look = ghostLook(g.state, ms, this.calm), shape = ghostShape(g.kind, stage, g.state, ms, g.lit === true, this.calm);
       if (Math.hypot(g.x - o.x, g.y - o.y) > 200) { o.x = g.x; o.y = g.y; } // a respawn or a room change: do not glide across the room
       o.x = smoothToward(o.x, g.x, dtMs); o.y = smoothToward(o.y, g.y, dtMs);
       o.box.setPosition(o.x, o.y + (shape.still ? 0 : look.bob) * shape.scale).setVisible(true).setScale(shape.scale);
@@ -46,9 +47,12 @@ export class GhostView {
 
   private redraw(gfx: Phaser.GameObjects.Graphics, g: GhostPublic, shape: ReturnType<typeof ghostShape>): void {
     gfx.clear();
+    // P3F step 5: the tier's aura (a dark-red halo; nothing at tier 0) and, after the body, its claw scars
+    if (shape.aura > 0) gfx.fillStyle(0x7a1020, shape.aura).fillCircle(0, 2, 40).fillStyle(0x7a1020, shape.aura * 0.7).fillCircle(0, 2, 28);
     const poly = (pts: { x: number; y: number }[]) => pts.map((p) => new Phaser.Geom.Point(p.x, p.y));
     gfx.fillStyle(shape.tint, 0.92).fillPoints(poly(shape.body), true);
     for (const e of shape.extras) gfx.fillStyle(shape.tint, 0.92).fillPoints(poly(e), true);
+    for (const sc of shape.scars) if (sc.length === 2) gfx.lineStyle(1.5, 0x1a0508, 0.8).lineBetween(sc[0]!.x, sc[0]!.y, sc[1]!.x, sc[1]!.y);
     if (shape.rim !== null) { gfx.lineStyle(1.5, shape.rim, 0.9).strokePoints(poly(shape.body), true); }
     const face = Math.cos(g.angle) >= 0 ? 1 : -1;
     for (const e of shape.eyes) gfx.fillStyle(shape.eyeColor, 1).fillCircle(e.x + face * 1.2, e.y, e.r);

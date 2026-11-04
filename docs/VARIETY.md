@@ -208,3 +208,38 @@ From stage 13 (always on 13, then a seeded half of the stages) one optional cach
 
 ## Tests added in step 4
 `shared/test/{curriculum,draft}.test.ts`, `server/test/rooms/{curriculum.generate,loot}.test.ts`, `server/test/ghost/second.test.ts`, `server/test/death/draft.room.test.ts`, `client/test/draftLogic.test.ts`.
+
+# Themes and look (P3F step 5)
+
+## The four themes (`shared/src/variety/themes.ts`, data only)
+`lab`, `hospital`, `factory`, `library`. A theme is a palette (wash, platform slab, edge, lines, three prop colours), four prop kinds and an ambient hum. It is chosen per stage by `themeForStage` (the seed and the newness score of step 4: never the previous stage's theme, stage 1 is the lab), sent as the optional `RoomSnapshot.theme`, and drawn by the client. It is NOT part of the stage definition, is not read by any rule, the generator's draws, the validators or the solver, and changes no rectangle: it never changes physics (pinned by `server/test/rooms/theme.room.test.ts`).
+| Theme | Palette | Props | Hum |
+|---|---|---|---|
+| lab | slate blue-grey | bench, rack, monitor, pipe | 100 Hz triangle + 2nd partial, slow wobble, gain 0.03 |
+| hospital | pale grey-teal | bed, curtain, drip stand, cabinet | 120 Hz sine + 1.5x partial, gain 0.025 |
+| factory | rust-grey steel | gear, crates, vent, girder | 50 Hz triangle + 3rd partial, gain 0.04 |
+| library | brown-grey wood | shelf, books, ladder, desk | 80 Hz sine, steady, gain 0.015 |
+
+## Limits and tuning
+* Props: 3 to `PROPS_PER_ROOM_MAX` (14) per room (about one per 190 px of width), all inside the room, alpha at most `PROP_MAX_ALPHA` (0.4), drawn behind the platforms (depth -6), the world art (6), the hazards and the players. They use their own seeded stream (`deriveSeed(seed, 'props', roomId)`): no generator draw moves.
+* Colour language kept: every theme colour is muted (chroma at most `THEME_MAX_CHROMA` 0.2) or at least `THEME_MIN_HUE_GAP` (22 degrees) from red (0), amber (38), green (150) and cyan (188). Tested.
+* Hum: gain never above `HUM_MAX_GAIN` (0.05); starts after a user gesture; M mutes it with the ghost sounds.
+* Hidden in the dark view (nothing decorative outside the light), like the old backdrop.
+
+## Reduced motion and the brightness assist
+Reduced motion is on for the browser setting `prefers-reduced-motion`, `?reducemotion=1` or the older `?reduceflash=1`. It stops: the backdrop and platform-edge tweens, the hum wobble, the ghost bob, glow pulse, hem and arm sway, and the pulse of the evidence ring. The brightness assist (B) weakens the theme wash (it never darkens a room) and strengthens props and platform edges a little (props stay under the alpha cap); the hum is untouched.
+
+## Ghost look tiers
+`ghostLookTier(stage)`: 0 below stage 10, 1 from 10, 2 from 20, 3 from 35. Per tier: body scale 1, 1.3, 1.7, 2.2; a dark-red aura behind the body (alpha 0, 0.06, 0.14, 0.24); claw scars (0, 0, 2, 4); crown spikes (0, 0, 3, 5); bigger eyes; the colour slides toward red. A stage 25 ghost (tier 2) is 1.7 times as large as a stage 2 one (tier 0) and has an aura, scars, spikes and redder colours. Tested for all four looks.
+
+## The unnamed ghost (from stage 7)
+A veiled, hooded figure with a scalloped hem, two thin pale eyes and a pale rim (so it is seen in the dark). It matches no type: no tail, no arms, no crown. The veil frays with the tier (0, 2, 4, 6 strips). Only what it does (a Shade freezing in light, a Howler's scream) tells the type.
+
+## Evidence markers
+Before anyone examines it, every trace is the same violet smudge with a cyan ring (interactive); the picture never tells the type. After the team examined it, it shows its own glyph (cold breath: mist puffs; whisper: sound bars; footprints; dead lamp; scratches; cracked glass), the label of the kind and a green tick (done). The glyph comes from the team journal entry of that trace. The ring pulses unless reduced motion is on.
+
+## NOT seen
+None of the step 5 art (themes, props, hum, ghost tiers, unnamed ghost, glyphs) was seen on a screen: Phaser is not installable in my sandbox. The art is data and pure functions (tested); the drawing code (`ThemeView`, `ThemeAudio`, `drawPrims`, `GhostView`, `EscapeView`, `GameScene`) is not.
+
+## Tests added in step 5
+`shared/test/themes.test.ts`, `client/test/{theme,evidenceArt,ghostTiers}.test.ts`, `server/test/rooms/theme.room.test.ts`.

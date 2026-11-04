@@ -369,3 +369,6 @@ announces the teaching line. `view.ts` restricts `evidence` to what is in view a
 
 ## P3F step 4: curriculum, second ghost, draft pick, loot (see docs/VARIETY.md)
 `shared/variety/curriculum.ts` (the 15 rows, `VarietyHistory`, `newnessPick`, themes), `shared/draft` (upgrades, bounds, offer, vote), `shared/rooms/loot.ts`. The generator takes `history`, forces the curriculum lock, and draws the loot cache last. `Room` keeps `variety` (per stage records), `owned` upgrades, the `draft` (inside `stage_complete`, no new phase) and the teaching counters; `Room.effects` feeds hooks on the item system (`extraSlots`), the ghost host (`warningShift`, `hearingShare`), the revive system (`holdShare`) and the gun. Wire: `RoomSnapshot.draft` and `.upgrades`, client event `draft:vote`, intent `loot`. Client: `ui/draftLogic.ts`, `ui/DraftView.ts`, the loot prompt in `escapeUse`.
+
+## P3F step 5: themes and look (see docs/VARIETY.md, "Themes and look")
+`shared/variety/themes.ts` (theme data, props, `themeLook`), `RoomSnapshot.theme` (optional, from the step 4 variety record). Client: `ui/theme/{themeLogic,propArt,prims,evidenceArt}.ts` (pure), `ThemeView`, `ThemeAudio`, `drawPrims` (Phaser/WebAudio), `ghostLook.ts` (tiers, unnamed ghost, `calm`), `EscapeView` (evidence glyphs per frame), `GameScene.syncTheme` and `lookFlags` (reduced motion). No server rule reads a theme.
