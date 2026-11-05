@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
-  ARENA, EYE_HEIGHT, IDENTIFY_FROM_STAGE, IDENTIFY_TEACH_LINE, TEACH_TICKS, JOURNAL, LOOT, UPGRADES, draftOffer, effectsOf, canTake, gunCooldownWith, ghostPickWith, tally, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type GhostType, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState, type DraftPublic, type UpgradeId, type VarietyHistory, type VarietyRecord,
+  ARENA, EYE_HEIGHT, IDENTIFY_FROM_STAGE, IDENTIFY_TEACH_LINE, TEACH_TICKS, JOURNAL, LOOT, UPGRADES, draftOffer, effectsOf, canTake, gunCooldownWith, ghostPickWith, tally, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type GhostType, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState, type DraftPublic, type UpgradeId, type VarietyHistory, type VarietyRecord, VarietyHistorySchema, normaliseHistory,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -96,6 +96,19 @@ export class Room {
   /** The newest records before `stage`, oldest first (only the stages directly before it count). */
   /** The definition of the stage being played (server-side only: it holds the answers). Tests use it, because a later stage depends on the run's history and cannot be regenerated from (stage, seed) alone. */
   get stageDef(): StageDef | null { return this.engine?.def ?? null; }
+  /**
+   * P3F step 6: what the stages played so far used (oldest first, at most the last six). A save keeps this with the run seed: a later stage depends on it
+   * (see `shared/variety/save.ts`). `restoreVariety` gives it back to a Room that has not started yet.
+   */
+  get varietyRecords(): VarietyRecord[] { return [...this.variety.keys()].sort((a, b) => a - b).map((k) => ({ ...this.variety.get(k)! })); }
+  restoreVariety(records: unknown): Result {
+    if (this.phase !== 'lobby') return fail('The history can only be restored before the run starts');
+    const parsed = VarietyHistorySchema.safeParse(records);
+    if (!parsed.success) return fail('That is not a valid variety history');
+    this.variety.clear();
+    for (const r of normaliseHistory(parsed.data)) this.variety.set(r.stage, r);
+    return { ok: true };
+  }
   private historyFor(stage: number): VarietyHistory {
     const out: VarietyRecord[] = [];
     for (let s = stage - 3; s < stage; s++) { const r = this.variety.get(s); if (r) out.push(r); }

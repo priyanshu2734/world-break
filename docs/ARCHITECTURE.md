@@ -372,3 +372,6 @@ announces the teaching line. `view.ts` restricts `evidence` to what is in view a
 
 ## P3F step 5: themes and look (see docs/VARIETY.md, "Themes and look")
 `shared/variety/themes.ts` (theme data, props, `themeLook`), `RoomSnapshot.theme` (optional, from the step 4 variety record). Client: `ui/theme/{themeLogic,propArt,prims,evidenceArt}.ts` (pure), `ThemeView`, `ThemeAudio`, `drawPrims` (Phaser/WebAudio), `ghostLook.ts` (tiers, unnamed ghost, `calm`), `EscapeView` (evidence glyphs per frame), `GameScene.syncTheme` and `lookFlags` (reduced motion). No server rule reads a theme.
+
+## P3F step 6: solver, determinism, handoff (see docs/VARIETY.md, "Solver, determinism and the whole phase")
+`shared/variety/save.ts` (`VarietyRecordSchema`, `VarietyHistorySchema`, `normaliseHistory`) and `Room.varietyRecords` / `Room.restoreVariety` make the run's variety history something a save (P6) and the scenario generator (P5) can keep: **a stage depends on (stage, seed, last 3 variety records), not on (stage, seed) alone.** Test helpers: `test/rooms/runSolve.ts` (`playRun`, a whole run through the real transitions), `SolveExtras` in `solver.ts`, `extras` in `death/drill.ts`. No rule, phase, or frozen file changed. The final hand-off is `docs/handoffs/P3F.md`.

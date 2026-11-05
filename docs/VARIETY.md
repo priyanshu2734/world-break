@@ -243,3 +243,45 @@ None of the step 5 art (themes, props, hum, ghost tiers, unnamed ghost, glyphs) 
 
 ## Tests added in step 5
 `shared/test/themes.test.ts`, `client/test/{theme,evidenceArt,ghostTiers}.test.ts`, `server/test/rooms/theme.room.test.ts`.
+
+# Solver, determinism and the whole phase (P3F step 6)
+
+## Determinism note (read this before building a save or a scenario)
+Until step 4 a stage was a pure function of (stage number, stage seed). **Now it is a function of (stage, seed, the last `HISTORY_KEEP` = 3 variety records)**: lock types, room templates, ghost types and theme of the three stages before it. The same (stage, seed) with another history can be another stage.
+* A **save and resume (P6)** must store `Room.varietyRecords` with the run seed and give them back with `Room.restoreVariety(records)` (lobby only, validated by `VarietyHistorySchema`, normalised by `normaliseHistory`: sorted, one record per stage, newest three kept) before the run starts. Without them the resumed stage can differ from the one the team was playing.
+* The **scenario generator (P5)** may pass `history: []` (the stage the generator makes alone, "stage N on its own") or a history it builds. Both are valid and deterministic. It must not assume `generateEscapeStage(stage, seed)` equals the stage a run reached.
+* Tests never regenerate a stage from (stage, seed) after stage 1 of a run: they use `Room.stageDef`.
+* Code: `shared/src/variety/save.ts`; tests: `shared/test/varietySave.test.ts`, `server/test/rooms/variety.save.test.ts` (same input, same stage; the history IS an input; round trip through JSON; a fresh lobby that restores it builds the same next stage; refused after the start and for bad data).
+
+## What the solver and drills prove now
+`server/test/rooms/solver.ts` plays a generated stage with the real physics (alone or as a team). Step 6 adds `SolveExtras` (`examine`, `mark`, `loot`): once the doors are open it walks to every trace and examines it, enters the true type in the journal, and opens the cache, all through the real intents. `test/rooms/runSolve.ts` (`playRun`) plays a whole RUN through the real stage-clear and next-stage path with the ghost on (so every later stage is generated with its history and the draft's upgrades), and `test/death/drill.ts` accepts `extras`.
+| Claim | Strictness | Where |
+|---|---|---|
+| A run of consecutive stages (1 to 16, three run seeds per difficulty) is cleared, within two hand slots | strict | `rooms/variety.solve` |
+| Two ghosts: stages 18 to 25, solo and with 2 and 4 players, exactly 2 ghosts from stage 20 | strict | `rooms/variety.solve` |
+| 2, 3 and 4 players clear stages 3 to 14 of a run | strict | `rooms/variety.solve` |
+| Every upgrade at its maximum at once never breaks a stage (three slots with the Extra hand) | strict | `rooms/variety.solve` |
+| Examine, journal and cache visits never break a solve; the cache pays what its seed fixed; all three outcomes occur | strict | `rooms/variety.solve` |
+| A bot SURVIVES a lethal ghost | statistical band only (a property of the bot) | `death/solve` (unchanged) |
+| How fast the solver clears a stage | not asserted | n/a |
+The solver runs with the ghost unable to kill (`setLethal(false)`) in the strict tests: the claim there is the stage. Wall time of the whole server suite stays near 5 minutes in my sandbox; the new files add about 1.5 minutes of CPU.
+
+## Limits and tuning: the whole of P3F in one table
+| Area | Name | Value | Where |
+|---|---|---|---|
+| Templates | rooms up to | 1040 px tall; 13 templates plus tutorial and hall | `shared/variety` |
+| Puzzles | lock types | 13 (5 original, 8 new); switches per stage 24 | `rooms/escape.ts` |
+| Puzzles | chance | 0 below stage 7, 40 percent at 6, 75 percent cap | `puzzleBuild`, `ESCAPE_LIMITS` |
+| Puzzles | lockouts | keypad/safe 3 tries, 100 ticks; levers 3 wrong sequences; wires per wrong wire | `ESCAPE_LIMITS`, `puzzles.ts` |
+| Identify | from stage | 7; evidence at most 6, entries at most 3 | `shared/ghost` |
+| Identify | right entry | warning +40 ticks, gun at 75 percent; wrong entry -20 points | `JOURNAL` |
+| Curriculum | rows | 1 to 15, then newness | `shared/variety/curriculum.ts` |
+| History | kept | `HISTORY_KEEP` 3 (a save may hold up to 16 records; `normaliseHistory` trims) | `variety/save.ts` |
+| Ghosts | count | 1; 2 from stage 20; never more | `MAX_GHOSTS` |
+| Draft | offer | 3 distinct; 7 upgrades; bounds vision 1 to 1.3, hearing 0.7 to 1.3, gun 0.45 to 1, rescue 0.75 to 1, extra slots 0 to 1, warning shift -20 to 0 | `UPGRADE_BOUNDS` |
+| Loot | from stage | 13 (always), then a seeded half; 50 percent +150 points, 25 percent upgrade, 25 percent hazard | `shared/rooms/loot.ts` |
+| Themes | count | 4; props 3 to 14 per room, alpha at most 0.4; hum gain at most 0.05 | `themes.ts` |
+| Look | ghost tiers | 0 below 10, 1 from 10, 2 from 20, 3 from 35 | `ghostLook.ts` |
+
+## Tests added in step 6
+`shared/test/varietySave.test.ts`, `server/test/rooms/{variety.solve,variety.save}.test.ts`; helpers `server/test/rooms/runSolve.ts`, `SolveExtras` in `solver.ts`, `extras` in `death/drill.ts`.

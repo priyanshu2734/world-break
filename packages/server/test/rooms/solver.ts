@@ -17,7 +17,16 @@ export interface SolveStats {
   recovered: number;
   /** P4 step 5: how many times the lead player died and the next living player took over. */
   leadChanges: number;
+  /** P3F step 6: what the optional side visits did (see `SolveExtras`): pieces of evidence examined, journal entries made, and the text the cache answered with ('' = not visited). */
+  examined: number; marked: number; looted: string;
 }
+
+/**
+ * P3F step 6: what a team may do ON TOP of solving the stage, once every door stands open (the stage is the claim: none of it may break the solve).
+ * `examine`: walk to every piece of evidence and examine it. `mark`: then enter every ghost type the stage really has in the team journal. `loot`: open the optional cache.
+ * Each action is expected to succeed (`expectOk`): standing at the thing, in its room, it must work.
+ */
+export interface SolveExtras { examine?: boolean; mark?: boolean; loot?: boolean }
 
 /** P4 step 5: what the solver tells a drill each time a player has just fetched a part that is needed later (the drill may kill them here). */
 export interface FetchedEvent { who: string; itemId: string; kind: string; index: number }
@@ -55,7 +64,7 @@ export function advanceTo(room: Room, ids: string[], stage: number): StageDef {
 
 const graphOf = (def: StageDef): RoomGraph => def.rooms!;
 
-export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team; /** P4 step 5: called right after a needed part was fetched (a drill kills the carrier here to prove the part can be recovered). */ onFetched?: (e: FetchedEvent) => void } = {}): SolveStats {
+export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team; /** P4 step 5: called right after a needed part was fetched (a drill kills the carrier here to prove the part can be recovered). */ onFetched?: (e: FetchedEvent) => void; /** P3F step 6: side visits before the exit. */ extras?: SolveExtras } = {}): SolveStats {
   const graph = graphOf(def), spec = def.escape!;
   const arenas = new Map(graph.rooms.map((r) => [r.id, r.arena]));
   const team = opts.team ? opts.team(room, (id) => arenas.get(id)!) : new Team(room, (id) => arenas.get(id)!);
@@ -63,7 +72,7 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
   team.seq = Math.max(team.seq, lastSeq.get(room) ?? 0);
   const bots = ids.map((id) => new Bot(team, id));
   const play: Play = { room, team, bots, ids, arenas };
-  const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0, recovered: 0, leadChanges: 0 };
+  const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0, recovered: 0, leadChanges: 0, examined: 0, marked: 0, looted: '' };
   let lead = bots[0]!, leadId = ids[0]!;
   // P4 step 5: a player may die while the stage is being solved. The dead can do nothing; the next living player takes over as lead, and any part the dead
   // one was carrying (dropped where they fell, moved to a floor a player can reach) is gone back for. Nothing here changes a run in which nobody dies.
@@ -340,6 +349,26 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
         else travel(bots[i]!, ids[i]!, team.roomOf(leadId)!);
         slots(ids[i]!);
       }
+    }
+  }
+  // P3F step 6: the side visits (every door is open by now)
+  if (opts.extras) {
+    ensureLead();
+    const ex = opts.extras;
+    if (ex.examine || ex.mark) for (const ev of spec.ghostEvidence ?? []) {
+      travel(lead, leadId, ev.room); lead.goTo(ev.x, ev.y);
+      expectOk(esc(play, { action: 'examine', evidenceId: ev.id }, leadId));
+      stats.examined++;
+    }
+    if (ex.mark && stats.examined > 0) for (const g of new Set((spec.ghostEvidence ?? []).map((e) => e.ghost))) {
+      expectOk(esc(play, { action: 'mark', ghost: g }, leadId));
+      stats.marked++;
+    }
+    if (ex.loot && spec.loot) {
+      travel(lead, leadId, spec.loot.room); lead.goTo(spec.loot.x, spec.loot.y);
+      const r = esc(play, { action: 'loot', lootId: spec.loot.id }, leadId);
+      expectOk(r);
+      stats.looted = 'message' in r && typeof r.message === 'string' ? r.message : 'opened';
     }
   }
   // the exit
