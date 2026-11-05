@@ -4,7 +4,7 @@ import { generateEscapeStage } from '../../src/rooms/generate';
 import { DEATH_TABLE, type KillCause } from '../../src/death';
 import type { GameSim } from '../../src/game';
 import { Team } from '../rooms/bot';
-import { solveStage } from '../rooms/solver';
+import { solveStage, type SolveExtras } from '../rooms/solver';
 import { HideTeam } from '../ghost/hideTeam';
 
 /**
@@ -29,6 +29,8 @@ export interface DrillOptions {
   /** For plan 'last': the index of the last fetch of the stage (a dry run tells it). */
   lastIndex?: number;
   runSeed?: number;
+  /** P3F step 6: side visits before the exit (examine the evidence, fill the journal, open the cache). */
+  extras?: SolveExtras;
 }
 export interface DrillResult {
   cleared: boolean;
@@ -48,6 +50,8 @@ export interface DrillResult {
   /** Doors of this stage that need a safe (a MANDATORY safe), and whether the optional gun safe is there. */
   mandatorySafes: number;
   gunSafe: boolean;
+  /** P3F step 6: what the side visits did. */
+  examined: number; marked: number; looted: string;
 }
 
 const SCRIPTED: KillCause = { how: 'touch', ghost: 'g0', ghostKind: null, because: ['scripted death (solver drill)'] };
@@ -65,17 +69,18 @@ export function drill(stage: number, seed: number, players: number, o: DrillOpti
   const lethal = o.lethal === true;
   death.setLethal(lethal);
   const rec = room.stageRecord!;
-  const def = generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty });
+  const def = room.stageDef ?? generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty }); // P3F step 4: a later stage depends on the run's history, so the room's own definition is the truth
   if (def.id !== rec.defId) throw new Error('room and generator disagree');
   const plan = o.plan ?? 'none';
   const sim = (room as unknown as { sim: GameSim }).sim;
   const alive = (): string[] => ids.filter((id) => !death.isDead(id));
   let kills = 0;
   if (plan !== 'none') for (let i = 0; i < DEATH_TABLE.spawnGraceS * 20 + 5; i++) room.tick(); // the spawn grace must be over for a kill to be allowed
-  const result: DrillResult = { cleared: false, died: false, error: '', maxSlots: 0, fetches: 0, kills: 0, recovered: 0, leadChanges: 0, relocated: 0, ghostKills: 0, mandatorySafes: def.escape!.links.filter((l) => l.lock.type === 'safe').length, gunSafe: def.escape!.safes.some((x) => def.items?.find((i) => i.id === x.contains)?.kind === 'pulse_gun') };
+  const result: DrillResult = { cleared: false, died: false, error: '', maxSlots: 0, fetches: 0, kills: 0, recovered: 0, leadChanges: 0, relocated: 0, ghostKills: 0, mandatorySafes: def.escape!.links.filter((l) => l.lock.type === 'safe').length, gunSafe: def.escape!.safes.some((x) => def.items?.find((i) => i.id === x.contains)?.kind === 'pulse_gun'), examined: 0, marked: 0, looted: '' };
   try {
     const stats = solveStage(room, ids, def, {
       coop: players > 1,
+      ...(o.extras ? { extras: o.extras } : {}),
       ...(o.hide ? { team: (r: Room, arenaOf: (id: string) => import('@wb/shared').Arena) => new HideTeam(r, arenaOf, def.escape!.hidingSpots ?? []) } : {}),
       onFetched: (e) => {
         result.fetches = Math.max(result.fetches, e.index + 1);
@@ -92,6 +97,7 @@ export function drill(stage: number, seed: number, players: number, o: DrillOpti
         kills++;
       },
     });
+    result.examined = stats.examined; result.marked = stats.marked; result.looted = stats.looted;
     result.maxSlots = stats.maxSlots; result.recovered = stats.recovered; result.leadChanges = stats.leadChanges;
   } catch (e) {
     result.error = e instanceof Error ? e.message : String(e);

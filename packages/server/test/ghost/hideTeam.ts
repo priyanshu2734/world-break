@@ -1,6 +1,7 @@
 import type { Arena } from '@wb/shared';
 import type { Room } from '../../src/room';
 import { Bot, Team } from '../rooms/bot';
+import { piecesOf } from '../../src/salvage/dropRest';
 
 interface Spot { id: string; room: string; x: number; y: number }
 type Mode = { kind: 'free' } | { kind: 'going'; spot: Spot; since: number } | { kind: 'hidden'; since: number; quiet: number };
@@ -21,6 +22,14 @@ export class HideTeam extends Team {
   constructor(room: Room, arenaOf: (roomId: string) => Arena, spots: readonly Spot[]) {
     super(room, arenaOf);
     this.spots = [...spots];
+  }
+
+  /** P3F step 1: is the spot on the very piece of floor the player stands on (no crate, wall, pit or height between: a straight walk reaches it)? */
+  private samePiece(id: string, spot: Spot): boolean {
+    const b = this.body(id), solids = piecesOf(this.arenaOf(spot.room)).arena.solids;
+    const mine = solids.findIndex((s) => Math.abs(s.y - b.y) < 1.5 && b.x + 14 > s.x && b.x - 14 < s.x + s.w);
+    const its = solids.findIndex((s) => Math.abs(s.y - spot.y) < 1.5 && spot.x >= s.x - 14 && spot.x <= s.x + s.w + 14);
+    return mine >= 0 && mine === its;
   }
 
   private mode(id: string): Mode { return this.modes.get(id) ?? { kind: 'free' }; }
@@ -67,6 +76,11 @@ export class HideTeam extends Team {
         for (const id of ids) {
           const m = this.mode(id);
           if (m.kind === 'going') {
+            // a spot up a ledge, over a crate or across a pit is reached with the router of the solver's bot (real physics), the straight walk below does the rest
+            if (this.player(id).roomId === m.spot.room && !this.samePiece(id, m.spot)) {
+              try { new Bot(this, id).goTo(m.spot.x, m.spot.y, 25, 900); } catch { this.modes.set(id, { kind: 'free' }); continue; }
+              if (this.room.phase !== 'playing') return;
+            }
             const p = this.player(id);
             const dx = m.spot.x - p.x;
             if (Math.abs(dx) <= 30 && p.roomId === m.spot.room) {

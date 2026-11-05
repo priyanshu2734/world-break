@@ -24,8 +24,8 @@ export function locksForStage(stage: number): readonly LockType[] {
   const s = Number.isFinite(stage) ? Math.max(1, Math.floor(stage)) : 1;
   if (s <= 1) return ['key_item'];
   if (s <= 2) return ['key_item', 'code'];
-  if (s <= 5) return ['key_item', 'code', 'power'];
-  if (s <= 9) return ['key_item', 'code', 'power', 'two_person'];
+  if (s <= 4) return ['key_item', 'code', 'power'];
+  if (s <= 9) return ['key_item', 'code', 'power', 'two_person']; // P3F step 4: the two-person lock arrives on stage 5 (docs/HOOK.md)
   return ['key_item', 'code', 'power', 'two_person', 'safe'];
 }
 

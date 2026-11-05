@@ -1,4 +1,4 @@
-import { GHOST_LOOK_SCALE, ghostLookTier, type GhostPublic, type GhostType } from '@wb/shared';
+import { GHOST_LOOK_SCALE, ghostLookTier, type GhostPublic, type GhostType, type PublicGhostKind } from '@wb/shared';
 
 /** P3E step 2: pure look parameters for the Wisp (a small pale glow). No Phaser here. */
 export interface GhostLook { tint: number; glowAlpha: number; bodyAlpha: number; glowScale: number; bob: number }
@@ -6,15 +6,16 @@ export interface GhostLook { tint: number; glowAlpha: number; bodyAlpha: number;
 export const WISP_TINT = 0xcfe8ff;
 const STATE_TINT: Record<GhostPublic['state'], number> = { roaming: 0xcfe8ff, hunting: 0xffd9c8, stunned: 0x8a96a0 };
 
-export function ghostLook(state: GhostPublic['state'], ms: number): GhostLook {
-  const pulse = 0.5 + 0.5 * Math.sin(ms / (state === 'hunting' ? 160 : 520));
+export function ghostLook(state: GhostPublic['state'], ms: number, calm = false): GhostLook {
+  // reduced motion (`calm`): no pulse and no bob, a steady glow
+  const pulse = calm ? 0.5 : 0.5 + 0.5 * Math.sin(ms / (state === 'hunting' ? 160 : 520));
   const base = state === 'stunned' ? 0.35 : state === 'hunting' ? 0.95 : 0.7;
   return {
     tint: STATE_TINT[state] ?? WISP_TINT,
     glowAlpha: (state === 'stunned' ? 0.12 : 0.22) + 0.12 * pulse,
     bodyAlpha: base * (0.85 + 0.15 * pulse),
     glowScale: state === 'hunting' ? 5.5 : 4.5,
-    bob: state === 'stunned' ? 0 : Math.sin(ms / 380) * 4,
+    bob: state === 'stunned' || calm ? 0 : Math.sin(ms / 380) * 4,
   };
 }
 
@@ -58,6 +59,31 @@ export interface GhostShape {
   rim: number | null;
   /** The body does not bob (a stunned ghost, or a Shade frozen in the light). */
   still: boolean;
+  /** P3F step 5: the look tier's extras: a dark-red aura behind the body (alpha 0 = none), and claw scars across it (pairs of points). */
+  aura: number;
+  scars: Pt[][];
+}
+
+/** P3F step 5: how strong the aura is per look tier (a stage 25 ghost is clearly worse than a stage 2 one), and how many scars it carries. */
+export const AURA_ALPHA = [0, 0.06, 0.14, 0.24] as const;
+export const SCAR_COUNT = [0, 0, 2, 4] as const;
+export function scarsFor(tier: 0 | 1 | 2 | 3, top: number, bottom: number): Pt[][] {
+  const out: Pt[][] = [];
+  for (let i = 0; i < SCAR_COUNT[tier]; i++) {
+    const x = -8 + i * (16 / Math.max(1, SCAR_COUNT[tier] - 1));
+    out.push([{ x: x - 3, y: top + (bottom - top) * 0.25 }, { x: x + 4, y: top + (bottom - top) * 0.7 }]);
+  }
+  return out;
+}
+
+/** P3F step 5: the unnamed ghost (from stage 7): a veiled, hooded figure with a scalloped hem. It matches no type: no crown, no arms, no tail. `calm` freezes the hem. */
+export function veiledBody(ms: number, calm: boolean): Pt[] {
+  const sway = calm ? 0 : Math.sin(ms / 340);
+  const hood: Pt[] = [{ x: -5, y: -30 }, { x: 0, y: -33 }, { x: 5, y: -30 }, { x: 9, y: -22 }, { x: 11, y: -8 }];
+  const hem: Pt[] = [];
+  for (let i = 0; i < 7; i++) { const x = 13 - i * (26 / 6); hem.push({ x, y: 30 + (i % 2 === 0 ? 5 : -2) + sway * (i % 2 === 0 ? 1.5 : -1.5) }); }
+  const left: Pt[] = [{ x: -11, y: -8 }, { x: -9, y: -22 }];
+  return [...hood, { x: 14, y: 12 }, ...hem, { x: -14, y: 12 }, ...left];
 }
 
 export const KIND_TINT: Record<GhostType, number> = { wisp: 0xcfe8ff, shade: 0x2a2f55, howler: 0x6b2f2f };
@@ -80,18 +106,28 @@ export function crown(n: number, w: number, topY: number, h: number): Pt[][] {
 /** Spikes a tier adds: none, none, 3, 5. */
 export const CROWN_SPIKES = [0, 0, 3, 5] as const;
 
-export function ghostShape(kind: GhostType, stage: number, state: GhostPublic['state'], ms: number, lit = false): GhostShape {
+export function ghostShape(kind: PublicGhostKind, stage: number, state: GhostPublic['state'], ms: number, lit = false, calm = false): GhostShape {
   const tier = ghostLookTier(stage), scale = GHOST_LOOK_SCALE[tier];
   const menace = tier * 0.18; // the colour slides toward red as the stage grows
   const hunting = state === 'hunting';
-  const base = { scale, tier, still: state === 'stunned' || lit } as const;
+  const base = { scale, tier, still: state === 'stunned' || lit || calm, aura: AURA_ALPHA[tier] } as const;
+  const scars = (top: number, bottom: number): Pt[][] => scarsFor(tier, top, bottom);
+  if (calm) ms = 0; // reduced motion: the body, the hem, the tail and the arms do not move
+  if (kind === 'unknown') {
+    // P3F step 3/5: an unnamed ghost is a veiled figure; only what it DOES (freezing in light, screaming) tells the type. Its eyes are two thin slits under the hood.
+    const body = veiledBody(ms, calm);
+    const strips: Pt[][] = [];
+    for (let i = 0; i < tier * 2; i++) { const x = -10 + (i * 20) / Math.max(1, tier * 2 - 1); strips.push([{ x: x - 2, y: 32 }, { x, y: 40 + (i % 2) * 5 }, { x: x + 2, y: 32 }]); } // frayed veil: more of it the later the stage
+    const eyes: Eye[] = [{ x: -3, y: -22, r: 1.4 + tier * 0.25 }, { x: 3, y: -22, r: 1.4 + tier * 0.25 }];
+    return { ...base, body, extras: strips, eyes, eyeColor: hunting ? 0xff5a4d : 0xe6efff, tint: mixColor(0x6b7384, 0x7a1020, menace), glowTint: mixColor(0x6a7080, 0xaa1c2c, menace), glowScale: 3.6, rim: 0x9aa3b8, scars: scars(-30, 34) };
+  }
   if (kind === 'shade') {
     const wave = Math.sin(ms / 260) * 2.2;
     const body: Pt[] = [{ x: -6, y: -30 }, { x: 6, y: -30 }, { x: 9, y: -14 }, { x: 12, y: 20 }, { x: 7, y: 34 + wave }, { x: 0, y: 27 - wave }, { x: -7, y: 34 - wave }, { x: -12, y: 20 }, { x: -9, y: -14 }];
     const eyeC = lit ? 0x7fa8ff : hunting ? 0xff5a4d : 0xe6efff;
     const eyes: Eye[] = [{ x: -3, y: -22, r: 1.6 + tier * 0.3 }, { x: 3, y: -22, r: 1.6 + tier * 0.3 }];
     if (tier >= 3) eyes.push({ x: 0, y: -26, r: 1.4 });
-    return { ...base, body, extras: crown(CROWN_SPIKES[tier], 10, -30, 9), eyes, eyeColor: eyeC, tint: mixColor(KIND_TINT.shade, 0x7a1020, menace), glowTint: lit ? 0x6f8fff : mixColor(0x3b4aa8, 0xaa1c2c, menace), glowScale: 3.4, rim: lit ? 0xbcd0ff : 0x7d8cff };
+    return { ...base, body, extras: crown(CROWN_SPIKES[tier], 10, -30, 9), eyes, eyeColor: eyeC, tint: mixColor(KIND_TINT.shade, 0x7a1020, menace), glowTint: lit ? 0x6f8fff : mixColor(0x3b4aa8, 0xaa1c2c, menace), glowScale: 3.4, rim: lit ? 0xbcd0ff : 0x7d8cff, scars: scars(-30, 34) };
   }
   if (kind === 'howler') {
     const sway = Math.sin(ms / 420) * 3;
@@ -99,7 +135,7 @@ export function ghostShape(kind: GhostType, stage: number, state: GhostPublic['s
     const arm = (side: 1 | -1): Pt[] => [{ x: side * 10, y: -14 }, { x: side * 15, y: -12 }, { x: side * (19 + sway), y: 30 }, { x: side * (15 + sway), y: 34 }, { x: side * 9, y: -2 }];
     const eyes: Eye[] = [{ x: -3.5, y: -17, r: 2.2 + tier * 0.3 }, { x: 3.5, y: -17, r: 2.2 + tier * 0.3 }];
     if (tier >= 3) eyes.push({ x: 0, y: -21, r: 1.8 });
-    return { ...base, body, extras: [arm(1), arm(-1), ...crown(CROWN_SPIKES[tier], 12, -24, 10)], eyes, eyeColor: 0xff3b30, tint: mixColor(KIND_TINT.howler, 0x9a1010, menace), glowTint: mixColor(0x992222, 0xff2a2a, menace), glowScale: hunting ? 5 : 3.8, rim: null };
+    return { ...base, body, extras: [arm(1), arm(-1), ...crown(CROWN_SPIKES[tier], 12, -24, 10)], eyes, eyeColor: 0xff3b30, tint: mixColor(KIND_TINT.howler, 0x9a1010, menace), glowTint: mixColor(0x992222, 0xff2a2a, menace), glowScale: hunting ? 5 : 3.8, rim: null, scars: scars(-24, 16) };
   }
   // the Wisp: the small pale glow, its eyes and spikes turn menacing with the stage
   const body = wispOutline(ms);
@@ -107,6 +143,6 @@ export function ghostShape(kind: GhostType, stage: number, state: GhostPublic['s
   const er = 2 + tier * 0.4;
   const eyes: Eye[] = [{ x: -3.5, y: -2, r: er }, { x: 3.5, y: -2, r: er }];
   if (tier >= 3) eyes.push({ x: -3.5, y: -7, r: 1.5 }, { x: 3.5, y: -7, r: 1.5 });
-  const t = ghostLook(state, ms);
-  return { ...base, body, extras: crown(CROWN_SPIKES[tier], 14, -11, 8), eyes, eyeColor: eyeC, tint: mixColor(t.tint, 0xff7a6a, menace), glowTint: mixColor(t.tint, 0xff4a3a, menace), glowScale: t.glowScale, rim: null };
+  const t = ghostLook(state, ms, calm);
+  return { ...base, body, extras: crown(CROWN_SPIKES[tier], 14, -11, 8), eyes, eyeColor: eyeC, tint: mixColor(t.tint, 0xff7a6a, menace), glowTint: mixColor(t.tint, 0xff4a3a, menace), glowScale: t.glowScale, rim: null, scars: scars(-11, 14) };
 }

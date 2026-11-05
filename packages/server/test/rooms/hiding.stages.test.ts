@@ -78,7 +78,8 @@ describe('P4 step 6: the generator places exactly what the table says, per room,
       const def = generateEscapeStage(stage, seed, { ghost: true, difficulty: d });
       const spots = def.escape!.hidingSpots ?? [];
       for (const h of spots) {
-        for (const o of spots) if (o !== h && o.room === h.room) expect(Math.abs(o.x - h.x)).toBeGreaterThanOrEqual(130);
+        // P3F step 1 (deliberate change): spots on one SURFACE are a step apart; spots on different levels of a tall room may lie one above the other
+        for (const o of spots) if (o !== h && o.room === h.room && o.y === h.y) expect(Math.abs(o.x - h.x)).toBeGreaterThanOrEqual(130);
         for (const i of def.items ?? []) if (i.room === h.room && i.y === h.y) expect(Math.abs(i.x - h.x), `${h.id} vs ${i.id}`).toBeGreaterThanOrEqual(60);
         for (const c of def.escape!.clues) if (c.room === h.room && c.y === h.y) expect(Math.abs(c.x - h.x), `${h.id} vs ${c.id}`).toBeGreaterThanOrEqual(60);
       }

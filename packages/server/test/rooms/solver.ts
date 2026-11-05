@@ -1,4 +1,4 @@
-import type { Arena, RoomGraph } from '@wb/shared';
+import { parseBreaker, parseGlyphs, parseLegend, parseLever, parseWiring, symbolCode, ESCAPE_LIMITS, type Arena, type RoomGraph } from '@wb/shared';
 import { Room } from '../../src/room';
 import { generateEscapeStage } from '../../src/rooms/generate';
 import type { StageDef } from '../../src/systems/stageDef';
@@ -17,10 +17,22 @@ export interface SolveStats {
   recovered: number;
   /** P4 step 5: how many times the lead player died and the next living player took over. */
   leadChanges: number;
+  /** P3F step 6: what the optional side visits did (see `SolveExtras`): pieces of evidence examined, journal entries made, and the text the cache answered with ('' = not visited). */
+  examined: number; marked: number; looted: string;
 }
+
+/**
+ * P3F step 6: what a team may do ON TOP of solving the stage, once every door stands open (the stage is the claim: none of it may break the solve).
+ * `examine`: walk to every piece of evidence and examine it. `mark`: then enter every ghost type the stage really has in the team journal. `loot`: open the optional cache.
+ * Each action is expected to succeed (`expectOk`): standing at the thing, in its room, it must work.
+ */
+export interface SolveExtras { examine?: boolean; mark?: boolean; loot?: boolean }
 
 /** P4 step 5: what the solver tells a drill each time a player has just fetched a part that is needed later (the drill may kill them here). */
 export interface FetchedEvent { who: string; itemId: string; kind: string; index: number }
+
+/** The last input number each Room's solver Teams used. */
+const lastSeq = new WeakMap<Room, number>();
 
 export function newRun(players: number, runSeed = 7): { room: Room; ids: string[] } {
   const room = new Room('ABCD', 4, runSeed, { escape: true });
@@ -34,7 +46,7 @@ export function newRun(players: number, runSeed = 7): { room: Room; ids: string[
 /** The definition the room is playing (the generator is deterministic in (stage, seed), so this is the very same stage). */
 export function currentDef(room: Room): StageDef {
   const rec = room.stageRecord!;
-  const def = generateEscapeStage(rec.stage, rec.seed);
+  const def = room.stageDef ?? generateEscapeStage(rec.stage, rec.seed); // P3F step 4: a later stage depends on the run's history, so the room's own definition is the truth
   if (def.id !== rec.defId) throw new Error(`room plays ${rec.defId}, generator says ${def.id}`);
   return def;
 }
@@ -52,13 +64,15 @@ export function advanceTo(room: Room, ids: string[], stage: number): StageDef {
 
 const graphOf = (def: StageDef): RoomGraph => def.rooms!;
 
-export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team; /** P4 step 5: called right after a needed part was fetched (a drill kills the carrier here to prove the part can be recovered). */ onFetched?: (e: FetchedEvent) => void } = {}): SolveStats {
+export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coop?: boolean; /** P3E step 5: build the Team yourself (the ghost tests pass one that hides when warned). */ team?: (room: Room, arenaOf: (roomId: string) => Arena) => Team; /** P4 step 5: called right after a needed part was fetched (a drill kills the carrier here to prove the part can be recovered). */ onFetched?: (e: FetchedEvent) => void; /** P3F step 6: side visits before the exit. */ extras?: SolveExtras } = {}): SolveStats {
   const graph = graphOf(def), spec = def.escape!;
   const arenas = new Map(graph.rooms.map((r) => [r.id, r.arena]));
   const team = opts.team ? opts.team(room, (id) => arenas.get(id)!) : new Team(room, (id) => arenas.get(id)!);
+  // P3F step 1: a Team made for a later stage of the same Room carries on after the input numbers the earlier ones used (the room ignores a number it has already seen)
+  team.seq = Math.max(team.seq, lastSeq.get(room) ?? 0);
   const bots = ids.map((id) => new Bot(team, id));
   const play: Play = { room, team, bots, ids, arenas };
-  const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0, recovered: 0, leadChanges: 0 };
+  const stats: SolveStats = { maxSlots: 0, doors: 0, ticks: 0, recovered: 0, leadChanges: 0, examined: 0, marked: 0, looted: '' };
   let lead = bots[0]!, leadId = ids[0]!;
   // P4 step 5: a player may die while the stage is being solved. The dead can do nothing; the next living player takes over as lead, and any part the dead
   // one was carrying (dropped where they fell, moved to a floor a player can reach) is gone back for. Nothing here changes a run in which nobody dies.
@@ -161,6 +175,106 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
     return it.id;
   };
 
+  /** Where a switch of the spec is (the public state does not say which lock it belongs to; the solver reads the private definition). */
+  const sw = (id: string) => spec.switches.find((x) => x.id === id)!;
+  const press = (b: Bot, who: string, id: string) => { const w = sw(id); travel(b, who, w.room); b.goTo(w.x, w.y); return esc(play, { action: 'press', switchId: id }, who); };
+  /** The P3F step 2 puzzles, played as a person would: read what the notes say, then act on it (alone, or with a teammate where that is quicker). */
+  const solvePuzzle = (lock: Exclude<typeof spec.links[number]['lock'], { type: 'key_item' | 'power' | 'code' | 'two_person' | 'safe' }>, near: string, nearDoor: string, farRoom: string, coop: boolean): void => {
+    switch (lock.type) {
+      case 'lever_sequence': {
+        readClue(lead, leadId, lock.clueId);
+        const order = parseLever(note.get(lock.clueId)!);
+        if (order === null) throw new Error('the lever log could not be read');
+        for (const idx of order) expectOk(press(lead, leadId, lock.levers[idx]!));
+        break;
+      }
+      case 'breaker_panel': {
+        readClue(lead, leadId, lock.clueId);
+        const target = parseBreaker(note.get(lock.clueId)!);
+        if (target === null) throw new Error('the fuse chart could not be read');
+        lock.breakers.forEach((id, i) => {
+          const on = team.state().escape!.switches.find((x) => x.id === id)?.active === true;
+          if (on !== target[i]) expectOk(press(lead, leadId, id));
+        });
+        break;
+      }
+      case 'wiring': {
+        readClue(lead, leadId, lock.clueId);
+        const right = parseWiring(note.get(lock.clueId)!);
+        if (right === null) throw new Error('the wiring plan could not be read');
+        expectOk(press(lead, leadId, lock.terminals[right]!));
+        break;
+      }
+      case 'symbol_match': {
+        readClue(lead, leadId, lock.pictureId); readClue(lead, leadId, lock.legendId);
+        const glyphs = parseGlyphs(note.get(lock.pictureId)!), legend = parseLegend(note.get(lock.legendId)!);
+        const code = glyphs && legend ? symbolCode(glyphs, legend) : null;
+        if (code === null) throw new Error('the glyphs and the wall plate do not spell a code');
+        const k = spec.keypads.find((x) => x.id === lock.keypadId)!;
+        travel(lead, leadId, k.room); lead.goTo(k.x, k.y);
+        expectOk(esc(play, { action: 'enter_code', targetId: k.id, code }, leadId));
+        break;
+      }
+      case 'pressure_plates': {
+        const a = sw(lock.plates[0]), b = sw(lock.plates[1]);
+        travel(lead, leadId, a.room);
+        const mateIdx = ids.findIndex((id) => id !== leadId && !dead(id));
+        if (coop && mateIdx >= 0) {
+          const other = bots[mateIdx]!, otherId = ids[mateIdx]!;
+          travel(other, otherId, a.room);
+          lead.goTo(a.x, a.y); other.goTo(b.x, b.y);
+          team.idle(3);
+        } else {
+          // alone: step on the first plate, then on the second before the first goes dark (a scare on the way can use the time up: start again, at most 6 times)
+          for (let go = 1; go <= 14; go++) {
+            lead.goTo(a.x, a.y);
+            lead.goTo(b.x, b.y);
+            team.idle(2);
+            if (isOpen(nearDoor)) break;
+            if (go === 14) throw new Error('the plates never held together');
+            team.idle(ESCAPE_LIMITS.plateHoldTicks + 5);
+          }
+        }
+        if (!isOpen(nearDoor)) throw new Error('the plates did not unlock the door');
+        break;
+      }
+      case 'timed_switch': {
+        // press the switch, run to the door and use it before it locks again; start again if a scare made it late (at most 4 times)
+        for (let go = 1; go <= 4 && team.roomOf(leadId) === near; go++) {
+          expectOk(press(lead, leadId, lock.switchId));
+          try { through(lead, leadId, nearDoor); } catch (e) { if (go === 4) throw e; team.idle(ESCAPE_LIMITS.timedDoorTicks + 10); }
+        }
+        if (team.roomOf(leadId) !== farRoom) throw new Error('the timed door was never crossed');
+        break;
+      }
+      case 'flashlight_sensor': {
+        const w = sw(lock.genuine);
+        travel(lead, leadId, w.room); lead.goTo(w.x, w.y);
+        team.idle(ESCAPE_LIMITS.sensorTicks + 10);
+        if (!isOpen(nearDoor)) throw new Error('the sensor never opened the door');
+        break;
+      }
+      case 'tool_key': {
+        const wheel = (def.items ?? []).find((i) => i.kind === lock.tool && i.decoy !== true && !i.hidden && reached.has(i.room ?? graph.start));
+        const st = (def.stashes ?? []).find((x) => x.id === lock.stashId);
+        const key = (def.items ?? []).find((i) => i.hidden?.stashId === lock.stashId);
+        if (!wheel || !st || !key) throw new Error('the jammed locker, its key or its tool is missing');
+        used.add(key.id);
+        travel(lead, leadId, wheel.room ?? graph.start);
+        expectOk(fetchItem(play, lead, wheel.id, leadId)); slots(leadId);
+        travel(lead, leadId, st.room ?? graph.start); lead.goTo(st.x, st.y);
+        expectOk(itemAct(play, { action: 'open', stashId: st.id }, leadId));
+        // the tool is not needed again: put it down BEFORE taking the key (a player who also carries the Pulse Gun has no free hand for the key while holding the wheel)
+        expectOk(itemAct(play, { action: 'drop', itemId: wheel.id }, leadId));
+        team.idle(12); // hands stay busy for a moment after putting something down
+        expectOk(fetchItem(play, lead, key.id, leadId)); slots(leadId);
+        fetched(leadId, key.id, 'access_key');
+        break;
+      }
+      default: break;
+    }
+  };
+
   // links in the order a player meets them: by distance of their near door from the start room
   const dist = new Map<string, number>([[graph.start, 0]]);
   for (const q = [graph.start]; q.length;) { const r = q.shift()!; for (const d of roomDef(r).doors) if (!dist.has(d.to)) { dist.set(d.to, dist.get(r)! + 1); q.push(d.to); } }
@@ -198,12 +312,21 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
         expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
         expectOk(esc(play, { action: 'press', switchId: b.id }, otherId));
       } else {
-        travel(lead, leadId, a.room); lead.goTo(a.x, a.y);
-        expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
-        lead.goTo(b.x, b.y); // a lone player runs to the second switch inside the hold time
-        expectOk(esc(play, { action: 'press', switchId: b.id }, leadId));
+        travel(lead, leadId, a.room);
+        // a lone player runs to the second switch inside the hold time. P3F step 1: a survival-reflex detour (or a longer run in a tall room) can use the time up; the player
+        // simply starts again, as a real one would (at most 6 tries, then the failure is reported)
+        for (let go = 1; ; go++) {
+          lead.goTo(a.x, a.y);
+          expectOk(esc(play, { action: 'press', switchId: a.id }, leadId));
+          const t0 = team.ticks;
+          lead.goTo(b.x, b.y);
+          const r = esc(play, { action: 'press', switchId: b.id }, leadId);
+          // the first switch holds ESCAPE_LIMITS.switchHoldTicks (120): a run that took longer (a scare in between) did not light both at once, so start again
+          if (!r.ok || team.ticks - t0 < 100 || go >= 6) { expectOk(r); break; }
+          team.idle(30);
+        }
       }
-    } else {
+    } else if (lock.type === 'safe') {
       const s = spec.safes.find((x) => x.id === lock.safeId)!;
       s.clueIds.forEach((id) => readClue(lead, leadId, id));
       const combo = s.clueIds.map((id) => digits(note.get(id)!)).join('');
@@ -212,9 +335,11 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
       expectOk(fetchItem(play, lead, s.contains!, leadId));
       slots(leadId);
       fetched(leadId, s.contains!, 'safe_item');
+    } else {
+      solvePuzzle(lock, near, nearDoor, far.room, !!opts.coop);
     }
-    travel(lead, leadId, near);
-    through(lead, leadId, nearDoor);
+    // a timed door was already crossed inside its own solution (the door only stays unlocked for a few seconds)
+    if (gate || team.roomOf(leadId) === near) { travel(lead, leadId, near); through(lead, leadId, nearDoor); }
     reached.add(far.room);
     for (const id of l.doors) if (!isOpen(id)) throw new Error(`door ${id} is not open after its lock was solved`);
     if (opts.coop) {
@@ -226,6 +351,26 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
       }
     }
   }
+  // P3F step 6: the side visits (every door is open by now)
+  if (opts.extras) {
+    ensureLead();
+    const ex = opts.extras;
+    if (ex.examine || ex.mark) for (const ev of spec.ghostEvidence ?? []) {
+      travel(lead, leadId, ev.room); lead.goTo(ev.x, ev.y);
+      expectOk(esc(play, { action: 'examine', evidenceId: ev.id }, leadId));
+      stats.examined++;
+    }
+    if (ex.mark && stats.examined > 0) for (const g of new Set((spec.ghostEvidence ?? []).map((e) => e.ghost))) {
+      expectOk(esc(play, { action: 'mark', ghost: g }, leadId));
+      stats.marked++;
+    }
+    if (ex.loot && spec.loot) {
+      travel(lead, leadId, spec.loot.room); lead.goTo(spec.loot.x, spec.loot.y);
+      const r = esc(play, { action: 'loot', lootId: spec.loot.id }, leadId);
+      expectOk(r);
+      stats.looted = 'message' in r && typeof r.message === 'string' ? r.message : 'opened';
+    }
+  }
   // the exit
   ensureLead();
   travel(lead, leadId, spec.exit.room);
@@ -234,5 +379,6 @@ export function solveStage(room: Room, ids: string[], def: StageDef, opts: { coo
   stats.ticks = room.gameSnapshot()?.tick ?? 0;
   if (room.phase !== 'stage_complete') throw new Error(`the stage is not cleared (phase ${room.phase})`);
   void seen;
+  lastSeq.set(room, team.seq);
   return stats;
 }

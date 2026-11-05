@@ -232,3 +232,14 @@ describe('P4 step 4: the review through the Room is built from recorded events o
     expect(r.reviewFor('p0')).toBeNull();
   });
 });
+
+describe('P3F step 3: the review does not name the type from stage 7', () => {
+  const cue = (o: Partial<GhostCue> = {}): GhostCue => ({ tick: 1, warning: false, sounds: [], ...o });
+  it('an unnamed ghost is worded "ghost", once, in every note', () => {
+    let r = cueNotes(null, cue({ warning: true, warnKinds: ['unknown', 'unknown'] }));
+    expect(r.notes).toEqual(['The lights flickered and a whisper warned that a ghost was about to appear.']);
+    r = cueNotes(r.sig, cue({ sounds: [{ id: 'g0', kind: 'unknown', band: 1, dir: 0, state: 'hunting', moving: true, inspecting: true, screaming: true }] }));
+    expect(r.notes).toEqual(['A ghost could be heard close by, ahead of you.', 'A ghost stood at a hiding place, about to open it.', 'A ghost was winding up a scream.']);
+    expect(JSON.stringify(r.notes)).not.toMatch(/wisp|shade|howler|unknown/i);
+  });
+});

@@ -5,3 +5,5 @@ export * from './graph';
 export * from './escape';
 export * from './vision';
 export * from './tables';
+export * from './puzzles';
+export * from './loot';

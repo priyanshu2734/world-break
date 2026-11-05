@@ -20,7 +20,7 @@ function playStage(stage: number, seed: number, players: number, difficulty: Dif
   // test/death/solve.test.ts is where the lethal solver lives). The ghost is still present, hunts and is seen: it just cannot kill here.
   room.deathSystem?.setLethal(false);
   const rec = room.stageRecord!;
-  const def = generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty });
+  const def = room.stageDef ?? generateEscapeStage(rec.stage, rec.seed, { ghost: true, difficulty }); // P3F step 4: a later stage depends on the run's history, so the room's own definition is the truth
   if (def.id !== rec.defId) throw new Error('room and generator disagree');
   const arenas = new Map(def.rooms!.rooms.map((r) => [r.id, r.arena]));
   const team = new Team(room, (id) => arenas.get(id)!);

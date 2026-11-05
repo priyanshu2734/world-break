@@ -105,6 +105,50 @@ export function evidenceOwner(kind: string): GhostType | null {
 /** Evidence pieces placed per ghost type on a stage. */
 export const EVIDENCE_PER_TYPE = 2;
 
+// ------------------------------------------------------------------------------------------------ P3F step 3: identify the ghost
+/** From this stage on no warning, cue, fx or death review names the ghost's type: the players must work it out from the evidence. */
+export const IDENTIFY_FROM_STAGE = 7;
+/** What a client may be told about a ghost's kind: its type before `IDENTIFY_FROM_STAGE`, `'unknown'` from then on. */
+export const PUBLIC_GHOST_KINDS = [...GHOST_TYPES, 'unknown'] as const;
+export type PublicGhostKind = (typeof PUBLIC_GHOST_KINDS)[number];
+/** The kind shown to players on this stage. */
+export function shownKind(kind: GhostType, stage: number): PublicGhostKind { return stage >= IDENTIFY_FROM_STAGE ? 'unknown' : kind; }
+
+/** The shared team journal: bounded, deterministic, server-validated. */
+export const JOURNAL = {
+  /** A correct entry: the warning of that type lasts this many ticks longer (2 s; the warning is never shortened). */
+  warningBonusTicks: 40,
+  /** A correct entry: the Pulse Gun recharges in this share of its time (a quarter quicker). Does not stack with a second correct entry. */
+  gunShare: 0.75,
+  /** A wrong entry costs this many points, once, and uses up that line of the journal. */
+  wrongCost: 20,
+  /** Evidence pieces that must be examined before anything may be entered. */
+  minExamined: 1,
+  /** Score ledger category of the cost. */
+  category: 'journal',
+} as const;
+
+/** The Pulse Gun's recharge with `correct` right journal entries (any right entry makes it a quarter quicker; two do not stack). */
+export function gunCooldown(base: number, correct: number): number { return correct > 0 ? Math.max(1, Math.round(base * JOURNAL.gunShare)) : base; }
+
+/** The same, scaled by the team's upgrades (`draft/effectsOf(...).gunMul`): rounded, never below one tick. */
+export function gunCooldownWith(base: number, correct: number, mul: number): number { return Math.max(1, Math.round(gunCooldown(base, correct) * mul)); }
+
+/** The field guide: what each kind of evidence looks like, who leaves it, and the counter to each type. Static lore, the same on every stage. */
+export const EVIDENCE_LABELS: Readonly<Record<EvidenceKind, string>> = {
+  cold_breath: 'Cold breath', faint_whisper: 'A faint whisper', wet_footprints: 'Wet footprints',
+  single_dead_lamp: 'A single dead lamp', scratched_walls: 'Scratched walls', cracked_glass: 'Cracked glass',
+};
+export const GHOST_COUNTERS: Readonly<Record<GhostType, string>> = {
+  shade: 'Keep your light on it: a Shade freezes in the beam.',
+  howler: 'Stay quiet: a Howler screams at noise and breaks the lights.',
+  wisp: 'Hide and sneak: a Wisp hunts by sight and sound.',
+};
+/** The one line a first-time player reads before it matters (shown at the first stage from `IDENTIFY_FROM_STAGE`). */
+/** Connected play ticks (20 s) a player is sent the teaching line for. */
+export const TEACH_TICKS = 400;
+export const IDENTIFY_TEACH_LINE = 'From now on the ghost will not be named. Examine the evidence you find, talk, and mark your guess in the team journal: a right guess helps, a wrong one costs points.';
+
 // ------------------------------------------------------------------------------------------------ the Howler
 export const HOWLER_LIMITS = {
   /** The wind-up before a scream (1 s): the Howler stops, and its cue says `screaming`. The telegraph a player can answer by crouching. */
@@ -208,7 +252,7 @@ export function inLitRegion(eye: { x: number; y: number }, aim: number, target: 
 /** A ghost that is PRESENT. Only sent to a player who can see it (server/src/rooms/view.ts); a ghost that is not there is not in any message. */
 export const GhostPublicSchema = z.object({
   id: z.string().max(24),
-  kind: z.enum(GHOST_TYPES),
+  kind: z.enum(PUBLIC_GHOST_KINDS),
   /** Body centre. */
   x: z.number(), y: z.number(),
   /** Which way it faces, radians. */
@@ -248,7 +292,7 @@ export function cueDir(dx: number): -1 | 0 | 1 {
 
 export const GhostCueSoundSchema = z.object({
   id: z.string().max(24),
-  kind: z.enum(GHOST_TYPES),
+  kind: z.enum(PUBLIC_GHOST_KINDS),
   band: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   dir: z.union([z.literal(-1), z.literal(0), z.literal(1)]),
   state: z.enum(['roaming', 'hunting', 'stunned']),
@@ -282,7 +326,7 @@ export const GUN_LIMITS = {
  */
 export const GhostFxSchema = z.object({
   kind: z.enum(['dissolve', 'scream']),
-  ghost: z.enum(GHOST_TYPES),
+  ghost: z.enum(PUBLIC_GHOST_KINDS),
   x: z.number(), y: z.number(),
   room: z.string().max(48),
   tick: z.number().int().min(0),
@@ -363,7 +407,7 @@ export const GhostCueSchema = z.object({
   /** P3E step 3 (additive, optional): what this player may know about hiding and being caught. Present while the stage has a ghost. */
   status: GhostStatusSchema.optional(),
   /** P3E step 5 (additive, optional): the kinds of the ghosts now in their WARNING (each has its own whisper and flicker). */
-  warnKinds: z.array(z.enum(GHOST_TYPES)).max(MAX_GHOSTS).optional(),
+  warnKinds: z.array(z.enum(PUBLIC_GHOST_KINDS)).max(MAX_GHOSTS).optional(),
   /** P3E step 5 (additive, optional): the Pulse Gun's recharge, in ticks left and in total. Absent while the stage has no gun. */
   gun: z.object({ left: z.number().int().min(0).max(5000), total: z.number().int().min(1).max(5000) }).optional(),
   /** P3E step 5 (additive, optional): ticks the lights stay broken in this player's room after a Howler's scream (0 = lit). */

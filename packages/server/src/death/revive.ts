@@ -19,6 +19,8 @@ export interface ReviveHost {
   /** The death system's REVIVE transition. */
   revive(bodyId: string, by: string): { ok: boolean };
   say(text: string, tone: 'info' | 'good' | 'warn' | 'bad', room?: string): void;
+  /** P3F step 4 (optional): how long the revive hold takes, as a share of `REVIVE.holdTicks` (the quick-rescue upgrade). Absent = 1. */
+  holdShare?(): number;
   /** P4 step 4 (optional): a revive attempt began, was given up (let go, stepped away, hid, died), or was completed. For the death review. */
   note?(kind: 'start' | 'stop' | 'done', by: string, body: string): void;
 }
@@ -40,6 +42,9 @@ export class ReviveSystem {
   private readonly holds = new Map<string, { body: string; ticks: number }>();
 
   constructor(private readonly host: ReviveHost) {}
+
+  /** The hold in ticks: the table's, scaled by the host's share (never below half, never above the table's). */
+  private holdTicks(): number { return Math.max(1, Math.round(REVIVE.holdTicks * Math.min(1, Math.max(0.5, this.host.holdShare?.() ?? 1)))); }
 
   private inReach(p: Reviver, b: ReviveBody): boolean {
     return b.room === p.room && Math.abs(p.x - b.x) <= REVIVE.range && Math.abs(p.y - b.y) <= REVIVE.dy;
@@ -69,7 +74,7 @@ export class ReviveSystem {
       taken.add(body.id);
       const ticks = (prev && prev.body === body.id ? prev.ticks : 0) + 1;
       if (ticks === 1) this.host.note?.('start', p.id, body.id);
-      if (ticks >= REVIVE.holdTicks) {
+      if (ticks >= this.holdTicks()) {
         if (this.host.canRevive(body.id) && this.host.spendCell(p.id)) {
           const r = this.host.revive(body.id, p.id);
           if (r.ok) { this.host.say(`${body.name} is back on their feet.`, 'good', body.room); this.host.note?.('done', p.id, body.id); }
@@ -86,7 +91,7 @@ export class ReviveSystem {
 
   /** Progress of every revive in progress (0..1), for the people it concerns. */
   progress(): ReviveProgress[] {
-    return [...this.holds.entries()].map(([reviver, h]) => ({ reviver, body: h.body, progress: Math.min(1, h.ticks / REVIVE.holdTicks) }));
+    return [...this.holds.entries()].map(([reviver, h]) => ({ reviver, body: h.body, progress: Math.min(1, h.ticks / this.holdTicks()) }));
   }
 
   /** Forget a player who left the run. */

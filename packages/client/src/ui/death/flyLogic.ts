@@ -46,7 +46,7 @@ export function roomText(rooms: readonly string[] | undefined, room: string | un
   return i < 0 ? '' : `Room ${i + 1} of ${rooms.length}`;
 }
 
-const kindName = (k: string): string => k.charAt(0).toUpperCase() + k.slice(1);
+const kindName = (k: string): string => k === 'unknown' ? 'Ghost' : k.charAt(0).toUpperCase() + k.slice(1);
 
 /** Where everybody is, so a spectator knows which room to fly to: teammates and ghosts, each with their room, the ones in the camera's room marked. At most `max` lines. */
 export function whereLines(o: {

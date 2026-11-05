@@ -1,11 +1,19 @@
 import { z } from 'zod';
+import { EVIDENCE_KINDS, GHOST_TYPES } from '../ghost';
 
 /** An id of a door, keypad, safe, clue or switch (same alphabet as room ids, which may contain dots). */
 export const EscapeIdSchema = z.string().regex(/^[a-z][a-z0-9_.]*$/).max(48);
 
-/** The five lock types of an escape stage (docs/ROOMS.md). */
+/** The five original lock types of an escape stage (docs/ROOMS.md). Unchanged: `locksForStage` still draws from these. */
 export const LOCK_TYPES = ['key_item', 'code', 'power', 'two_person', 'safe'] as const;
 export type LockType = (typeof LOCK_TYPES)[number];
+
+/** P3F step 2: the eight puzzle types added to the pool (docs/VARIETY.md). A lock is one of the five above or one of these. */
+export const PUZZLE_TYPES = ['lever_sequence', 'symbol_match', 'breaker_panel', 'pressure_plates', 'timed_switch', 'wiring', 'flashlight_sensor', 'tool_key'] as const;
+export type PuzzleType = (typeof PUZZLE_TYPES)[number];
+/** The whole pool: 13 lock types. */
+export const ANY_LOCK_TYPES = [...LOCK_TYPES, ...PUZZLE_TYPES] as const;
+export type AnyLockType = LockType | PuzzleType;
 
 /** Bounds and timings of the escape mechanics. The server enforces all of them. Times are server ticks (20 Hz). */
 export const ESCAPE_LIMITS = {
@@ -23,19 +31,35 @@ export const ESCAPE_LIMITS = {
   maxWrongTries: 3, lockoutTicks: 100,
   /** A pressed two-person switch stays lit this long (6 s): one person can run between the two switches. */
   switchHoldTicks: 120,
+  /** P3F step 2: a pressure plate stays lit this long (3 s) after somebody left it, and is lit by a body within `plateRadius` px of it (feet on its surface). */
+  plateHoldTicks: 60, plateRadius: 36,
+  /** P3F step 2: a timed door stays unlocked this long (8 s) after its switch, unless somebody has gone through (then it stays open for good). */
+  timedDoorTicks: 160,
+  /** P3F step 2: the working sensor must stay in a player's light this many ticks in a row (2 s). */
+  sensorTicks: 40,
+  /** P3F step 2: a breaker panel trips (resets and locks out) after this many presses more than it has breakers. */
+  breakerSlack: 3,
   /** Minimum ticks between two escape intents from one player (accepted AND refused). */
   minGapTicks: 4,
   /** Authoring bounds per stage (the room cap of 6 gives at most 5 doors). */
-  maxLinks: 5, maxClues: 20, maxKeypads: 5, maxSafes: 5, maxSwitches: 10, maxHidingSpots: 12, maxEvidence: 6,
+  maxLinks: 5, maxClues: 20, maxKeypads: 5, maxSafes: 5, maxSwitches: 24, maxHidingSpots: 12, maxEvidence: 6,
 } as const;
 
 /** The refusal on a locked door: it says WHAT is missing, never WHERE it is. Key and safe doors read the same on purpose. */
-export function needText(type: LockType, codeLength: number = ESCAPE_LIMITS.codeLength): string {
+export function needText(type: AnyLockType, codeLength: number = ESCAPE_LIMITS.codeLength): string {
   switch (type) {
     case 'key_item': case 'safe': return 'Locked. Needs a key.';
     case 'code': return `Locked. Needs a ${codeLength}-symbol code.`;
     case 'power': return 'Locked. Needs power.';
     case 'two_person': return 'Locked. Needs two switches held at once.';
+    case 'tool_key': return 'Locked. Needs a key.';
+    case 'lever_sequence': return 'Locked. The levers must be set in the right order.';
+    case 'symbol_match': return `Locked. Needs a ${codeLength}-digit code written in symbols.`;
+    case 'breaker_panel': return 'Locked. The circuits must be set right.';
+    case 'pressure_plates': return 'Locked. Needs both plates held down at once.';
+    case 'timed_switch': return 'Locked. It only opens for a short while.';
+    case 'wiring': return 'Locked. The right wire must be chosen.';
+    case 'flashlight_sensor': return 'Locked. A sensor must see light.';
   }
 }
 
@@ -48,6 +72,12 @@ export const EscapeActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('enter_code'), targetId: EscapeIdSchema, code: z.string().regex(/^[0-9]{1,8}$/) }).strict(),
   z.object({ action: z.literal('press'), switchId: EscapeIdSchema }).strict(),
   z.object({ action: z.literal('read'), clueId: EscapeIdSchema }).strict(),
+  /** P3F step 3: study a piece of ghost evidence (the finding goes in the team journal). */
+  z.object({ action: z.literal('examine'), evidenceId: EscapeIdSchema }).strict(),
+  /** P3F step 3: enter a suspected ghost type in the team journal (final for the stage). */
+  z.object({ action: z.literal('mark'), ghost: z.enum(GHOST_TYPES) }).strict(),
+  /** P3F step 4: open the optional loot cache (risk and reward). */
+  z.object({ action: z.literal('loot'), lootId: EscapeIdSchema }).strict(),
 ]);
 export type EscapeAction = z.infer<typeof EscapeActionSchema>;
 
@@ -69,6 +99,20 @@ export const EscapePublicSchema = z.object({
   })),
   clues: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), label: z.string() })),
   switches: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), active: z.boolean() })),
+  /** P3F step 3: ghost evidence in view (position only: what it IS is learned by examining it). */
+  evidence: z.array(z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), examined: z.boolean() })).max(ESCAPE_LIMITS.maxEvidence).optional(),
+  /** P3F step 4: the optional loot cache, in view only. What it pays is not here (it is told when it is opened). */
+  loot: z.object({ id: EscapeIdSchema, room: EscapeIdSchema, x: z.number(), y: z.number(), opened: z.boolean() }).optional(),
+  /** P3F step 3: the shared team journal. Present on a ghost stage, for living players only. */
+  journal: z.object({
+    /** What the team has examined (kind only, never the ghost type). */
+    entries: z.array(z.object({ id: EscapeIdSchema, kind: z.enum(EVIDENCE_KINDS) })).max(ESCAPE_LIMITS.maxEvidence),
+    /** The types entered so far, and how many lines the journal has (one per ghost on the stage). */
+    marks: z.array(z.enum(GHOST_TYPES)).max(3),
+    lines: z.number().int().min(1).max(3),
+    /** P3F step 4: the explanatory line, sent to a player until they have had time to read it (so a player who connects later still gets it). */
+    teach: z.string().max(240).optional(),
+  }).optional(),
   /** Present only while the exit is in the viewer's view (a hidden exit is not in the snapshot). */
   exit: z.object({ room: EscapeIdSchema, x: z.number(), y: z.number() }).optional(),
 });

@@ -7,6 +7,8 @@ import type { RoomLayout } from './rooms/schemas';
 import type { EscapeAck } from './rooms/escape';
 import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
 import type { DeathReviewMsg, DeathState, GhostPing } from './death';
+import { DraftPublicSchema, OwnedUpgradesSchema } from './draft';
+import { THEME_IDS } from './variety/curriculum';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
 
 const roomCodeRe = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
@@ -42,6 +44,11 @@ export const RoomSnapshotSchema = z.object({
     .max(MAX_PLAYERS),
   /** P3B (additive, optional): present and true only for an Ability Lab room. */
   lab: z.boolean().optional(),
+  /** P3F step 4 (additive, optional): the draft pick while a stage is complete, and the upgrades the team owns. */
+  draft: DraftPublicSchema.optional(),
+  upgrades: OwnedUpgradesSchema.optional(),
+  /** P3F step 5 (additive, optional): the visual theme of the stage being played (looks only; it never changes a rule). */
+  theme: z.enum(THEME_IDS).optional(),
 });
 export type RoomSnapshot = z.infer<typeof RoomSnapshotSchema>;
 
@@ -126,6 +133,8 @@ export interface ClientToServerEvents {
   'item:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P3D: doors (E), keypads and safes (enter a code), switches (press), clues (read). */
   'escape:action': (payload: unknown, ack: (r: Ack<EscapeAck>) => void) => void;
+  /** P3F step 4: vote for one of the 3 upgrades offered after a cleared stage (`{ index }`). */
+  'draft:vote': (payload: unknown, ack: (r: Ack) => void) => void;
   /** P3E step 3: hide in the hiding spot in reach, or come out. The server decides. */
   'ghost:action': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P4 step 2: a dead player picks whom to watch (a teammate's id, or 'next' / 'prev'). The server decides. */

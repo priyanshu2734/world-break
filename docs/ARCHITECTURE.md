@@ -340,3 +340,38 @@ No state machine is added and `phases.ts` is untouched. `Room.tick` sends `TEAM_
 ### P4 step 6: the free-fly spectator, safes and hiding spots
 `SpectateSystem` now owns a camera per dead player (`stepSpectatorCam`, shared with the client, is the only place a camera moves). `restrictedView` takes `spectator` + `fly`: every teammate and ghost of the stage, a blanked stage state, no doors in the layouts it sends; this REPLACES the step 2 rule that a spectator sees through a teammate's light (see the step 2 section above, superseded). New additive protocol: client `spectate:move` (an intent of -1, 0 or 1 per axis) and `spectate:room`; `DeathState` gains optional `cam` and `rooms`. The generator places a safe's pages in the safe's room and, on a ghost stage, hiding spots on a grid of their own (the tuning table's count, per room); `escapeValidate.ts` proves both. See `docs/DEATH.md`.
 
+
+## P3F step 1: room templates and height (see docs/VARIETY.md)
+* **Templates:** `shared/src/variety/` (`ROOM_TEMPLATES`, `templatesForStage`, `templateRoomFor`): 13 data-built room shapes plus the tutorial and the hall, odd/even pools so no stage repeats the previous template. `generate.ts` applies them from stage 3 (`applyTemplate`); rooms may now be up to 1040 px tall (the client camera already clamps by room height).
+* **Reach:** `server/src/rooms/reachStrict.ts` (graph with no start inside a solid), `arenaKey.ts` (shared instance per equal room), `requireReachable` in `escapeValidate.ts`.
+* **`dropRest`** cuts platforms at walls and crates (`piecesOf`, `reachablePieces`, `insideBody`); `reachablePlatforms` is unchanged.
+* **Test helpers:** `test/rooms/bot.ts` plans routes over the strict graph (`Bot.goTo`), `solver.ts` and `ghost/hideTeam.ts` follow.
+
+## P3F step 2: the puzzle pool (see docs/VARIETY.md, "Puzzle pool")
+* **13 lock types.** `LOCK_TYPES` (the five originals) is unchanged and still what `locksForStage` draws from. `PUZZLE_TYPES` (8 new), `ANY_LOCK_TYPES` (13) and `AnyLockType` are new in `shared/src/rooms/escape.ts`;
+  `needText` covers all 13. Tables, the words of every note, and their parsers are in `shared/src/rooms/puzzles.ts`.
+* **Server-private spec.** `LockSchema` (`rooms/escapeSpec.ts`) gained eight variants. The public state is unchanged in shape: levers, breakers, wire terminals, plates, sensors and the timed switch are
+  ordinary `switches` (a lit flag), pictures and legends are `clues`, the symbol keypad is a `keypad`. So the client needed no change and sees nothing it did not see before. A switch belongs to exactly one lock
+  (validator: `switchIdsOf`, "opens nothing", "belongs to two locks").
+* **Runtime** (`rooms/escape.ts`): `arm` gives each switch a role; `pressPuzzle` handles levers, breakers, wires and the timed switch; `stepPuzzles` runs once per tick for plates (a body within 36 px, feet at the plate's height),
+  sensors (the host's `canSee`, the same rule that cuts a player's view, so with the ghost option the light cone counts) and the timed door (locks again, unless somebody went through). Per-link counters live in `LinkRt`.
+* **Jammed locker.** `StashDef.needs` (optional item kind, never published). `ItemSystem.open` refuses without a carried part of that kind (`Jammed shut.`); a cracked one snaps; a genuine one is not used up.
+* **Generator.** `rooms/puzzleBuild.ts` builds a puzzle; `attemptEscapeStage` runs ONE extra pass after every earlier draw (see VARIETY.md); `GenerateOptions.puzzles: false` gives the stage the original draws make.
+  `ESCAPE_LIMITS.maxSwitches` is now 24 (it was 10).
+* **Validator.** `validateEscape` has a rule per type (solo-solvable from the near side, words spell what the lock needs, walking-time bounds from the real movement speed, no wall between plates or between a timed
+  switch and its door: `clearRun`). The "never the same lock type on two neighbouring doors" rule covers all 13.
+* **Tests.** `puzzles.runtime`, `puzzles.generate`, `puzzles.solve` (server), `puzzles` (shared). The solver (`test/rooms/solver.ts`) plays each type from what the notes say.
+
+## P3F step 3: identify the ghost (see docs/VARIETY.md, "Identify the ghost")
+`shared/ghost`: `IDENTIFY_FROM_STAGE`, `PUBLIC_GHOST_KINDS` (+ `'unknown'`), `shownKind`, `JOURNAL`, `gunCooldown`, `EVIDENCE_LABELS`, `GHOST_COUNTERS`, `IDENTIFY_TEACH_LINE`. `shared/rooms/escape`: intents `examine` and `mark`,
+public `evidence` and `journal`. Server: `EscapeRuntime` owns the journal (`identified()`), `StageEngine.identifiedGhosts()`, `GhostHost.warningBonus`, the gun's `cooldownTicks` is now a getter, `Room` masks the review cause and
+announces the teaching line. `view.ts` restricts `evidence` to what is in view and `journal` to living players. Client: `ui/journalLogic.ts`, `ui/JournalView.ts` (J), `escapeUse` (examine), an unnamed ghost look in `ghostLook.ts`.
+
+## P3F step 4: curriculum, second ghost, draft pick, loot (see docs/VARIETY.md)
+`shared/variety/curriculum.ts` (the 15 rows, `VarietyHistory`, `newnessPick`, themes), `shared/draft` (upgrades, bounds, offer, vote), `shared/rooms/loot.ts`. The generator takes `history`, forces the curriculum lock, and draws the loot cache last. `Room` keeps `variety` (per stage records), `owned` upgrades, the `draft` (inside `stage_complete`, no new phase) and the teaching counters; `Room.effects` feeds hooks on the item system (`extraSlots`), the ghost host (`warningShift`, `hearingShare`), the revive system (`holdShare`) and the gun. Wire: `RoomSnapshot.draft` and `.upgrades`, client event `draft:vote`, intent `loot`. Client: `ui/draftLogic.ts`, `ui/DraftView.ts`, the loot prompt in `escapeUse`.
+
+## P3F step 5: themes and look (see docs/VARIETY.md, "Themes and look")
+`shared/variety/themes.ts` (theme data, props, `themeLook`), `RoomSnapshot.theme` (optional, from the step 4 variety record). Client: `ui/theme/{themeLogic,propArt,prims,evidenceArt}.ts` (pure), `ThemeView`, `ThemeAudio`, `drawPrims` (Phaser/WebAudio), `ghostLook.ts` (tiers, unnamed ghost, `calm`), `EscapeView` (evidence glyphs per frame), `GameScene.syncTheme` and `lookFlags` (reduced motion). No server rule reads a theme.
+
+## P3F step 6: solver, determinism, handoff (see docs/VARIETY.md, "Solver, determinism and the whole phase")
+`shared/variety/save.ts` (`VarietyRecordSchema`, `VarietyHistorySchema`, `normaliseHistory`) and `Room.varietyRecords` / `Room.restoreVariety` make the run's variety history something a save (P6) and the scenario generator (P5) can keep: **a stage depends on (stage, seed, last 3 variety records), not on (stage, seed) alone.** Test helpers: `test/rooms/runSolve.ts` (`playRun`, a whole run through the real transitions), `SolveExtras` in `solver.ts`, `extras` in `death/drill.ts`. No rule, phase, or frozen file changed. The final hand-off is `docs/handoffs/P3F.md`.

@@ -181,7 +181,10 @@ export class Session {
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }
   /** P3A: host-only. Asks the server to advance from a completed stage to the next one (stages are endless). */
-  async nextStage() { this.report(await this.call('room:nextStage', {})); }
+  /** P3F step 4: which option this player voted for in the draft (the server only counts; this side remembers its own choice to show it). */
+  draftVote: number | null = null;
+  async voteDraft(index: number) { this.draftVote = index; this.report(await this.call('draft:vote', { index })); }
+  async nextStage() { this.draftVote = null; this.report(await this.call('room:nextStage', {})); }
   /** P4 step 4: from the review, the same stage again on a new layout (the server decides who may). */
   async retryStage() { this.report(await this.call('room:retry', {})); }
   private report(r: Ack<any>) { this.error = r.ok ? '' : r.error; }

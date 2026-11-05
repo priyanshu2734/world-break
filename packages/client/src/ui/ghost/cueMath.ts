@@ -24,7 +24,7 @@ export function heartbeatGain(band: 1 | 2 | 3, hunting: boolean): number {
 
 /** Footstep period in ms by ghost type (a Wisp drifts: light, slow patter; the others are heavier). A hunting ghost steps faster. */
 export function footstepPeriodMs(kind: string, hunting: boolean): number {
-  const base = kind === 'wisp' ? 620 : kind === 'shade' ? 520 : 700;
+  const base = kind === 'unknown' ? 600 : kind === 'wisp' ? 620 : kind === 'shade' ? 520 : 700; // an unnamed ghost (stage 7+) steps at one neutral pace
   return hunting ? Math.round(base * 0.7) : base;
 }
 

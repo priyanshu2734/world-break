@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
-import { ARENA, type EscapePublic } from '@wb/shared';
+import { ARENA, EVIDENCE_LABELS, type EscapePublic, type EvidenceKind } from '@wb/shared';
 import { COLOR, FONT } from '../palette';
 import { usePrompt, type EscapeUse } from './escapeUse';
+import { evidencePrims } from './theme/evidenceArt';
+import { drawPrims } from './theme/drawPrims';
 
 const W = ARENA.width, H = ARENA.height;
 
@@ -22,7 +24,11 @@ export class EscapeView {
   /** Redrawn every frame: the soft pulse on containers that still hold something. */
   private glow: Phaser.GameObjects.Graphics;
 
-  constructor(private scene: Phaser.Scene) {
+  /** P3F step 5: the traces are drawn every frame (their ring pulses unless the player asked for reduced motion). */
+  private evi: Phaser.GameObjects.Graphics;
+
+  constructor(private scene: Phaser.Scene, private calm = false) {
+    this.evi = scene.add.graphics().setDepth(6);
     this.prompt = scene.add.text(W / 2, H - 150, '', { ...FONT, fontSize: '20px', color: COLOR.text, backgroundColor: '#04101acc' })
       .setOrigin(0.5).setPadding(12, 6).setDepth(101).setScrollFactor(0).setVisible(false);
     this.goal = scene.add.text(W / 2, 76, '', { ...FONT, fontSize: '18px', color: '#ffd9a0' }).setOrigin(0.5, 0).setDepth(100).setScrollFactor(0).setVisible(false);
@@ -36,6 +42,7 @@ export class EscapeView {
     this.drawWorld(room, es, tick);
     this.goal.setVisible(goal !== '').setText(goal ? `GOAL  ${goal}` : '');
     this.drawGlow(room, es);
+    this.drawEvidence(room, es);
     const p = es && canUse && nearest ? usePrompt(nearest, tick) : null;
     this.prompt.setVisible(p !== null).setText(p ?? '');
     this.drawNotes(es !== undefined ? notes : []);
@@ -46,9 +53,12 @@ export class EscapeView {
       keypads: es.keypads.filter((k) => k.room === room), safes: es.safes.filter((s) => s.room === room),
       clues: es.clues.filter((c) => c.room === room), switches: es.switches.filter((s) => s.room === room),
       exit: es.exit && es.exit.room === room ? es.exit : null,
+      evidence: (es.evidence ?? []).filter((v) => v.room === room),
+      loot: es.loot && es.loot.room === room ? es.loot : null,
     } : null;
     const lockedOut = (t: number | null) => t !== null && t > tick;
-    const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.exit?.x ?? null]) : '';
+    const kindOf = (e: EscapePublic | undefined, id: string): string | null => e?.journal?.entries.find((x) => x.id === id)?.kind ?? null;
+    const key = mine ? JSON.stringify([room, mine.keypads.map((k) => [k.id, k.solved, lockedOut(k.lockedUntilTick)]), mine.safes.map((s) => [s.id, s.opened, lockedOut(s.lockedUntilTick)]), mine.clues.map((c) => c.id), mine.switches.map((s) => [s.id, s.active]), mine.evidence.map((v) => [v.id, v.examined, kindOf(es, v.id)]), mine.loot ? [mine.loot.id, mine.loot.opened] : null, mine.exit?.x ?? null]) : '';
     if (key === this.key) return;
     this.key = key;
     for (const o of this.art) o.destroy();
@@ -83,6 +93,18 @@ export class EscapeView {
       g.fillStyle(c, s.active ? 0.95 : 0.35).fillRect(s.x - 10, s.y - 20, 20, 8);
       label(s.x, s.y - 24, 'SWITCH', s.active ? '#9dffcb' : '#9fe9ff');
     }
+    // P3F step 5: the traces are drawn per frame (`drawEvidence`); here only their labels, which change when a trace is examined and its kind becomes known.
+    for (const v of mine.evidence) {
+      const kind = kindOf(es, v.id) as EvidenceKind | null;
+      label(v.x, v.y - 58, v.examined ? (kind !== null ? EVIDENCE_LABELS[kind] : 'TRACES (noted)') : 'TRACES', v.examined ? '#9dffcb' : '#d6ccff');
+    }
+    // P3F step 4: the optional cache. Amber with a red edge: worth something, and it may bite.
+    if (mine.loot) {
+      const l = mine.loot, c = l.opened ? COLOR.cyanDim : COLOR.danger;
+      g.fillStyle(l.opened ? 0x10202a : 0x2a1a0a, 1).fillRect(l.x - 18, l.y - 26, 36, 26).lineStyle(2, c, 0.95).strokeRect(l.x - 18, l.y - 26, 36, 26);
+      g.lineStyle(2, COLOR.amber, 0.9).lineBetween(l.x - 18, l.y - 16, l.x + 18, l.y - 16);
+      label(l.x, l.y - 30, l.opened ? 'CACHE (empty)' : 'CACHE (risky)', l.opened ? '#7fb7c9' : '#ffb3a8');
+    }
     if (mine.exit) {
       const e = mine.exit;
       g.fillStyle(0x07201a, 1).fillRect(e.x - 30, e.y - 100, 60, 100).lineStyle(3, COLOR.green, 0.95).strokeRect(e.x - 30, e.y - 100, 60, 100);
@@ -103,6 +125,18 @@ export class EscapeView {
     }
   }
 
+  /** The trace markers, redrawn each frame (a pulsing ring on the ones nobody examined yet). Clipped to the light like all world art. */
+  private drawEvidence(room: string | undefined, es: EscapePublic | undefined): void {
+    this.evi.clear();
+    if (!es || room === undefined) return;
+    const ms = this.scene.time.now;
+    for (const v of es.evidence ?? []) {
+      if (v.room !== room) continue;
+      const kind = (es.journal?.entries.find((x) => x.id === v.id)?.kind ?? null) as EvidenceKind | null;
+      drawPrims(this.evi, evidencePrims(kind, v.examined, v.x, v.y, ms, this.calm));
+    }
+  }
+
   private drawNotes(notes: readonly { id: string; text: string }[]): void {
     const text = notes.map((n) => `- ${n.text}`).join('\n');
     if (text === this.notesShown) return;
@@ -115,6 +149,6 @@ export class EscapeView {
   destroy(): void {
     for (const o of this.art) o.destroy();
     this.art = [];
-    this.prompt.destroy(); this.notesBg.destroy(); this.notesText.destroy(); this.goal.destroy(); this.glow.destroy();
+    this.prompt.destroy(); this.notesBg.destroy(); this.notesText.destroy(); this.goal.destroy(); this.glow.destroy(); this.evi.destroy();
   }
 }

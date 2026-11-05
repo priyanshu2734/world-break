@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, SpectateMoveSchema, SpectateRoomSchema, StageActionSchema,
+  AbilityActionSchema, DifficultyPayloadSchema, DraftVoteSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, SpectateMoveSchema, SpectateRoomSchema, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -119,6 +119,12 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       const r = rooms.get(s.roomCode)?.escapeAction(s.playerId, p.data);
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message, ...(r.note ? { note: r.note } : {}) } : { ok: false, error: r.error });
+    });
+    // P3F step 4: the draft pick after a cleared stage. Zod here, rules in the Room.
+    socket.on('draft:vote', (payload, ack) => {
+      const p = DraftVoteSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid draft vote' });
+      run(socket.id, ack, (pid, code) => rooms.get(code)!.draftVote(pid, p.data.index));
     });
     socket.on('item:action', (payload, ack) => {
       const s = sessions.get(socket.id);

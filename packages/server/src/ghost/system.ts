@@ -1,7 +1,7 @@
 import {
   CATCH_LIMITS, EYE_HEIGHT, GHOST_LIMITS, cueBand, cueDir, GHOST_TRANSITIONS, MAX_GHOSTS, NOISE_KIND_LOUDNESS, NOISE_LOUDNESS, NOISE_MUFFLE,
-  HOWLER_LIMITS, angleDiff, createRng, deriveSeed, gaitOf, ghostTuning, hasLineOfSight, inFlashlightCone, occluders, pointVisible,
-  type Box, type Difficulty, type GhostCueSound, type GhostFx, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type RoomDef, type RoomGraph, type Rng,
+  HOWLER_LIMITS, angleDiff, shownKind, createRng, deriveSeed, gaitOf, ghostTuning, hasLineOfSight, inFlashlightCone, occluders, pointVisible,
+  type Box, type Difficulty, type GhostCueSound, type GhostFx, type GhostPublic, type GhostState, type GhostTuning, type GhostType, type PublicGhostKind, type RoomDef, type RoomGraph, type Rng,
 } from '@wb/shared';
 import { NavGrid, type Pt } from './nav';
 import type { GhostCatchEvent, GhostEvent, GhostHost, GhostPlayer, HidingSpotDef } from './types';
@@ -148,7 +148,9 @@ export class GhostSystem {
   /** P3E step 5: visible effects (a dissolve, a scream) since the last call, for the host to send to those who can see them. */
   drainFx(): GhostFx[] { const f = this.fx; this.fx = []; return f; }
   /** P3E step 5: the kinds of the ghosts in their WARNING now (each type has its own whisper and flicker). */
-  warnKinds(): GhostType[] { return this.actors.filter((a) => a.state === 'warning').map((a) => a.kind); }
+  warnKinds(): PublicGhostKind[] { return this.actors.filter((a) => a.state === 'warning').map((a) => this.shown(a.kind)); }
+  /** P3F step 3: the kind a player is told (the type before stage 7, `'unknown'` from then on). Server-only code still sees the real `kind`. */
+  private shown(kind: GhostType): PublicGhostKind { return shownKind(kind, this.cfg.stage); }
   /** Ghost states, for tests and debug displays (server side only). */
   snapshotActors(): { id: string; kind: GhostType; state: GhostState; present: boolean; room: string; x: number; y: number; angle: number; until: number }[] {
     return this.actors.map((a) => ({ id: a.id, kind: a.kind, state: a.state, present: a.present, room: a.room, x: a.x, y: a.y, angle: a.angle, until: a.until }));
@@ -160,7 +162,7 @@ export class GhostSystem {
     const out: GhostPublic[] = [];
     for (const a of this.actors) {
       if (!a.present || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
-      out.push({ id: a.id, kind: a.kind, x: r2(a.x), y: r2(a.y), angle: r2(a.angle), state: a.state, room: a.room, ...(a.lit ? { lit: true } : {}) });
+      out.push({ id: a.id, kind: this.shown(a.kind), x: r2(a.x), y: r2(a.y), angle: r2(a.angle), state: a.state, room: a.room, ...(a.lit ? { lit: true } : {}) });
     }
     return out;
   }
@@ -176,7 +178,7 @@ export class GhostSystem {
         if (!a.present || a.room !== roomId || (a.state !== 'roaming' && a.state !== 'hunting' && a.state !== 'stunned')) continue;
         const band = cueBand(Math.hypot(a.x - x, a.y - (y - BODY_CENTRE)));
         if (band === 0) continue;
-        sounds.push({ id: a.id, kind: a.kind, band, dir: cueDir(a.x - x), state: a.state, moving: a.moving, ...(a.inspect ? { inspecting: true } : {}), ...(a.scream ? { screaming: true } : {}) });
+        sounds.push({ id: a.id, kind: this.shown(a.kind), band, dir: cueDir(a.x - x), state: a.state, moving: a.moving, ...(a.inspect ? { inspecting: true } : {}), ...(a.scream ? { screaming: true } : {}) });
       }
     }
     return { warning: this.warning, sounds };
@@ -250,7 +252,7 @@ export class GhostSystem {
     a.until = t + this.tuning.respawnTicks;
     a.afterDestroy = true; a.scream = null; a.lit = false;
     this.record({ tick: t, ghost: a.id, kind: 'destroy', by, ghostKind: a.kind, ...at, returnsAt: a.until });
-    this.fx.push({ kind: 'dissolve', ghost: a.kind, ...at, tick: t });
+    this.fx.push({ kind: 'dissolve', ghost: this.shown(a.kind), ...at, tick: t });
     return true;
   }
 
@@ -281,13 +283,22 @@ export class GhostSystem {
 
   private update(a: Actor, players: GhostPlayer[], open: ReadonlySet<string>, t: number): void {
     switch (a.state) {
-      case 'dormant': if (t >= a.until) this.go(a, 'warning', 'the first interval elapsed'); break;
-      case 'respawn': if (t >= a.until) this.go(a, 'warning', 'the interval elapsed'); break;
+      case 'dormant': if (t >= a.until) this.beginWarning(a, t, 'the first interval elapsed'); break;
+      case 'respawn': if (t >= a.until) this.beginWarning(a, t, 'the interval elapsed'); break;
       case 'stunned': if (t >= a.until) this.go(a, 'respawn', 'the stun wore off'); break;
       case 'warning': if (t >= a.until) this.tryAppear(a, players, open, t); break;
       case 'roaming': case 'hunting': { const px = a.x, py = a.y; a.lit = false; this.act(a, players, open, t); a.moving = Math.hypot(a.x - px, a.y - py) > 0.01 && !a.opening; break; }
     }
     if (a.state !== 'roaming' && a.state !== 'hunting') a.moving = false;
+  }
+
+  /**
+   * P3F step 4: each ghost has its OWN warning. A ghost that is due while another one is in its warning waits (re-checked every 10 ticks) until
+   * that one has ended, so two warnings never run at the same time and a player can tell them apart. Never skipped, only delayed, and bounded by the other's length.
+   */
+  private beginWarning(a: Actor, t: number, cause: string): void {
+    if (this.actors.some((o) => o !== a && o.state === 'warning')) { a.until = t + 10; return; }
+    this.go(a, 'warning', cause);
   }
 
   // ------------------------------------------------------------------------------------------------------- the state machine
@@ -296,7 +307,7 @@ export class GhostSystem {
     const t = this.host.tick;
     this.record({ tick: t, ghost: a.id, kind: 'state', from: a.state, to, cause });
     a.state = to; a.since = t; a.contact.clear();
-    if (to === 'warning') { a.until = t + GHOST_LIMITS.warningTicks; a.warnedAt = t; a.present = false; a.blockedLogged = false; }
+    if (to === 'warning') { a.until = t + Math.max(GHOST_LIMITS.minWarningTicks, GHOST_LIMITS.warningTicks + Math.max(0, this.host.warningBonus?.(a.kind) ?? 0) + Math.min(0, this.host.warningShift?.() ?? 0)); a.warnedAt = t; a.present = false; a.blockedLogged = false; }
     if (to === 'respawn') { a.satiatedUntil = 0; a.present = false; a.until = t + this.tuning.intervalTicks; this.clearPlan(a); a.quarry = null; a.lastSeen = null; a.chain = []; a.opening = null; }
     if (to === 'stunned') { this.clearPlan(a); a.opening = null; }
   }
@@ -396,7 +407,7 @@ export class GhostSystem {
       if (!a.present || a.room !== n.room || a.state !== 'roaming' || a.satiatedUntil > this.host.tick) continue;
       const open = this.host.openDoorIds();
       const clear = hasLineOfSight({ x: a.x, y: a.y }, { x: n.x, y: n.y }, this.occ(n.room, open));
-      const range = this.tuning.hearingPx * n.loud * (clear ? 1 : NOISE_MUFFLE);
+      const range = this.tuning.hearingPx * (this.host.hearingShare?.() ?? 1) * n.loud * (clear ? 1 : NOISE_MUFFLE);
       if (Math.hypot(a.x - n.x, a.y - n.y) <= range) this.hear(a, n, this.host.tick, '');
     }
   }
@@ -510,7 +521,7 @@ export class GhostSystem {
       if (d < bestD) { best = p; bestD = d; }
     }
     this.record({ tick: t, ghost: a.id, kind: 'scream', phase: 'scream', room: a.room, text: best ? `The Howler screamed and learned where ${best.name} is` : 'The Howler screamed; everybody was quiet', alerted: best ? best.id : null });
-    this.fx.push({ kind: 'scream', ghost: a.kind, room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
+    this.fx.push({ kind: 'scream', ghost: this.shown(a.kind), room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
     this.host.onScream?.({ ghost: a.id, room: a.room, x: r2(a.x), y: r2(a.y), tick: t });
     for (const o of this.actors) {
       if (o === a || !o.present || o.state !== 'roaming' || o.satiatedUntil > t) continue;
