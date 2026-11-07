@@ -3,6 +3,7 @@ import {
   MAX_PLAYERS, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, SERVER_TICK_HZ,
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
   ARENA, EYE_HEIGHT, IDENTIFY_FROM_STAGE, IDENTIFY_TEACH_LINE, TEACH_TICKS, JOURNAL, LOOT, UPGRADES, draftOffer, effectsOf, canTake, gunCooldownWith, ghostPickWith, tally, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type GhostType, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState, type DraftPublic, type UpgradeId, type VarietyHistory, type VarietyRecord, VarietyHistorySchema, normaliseHistory,
+  type ChatMessage, type PingMarker, type PingRequest, type TeamPanel,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -20,6 +21,7 @@ import { CatchSystem, GhostSystem, PulseGun, type CatchHost, type GunHost, type 
 import type { InputExtra } from './game';
 import type { AbilityResult } from './abilities/system';
 import type { ItemResult } from './salvage/system';
+import { PingBoard, ChatBoard, makeSeer, buildPanel, type PanelMember } from './social';
 import { DEATH_TABLE, DeathSystem, ReviveSystem, ReviewLog, SpectateSystem, buildMessage, cueNotes, type ReviewCueSig, type CarriedItem, type DeathHost, type DroppedItem, type KillCause } from './death';
 
 /** Briefing countdown before play begins (3 s of server ticks). */
@@ -62,6 +64,9 @@ export class Room {
   private reviveSys: ReviveSystem | null = null;
   /** P4 step 2: pings waiting to be sent, each to the players it concerns. Bounded. */
   private pings: { to: string[]; ping: GhostPing }[] = [];
+  /** P6 A: the living players' ping markers of this stage, and the team chat (nothing of it is stored: see social/chat.ts). */
+  private readonly pingBoard = new PingBoard();
+  private readonly chatBoard = new ChatBoard();
   /** P4 step 2: the (target, room) each spectator was last sent a layout for, so they learn the walls of the room they are watching and nothing else. */
   private specLayouts = new Map<string, string>();
   /** P4 step 4: what happened around each player (warnings, noise, hiding, rescues), noted as it happens; and what the cue stream last said, per player. */
@@ -312,7 +317,7 @@ export class Room {
 
   /** P3E: the ghost of this stage: only with the option on, only on an escape stage, never on stage 1, and its types and seed come from the stage. */
   private bindGhost(engine: StageEngine): void {
-    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.reviveSys = null; this.pings = []; this.reviewLog = new ReviewLog(); this.reviewSeen = new WeakSet(); this.cueSigs = new Map(); this.reviews = new Map(); this.wipeLeft = 0; this.specLayouts = new Map(); this.lightsOut = new Map();
+    this.ghost = null; this.catchSys = null; this.gun = null; this.death = null; this.spectate = null; this.reviveSys = null; this.pings = []; this.pingBoard.clear(); this.reviewLog = new ReviewLog(); this.reviewSeen = new WeakSet(); this.cueSigs = new Map(); this.reviews = new Map(); this.wipeLeft = 0; this.specLayouts = new Map(); this.lightsOut = new Map();
     this.sim?.clearFrozen();
     const graph = engine.def.rooms;
     if (this.opts.ghost !== true || !engine.def.escape || !graph || !this.sim || !ghostPresentOnStage(this.stage)) return;
@@ -863,6 +868,62 @@ export class Room {
   }
   /** P4 step 2: pings waiting to be sent (taken once). */
   drainPings(): { to: string[]; ping: GhostPing }[] { const p = this.pings; this.pings = []; return p; }
+
+
+  // ---------------------------------------------------------------- P6 A: ping wheel, team chat, team panel (docs/PING.md)
+
+  /**
+   * A living player places a ping. The server checks the point against the pinger's OWN view (the `restrictedView` rule), fixes the position for
+   * the kinds that have one, and tells each living teammate: with the position if they stand in the same room, with the room alone if not.
+   */
+  placePing(id: string, req: PingRequest): { ok: true; message: string } | { ok: false; error: string } {
+    const sim = this.sim, e = this.engine, graph = e?.def.rooms;
+    if (this.phase !== 'playing' || !sim || !e) return { ok: false, error: 'No stage is running.' };
+    const m = this.members.get(id);
+    if (!m) return { ok: false, error: 'You are not part of this run.' };
+    if (!this.restrictsViews || !graph) return { ok: false, error: 'Pings work on escape stages.' };
+    const senses = sim.senses(), me = senses.find((x) => x.id === id);
+    if (!me) return { ok: false, error: 'You are not part of this run.' };
+    const def = me.roomId ? roomById(graph, me.roomId) : undefined;
+    const open = new Set((e.state().escape?.doors ?? []).filter((d) => d.open).map((d) => d.id));
+    const sees = def && me.roomId ? makeSeer(def, { x: me.x, y: me.y }, open, this.radiusIn(me.roomId), this.coneVision ? sim.aimOf(id) : null) : () => false;
+    const seen = def ? (this.ghost?.publicGhosts() ?? []).filter((g) => g.room === me.roomId && sees(g.x, g.y)) : [];
+    return this.pingBoard.place(
+      { id, name: m.name, slot: me.slot, alive: this.death ? this.death.isAlive(id) : true, connected: m.connected, room: me.roomId, x: me.x, y: me.y, hidden: this.catchSys?.isHidden(id) ?? false },
+      req,
+      {
+        tick: sim.tick, sees, seenGhosts: seen.map((g) => ({ x: g.x, y: g.y })), hearsGhost: (this.ghostCue(id)?.sounds.length ?? 0) > 0,
+        recipients: senses.map((x) => ({ id: x.id, room: x.roomId, connected: this.members.get(x.id)?.connected ?? false, alive: this.death ? this.death.isAlive(x.id) : true })),
+      },
+    );
+  }
+  /** P6 A: ping markers waiting to be sent, each to ONE player (taken once). */
+  drainPingMarkers(): { to: string; marker: PingMarker }[] { return this.pingBoard.drain(); }
+
+  /** P6 A: a team chat line. Any member may chat in any phase (guests too); a dead player at half the rate. `nowMs` is the caller's clock. */
+  chat(id: string, text: string, nowMs: number): { ok: true; message: string } | { ok: false; error: string } {
+    const m = this.members.get(id);
+    if (!m) return { ok: false, error: 'You are not part of this room.' };
+    const slot = this.sim?.senses().find((x) => x.id === id)?.slot ?? 0;
+    return this.chatBoard.send({ id, name: m.name, slot, dead: this.death?.isDead(id) ?? false, connected: m.connected }, text, nowMs);
+  }
+  /** P6 A: chat lines waiting to be sent to every connected member (taken once). Nothing is kept. */
+  drainChat(): ChatMessage[] { return this.chatBoard.drain(); }
+
+  /** P6 A: the team panel for one player (null when no stage is running). Counts and states only: never what a teammate carries, never a ghost type. */
+  teamPanel(id: string): TeamPanel | null {
+    const sim = this.sim, e = this.engine;
+    if (!sim || !e || (this.phase !== 'playing' && this.phase !== 'briefing') || !this.members.has(id)) return null;
+    const st = e.state();
+    const carried = new Map<string, number>();
+    for (const i of st.items?.items ?? []) if (i.state === 'carried' && i.carrierId) carried.set(i.carrierId, (carried.get(i.carrierId) ?? 0) + 1);
+    const members: PanelMember[] = [...this.members.values()].map((m) => ({
+      id: m.id, name: m.name, slot: sim.senses().find((x) => x.id === m.id)?.slot ?? 0, connected: m.connected,
+      life: this.death?.lifeOf(m.id), hidden: this.catchSys?.isHidden(m.id) ?? false, carried: carried.get(m.id) ?? 0,
+    })).sort((a, b) => a.slot - b.slot);
+    const j = st.escape?.journal;
+    return buildPanel(sim.tick, members, this.death ? this.death.isAlive(id) : true, j ? { found: j.entries.length, marked: j.marks.length, lines: j.lines } : null);
+  }
 
   /** P3E step 3: hide in the hiding spot in reach, or come out. */
   ghostAction(id: string, action: GhostAction): { ok: true; message: string } | { ok: false; error: string } {

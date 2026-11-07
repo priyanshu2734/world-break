@@ -17,6 +17,7 @@ import { DoorView } from '../ui/DoorView';
 import { EscapeView } from '../ui/EscapeView';
 import { CodePad } from '../ui/CodePad';
 import { JournalView } from '../ui/JournalView';
+import { TeamView } from '../ui/team/TeamView';
 import { DraftView } from '../ui/DraftView';
 import { voteFromKeys } from '../ui/draftLogic';
 import { ESCAPE_KEYS_HINT, goalLine, nearestUse, stateForRoom, takesCode, useIntent, usablesIn, type EscapeUse } from '../ui/escapeUse';
@@ -92,6 +93,10 @@ export class GameScene extends Phaser.Scene {
   private journalView!: JournalView;
   private draftView!: DraftView;
   private pad!: CodePad;
+  /** P6 A: team panel (Tab), ping wheel (hold Q), markers and chat (Enter). `qTap` = Q was a short press this frame (the old Q: cancel). */
+  private team!: TeamView;
+  private teamKeys!: Record<'TAB' | 'ENTER' | 'ESC', Phaser.Input.Keyboard.Key>;
+  private qTap = false;
   /** What E would act on this frame (null = nothing in reach). */
   private escapeNearest: EscapeUse | null = null;
   private notesStage = -1;
@@ -193,6 +198,20 @@ export class GameScene extends Phaser.Scene {
     this.events.once('shutdown', () => this.doors.destroy());
     this.events.once('shutdown', () => { this.darkness?.destroy(); this.darkness = null; });
     this.abilityKeys = kb.addKeys('SIX,SEVEN,EIGHT,NINE,SHIFT') as typeof this.abilityKeys;
+    // P6 A: the team panel, the ping wheel and the chat. The server checks every ping against this player's own view and cleans every chat line.
+    kb.addCapture('TAB');
+    this.teamKeys = kb.addKeys('TAB,ENTER,ESC') as typeof this.teamKeys;
+    this.team = new TeamView(this, {
+      onPing: (req) => { void this.session.placePing(req); },
+      onChat: (text) => { void this.session.sendChat(text); },
+      onMute: (id) => {
+        const r = this.session.chat.toggleMute(id, this.session.playerId);
+        if (r !== null) this.session.notice = { text: r ? 'Muted.' : 'Unmuted.', ok: true, at: performance.now() };
+      },
+      onNotice: (text) => { this.session.notice = { text, ok: false, at: performance.now() }; },
+    });
+    this.events.once('shutdown', () => this.team.destroy());
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: unknown[]) => { if (over.length === 0) this.team.worldClick(p.worldX, p.worldY); });
     this.input.on('pointermove', () => { this.pointerSeen = true; });
     const onBlur = () => kb.resetKeys(); // never leave a key "stuck down" after alt-tab
     this.game.events.on(Phaser.Core.Events.BLUR, onBlur);
@@ -591,6 +610,21 @@ export class GameScene extends Phaser.Scene {
       leftMs: cueLeft, fraction: cooldownFraction(s.ghostCue?.gun, cueLeft),
       sinceDissolveMs: this.lastDissolveAt === null ? null : nowMs - this.lastDissolveAt, warning,
     });
+    // P6 A: team keys and the Q gesture (a tap is the old Q; a hold is the ping wheel). Only a living player on an escape stage may ping.
+    this.qTap = false;
+    {
+      const JD = Phaser.Input.Keyboard.JustDown;
+      if (JD(this.teamKeys.TAB)) this.team.toggle();
+      if (JD(this.teamKeys.ENTER) && !this.pad.isOpen && !this.team.typing) this.team.openChat();
+      if (JD(this.teamKeys.ESC)) { if (this.team.hasArmed) this.team.cancel(); else if (this.team.isOpen) this.team.close(); }
+      const ptr = this.input.activePointer, cam = this.cameras.main;
+      const canPing = !spectating && g.phase === 'playing' && !!s.stage?.escape && !!me?.connected && !this.pad.isOpen && !this.team.typing;
+      this.qTap = this.team.frame({
+        now: frameNow, qDown: this.stageKeys.Q.isDown, canPing, pointer: { x: ptr.x, y: ptr.y, worldX: ptr.worldX, worldY: ptr.worldY },
+        panel: s.teamPanel, markers: s.pingMarkers, chat: s.chat, selfId: s.playerId,
+        view: { x: cam.worldView.x, y: cam.worldView.y, w: cam.worldView.width, h: cam.worldView.height },
+      }).tap && canPing;
+    }
     if (this.pad.isOpen) this.drainKeys(); // typing into the pad must not trigger tools or abilities afterwards
     // keys act on what lies in the player's own room only (a part in another room has the same coordinates as nothing here)
     this.handleStageKeys(stateForRoom(st, myRoom), g.phase === 'playing' && !!me?.connected && contentHere && !this.pad.isOpen, meNow, me?.facing ?? 1);
@@ -652,7 +686,7 @@ export class GameScene extends Phaser.Scene {
     const K = this.stageKeys, J = Phaser.Input.Keyboard.JustDown;
     const send = (a: StageAction) => { void this.session.stageAction(a); };
     const pressed = {
-      E: J(K.E), Q: J(K.Q), tool: [J(K.ONE), J(K.TWO), J(K.THREE), J(K.FOUR), J(K.FIVE)],
+      E: J(K.E), Q: (J(K.Q), this.qTap), tool: [J(K.ONE), J(K.TWO), J(K.THREE), J(K.FOUR), J(K.FIVE)],
     };
     if (J(K.J) && st?.escape?.journal) this.journalView.toggle(); // P3F step 3: the team journal
     if (!canAct || !st || !me) return;

@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
-  AbilityActionSchema, DifficultyPayloadSchema, DraftVoteSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, SpectateMoveSchema, SpectateRoomSchema, StageActionSchema,
+  AbilityActionSchema, ChatSendSchema, DifficultyPayloadSchema, DraftVoteSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, PingRequestSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, SpectateMoveSchema, SpectateRoomSchema, StageActionSchema,
   type ClientToServerEvents, type ServerToClientEvents, type Ack,
 } from '@wb/shared';
 import { RoomManager, type Result, type Room } from './room';
@@ -181,6 +181,30 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!r) return reply(ack, { ok: false, error: 'No stage is running.' });
       reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
     });
+    // P6 A: the ping wheel. Zod here (kind is an enum, coordinates are bounded numbers), every rule in Room.placePing / social/pings.ts. Sent at once, not on the next tick.
+    socket.on('ping:place', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = PingRequestSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const room = rooms.get(s.roomCode);
+      if (!room) return reply(ack, { ok: false, error: 'No stage is running.' });
+      const r = room.placePing(s.playerId, p.data);
+      if (r.ok) for (const { to, marker } of room.drainPingMarkers()) for (const [sid, sess] of sessions) if (sess.roomCode === room.code && sess.playerId === to) io.to(sid).emit('ping:marker', marker);
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
+    // P6 A: team chat. Room scoped; the server cleans, limits and forwards the line to the room and keeps nothing.
+    socket.on('chat:send', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = ChatSendSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const room = rooms.get(s.roomCode);
+      if (!room) return reply(ack, { ok: false, error: 'Join a room first' });
+      const r = room.chat(s.playerId, p.data.text, Date.now());
+      if (r.ok) for (const msg of room.drainChat()) io.to(room.code).emit('chat:message', msg);
+      reply(ack, r.ok ? { ok: true, message: r.message } : { ok: false, error: r.error });
+    });
     // P3A: host advances to the next stage (endless loop). Uses the existing NEXT_STAGE room transition.
     socket.on('room:nextStage', (_payload, ack) => {
       run(socket.id, ack, (pid, code) => rooms.get(code)!.nextStage(pid));
@@ -213,6 +237,9 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
   const cues = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
   /** P4: the last death state each player was sent (key without the countdowns, and the tick it was sent at). */
   const lifeSent = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
+  /** P6 A: the last team panel each player was sent (key without the tick, and when), and a per-room tick counter that thins the work to every 5th tick. */
+  const panelSent = new WeakMap<Room, Map<string, { key: string; tick: number }>>();
+  const panelClock = new WeakMap<Room, number>();
   const onTick = () => {
     rooms.forEach((room) => {
       // P4 step 4: a team wipe holds for a short beat, then turns into the review: each player is sent their OWN review (to that player's socket only)
@@ -271,6 +298,25 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
         }
         for (const { to, ping } of room.drainPings()) {
           for (const [sid, sess] of sessions) if (sess.roomCode === room.code && to.includes(sess.playerId)) io.to(sid).emit('ghost:ping', ping);
+        }
+      }
+      // P6 A: the team panel, to each player alone: when it changes (checked every 5th tick) and at least once a second.
+      if (room.phase === 'playing') {
+        const n = (panelClock.get(room) ?? 0) + 1;
+        panelClock.set(room, n);
+        if (n % 5 === 0) {
+          let sentPanels = panelSent.get(room);
+          if (!sentPanels) panelSent.set(room, (sentPanels = new Map()));
+          for (const [sid, sess] of sessions) {
+            if (sess.roomCode !== room.code) continue;
+            const panel = room.teamPanel(sess.playerId);
+            if (!panel) continue;
+            const key = JSON.stringify({ ...panel, tick: 0 });
+            const last = sentPanels.get(sess.playerId);
+            if (last && last.key === key && panel.tick - last.tick < SERVER_TICK_HZ && panel.tick >= last.tick) continue;
+            sentPanels.set(sess.playerId, { key, tick: panel.tick });
+            io.to(sid).emit('team:panel', panel);
+          }
         }
       }
       // P3E step 4: Pulse Gun shots, each to the players who can see where it was fired (and its shooter) only.

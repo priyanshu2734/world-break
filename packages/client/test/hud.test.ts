@@ -35,8 +35,8 @@ describe('the one goal line of an escape stage', () => {
 });
 
 describe('the keys line (GAMEPLAY.md section 11)', () => {
-  it('lists move, jump, E, G, F, the mouse, and marks Q and Tab as placeholders; no tools or abilities', () => {
-    for (const k of ['A/D move', 'W/Space jump', 'E interact', 'G drop/swap', 'F use', 'Q ping (soon)', 'Tab team (soon)', 'Mouse']) expect(ESCAPE_KEYS_HINT).toContain(k);
+  it('lists move, jump, E, G, F, the mouse and the real ping and team keys (P6 A: the "(soon)" placeholders are gone); no tools or abilities', () => {
+    for (const k of ['A/D move', 'W/Space jump', 'E interact', 'G drop/swap', 'F use', 'Hold Q ping', 'Tab team', 'Mouse']) expect(ESCAPE_KEYS_HINT).toContain(k);
     expect(ESCAPE_KEYS_HINT).not.toMatch(/1-5|6-9|tools|abilities/);
   });
 });

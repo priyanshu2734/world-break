@@ -14,3 +14,4 @@ export * from './ghost';
 export * from './death';
 export * from './variety';
 export * from './draft';
+export * from './ping';

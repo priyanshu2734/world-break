@@ -105,7 +105,7 @@ export function addNote(notes: { id: string; text: string }[], note: { id: strin
 }
 
 /** The keys of an escape stage (GAMEPLAY.md section 11). Q (ping) and Tab (team panel) are placeholders until their phases. */
-export const ESCAPE_KEYS_HINT = 'A/D move   W/Space jump   E interact   G drop/swap   F use   J ghost journal   Q ping (soon)   Tab team (soon)   Mouse: aim your light';
+export const ESCAPE_KEYS_HINT = 'A/D move   W/Space jump   E interact   G drop/swap   F use   J ghost journal   Hold Q ping   Tab team   Enter chat   Mouse: aim your light';
 
 /**
  * The ONE goal line of an escape stage, from what this player's view contains (the server sends only what they can see, so this
