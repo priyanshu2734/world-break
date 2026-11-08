@@ -375,3 +375,13 @@ announces the teaching line. `view.ts` restricts `evidence` to what is in view a
 
 ## P3F step 6: solver, determinism, handoff (see docs/VARIETY.md, "Solver, determinism and the whole phase")
 `shared/variety/save.ts` (`VarietyRecordSchema`, `VarietyHistorySchema`, `normaliseHistory`) and `Room.varietyRecords` / `Room.restoreVariety` make the run's variety history something a save (P6) and the scenario generator (P5) can keep: **a stage depends on (stage, seed, last 3 variety records), not on (stage, seed) alone.** Test helpers: `test/rooms/runSolve.ts` (`playRun`, a whole run through the real transitions), `SolveExtras` in `solver.ts`, `extras` in `death/drill.ts`. No rule, phase, or frozen file changed. The final hand-off is `docs/handoffs/P3F.md`.
+
+
+## P6 social and progression (see docs/PING.md, docs/PROGRESSION.md and docs/handoffs/P6.md)
+- **A. Ping wheel, team panel, chat** (`shared/ping`, `server/social`, `client/ui/team`): server-authoritative; a ping point must lie in the pinger's own view (`makeSeer`, pinned to `restrictedView` by a parity test); other-room teammates get a room label, never a position; the dead keep only "ghost here" but may chat.
+- **B. OpenAI scenarios: NOT BUILT.** The deterministic generator is unchanged; `main.ts` keeps "AI director: deterministic fallback only" as the extension point.
+- **C. Accounts and progression** (`shared/progress`, `server/auth`, `server/store`, `client/ui/account`):
+  - `AuthProvider` (Google ID token by default, dev mock refused in production) -> the server's own HMAC session token (handshake `auth.token` or httpOnly cookie).
+  - `ProgressStore` (`node:sqlite`, versioned forward migrations, compare-and-set writes) behind `ProgressService` (health flag, bounded retried write queue); a down store means guest-like play.
+  - `Room` records `ClearEvent`s at the stage-clear transition; the gateway writes them (every signed-in player's result; only the HOST's save slot). The room's difficulty limit is `unlockBasis`, from the host's progress.
+  - Continue/New run is a server path: `Room.restoreRun(save, hostHighest)` (lobby only; a save ahead of the account's progress or in a locked mode is refused) or `Room.newRun()`.

@@ -8,6 +8,7 @@ import type { EscapeAck } from './rooms/escape';
 import { AimSchema, GhostPublicSchema, type GhostCue, type GhostFx, type GhostShot } from './ghost';
 import type { DeathReviewMsg, DeathState, GhostPing } from './death';
 import type { ChatMessage, PingMarker, TeamPanel } from './ping';
+import type { Profile } from './progress';
 import { DraftPublicSchema, OwnedUpgradesSchema } from './draft';
 import { THEME_IDS } from './variety/curriculum';
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, MAX_PLAYERS } from './constants';
@@ -150,6 +151,8 @@ export interface ClientToServerEvents {
   'ping:place': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
   /** P6 A: a team chat line (`{ text }`). Room scoped, at most 120 characters, 1 per 1.5 s (3 s when dead); sanitised and never stored by the server. */
   'chat:send': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
+  /** P6 C: the host chooses what the lobby starts: `{ choice: 'continue' | 'new' }`. Only the host, only in the lobby; the server reads the save, never the client. */
+  'run:choose': (payload: unknown, ack: (r: Ack<{ message: string }>) => void) => void;
 }
 export interface ServerToClientEvents {
   'room:state': (snapshot: RoomSnapshot) => void;
@@ -180,4 +183,6 @@ export interface ServerToClientEvents {
   'chat:message': (msg: ChatMessage) => void;
   /** P6 A. Sent to ONE player: the team panel (states, carried count and journal summary for the living; names and states for the dead). */
   'team:panel': (panel: TeamPanel) => void;
+  /** P6 C. Sent to ONE socket: its profile (guest or account), and in a room what this lobby offers. */
+  'profile:state': (profile: Profile) => void;
 }

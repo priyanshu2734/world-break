@@ -3,8 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import {
   AbilityActionSchema, ChatSendSchema, DifficultyPayloadSchema, DraftVoteSchema, EscapeActionSchema, GHOST_CUE, GameInputSchema, GhostActionSchema, ItemActionSchema, JoinPayloadSchema, PingRequestSchema, ReadyPayloadSchema, SERVER_TICK_HZ, SpectateFollowSchema, SpectateMoveSchema, SpectateRoomSchema, StageActionSchema,
-  type ClientToServerEvents, type ServerToClientEvents, type Ack,
+  RunChoiceSchema, guestProfile, isDifficultyUnlocked, unlockedDifficulties,
+  type ClientToServerEvents, type ServerToClientEvents, type Ack, type Profile, type RunSave,
 } from '@wb/shared';
+import { AuthService } from './auth';
+import { createAuthHandler, parseCookies } from './auth/http';
+import { ProgressService } from './store/service';
 import { RoomManager, type Result, type Room } from './room';
 import { startFixedLoop } from './loop';
 
@@ -16,24 +20,115 @@ export interface GameServer {
   close(): Promise<void>;
 }
 
-export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean; ghostStages?: boolean } = {}): GameServer {
+export function createGameServer(opts: {
+  corsOrigin?: string; briefingTicks?: number; abilityLab?: boolean; huntStage?: boolean; escapeStages?: boolean; ghostStages?: boolean;
+  /** P6 C: dev-only client flags (`?ghost=N`). Off unless true here or DEV_FLAGS=1, and NEVER on when NODE_ENV=production. */
+  devFlags?: boolean;
+  /** P6 C: sign-in. Absent = guests only. */
+  auth?: AuthService;
+  /** P6 C: storage. Absent = nothing is saved (every player is guest-like). */
+  progress?: ProgressService;
+} = {}): GameServer {
+  const corsOrigin = opts.corsOrigin ?? 'http://localhost:5173';
+  const devFlags = (opts.devFlags ?? process.env.DEV_FLAGS === '1') && process.env.NODE_ENV !== 'production';
+  const auth = opts.auth ?? new AuthService({ mode: 'off' });
+  const progress = opts.progress ?? new ProgressService(null);
+  // socket.id -> membership. playerId is a server-issued opaque id, never client-chosen. `accountId` is set only from a verified session token.
+  const sessions = new Map<string, { playerId: string; roomCode: string; accountId?: string }>();
+  const joining = new Set<string>();
+  const authHttp = createAuthHandler({
+    auth, progress, corsOrigin,
+    onAccountDeleted: (id) => {
+      for (const [sid, sess] of sessions) if (sess.accountId === id) { delete sess.accountId; refreshRoom(sess.roomCode); const sock = io.sockets.sockets.get(sid); if (sock) sock.data.accountId = undefined; }
+    },
+  });
   const http = createServer((req, res) => {
     if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
+    if (authHttp(req, res)) return;
     res.writeHead(404).end();
   });
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(http, {
-    cors: { origin: opts.corsOrigin ?? 'http://localhost:5173' },
+    cors: { origin: corsOrigin, credentials: true },
+  });
+  // P6 C: the session token is checked ONCE, when the socket connects (and again on every automatic reconnect, which presents it again). A forged,
+  // altered or expired token is refused outright (the client then signs in again or plays as a guest); no token at all is a guest.
+  io.use((socket, next) => {
+    const raw: unknown = (socket.handshake.auth as { token?: unknown } | undefined)?.token ?? parseCookies(socket.handshake.headers.cookie)['wb_session'];
+    if (raw === undefined || raw === null || raw === '') return next();
+    const id = auth.verify(raw);
+    if (!id) return next(new Error('invalid_session'));
+    socket.data.accountId = id;
+    next();
   });
   // P3E: the ghost. Off unless the caller says so or the server is started with GHOST_STAGES=1 (config.ts and main.ts are outside this phase's file list, so the variable is read here).
   const ghostOn = opts.ghostStages ?? process.env.GHOST_STAGES === '1';
   const rooms = new RoomManager({ briefingTicks: opts.briefingTicks, huntStage: opts.huntStage });
-  // socket.id -> membership. playerId is a server-issued opaque id, never client-chosen.
-  const sessions = new Map<string, { playerId: string; roomCode: string }>();
-
   const broadcast = (code: string) => {
     const room = rooms.get(code);
     if (room) io.to(code).emit('room:state', room.snapshot());
   };
+
+  // ---------------------------------------------------------------- P6 C: profiles, the host's save, results
+  /** The account of the room's host (null for a guest host or when nobody is there). */
+  const hostAccount = (room: Room): string | null => {
+    for (const sess of sessions.values()) if (sess.roomCode === room.code && sess.playerId === room.hostId) return sess.accountId ?? null;
+    return null;
+  };
+  const choices = new WeakMap<Room, 'new' | 'continue'>();
+  /** Everything the room needs to know about its host, from the server's own store: unlocks (the floor) and whether a save exists. */
+  const hostInfo = async (room: Room): Promise<{ floor: number; save: RunSave | null; signedIn: boolean }> => {
+    const id = hostAccount(room);
+    if (!id) return { floor: 0, save: null, signedIn: false };
+    const a = await progress.account(id);
+    if (!a) return { floor: 0, save: null, signedIn: false };
+    return { floor: a.highestStage, save: await progress.runSave(id), signedIn: true };
+  };
+  const profileFor = async (room: Room | undefined, accountId: string | undefined): Promise<Profile> => {
+    const p = await progress.profile(accountId ?? null);
+    if (!room) return p;
+    const h = await hostInfo(room);
+    const allowed = unlockedDifficulties(Math.max(room.unlockBasis, 1));
+    return { ...p, room: { allowed, hostSave: h.save ? { stage: h.save.stage, mode: h.save.mode } : null, choice: choices.get(room) ?? 'new', hostSignedIn: h.signedIn } };
+  };
+  const sendProfile = async (sid: string): Promise<void> => {
+    const sess = sessions.get(sid);
+    if (!sess) return;
+    const p = await profileFor(rooms.get(sess.roomCode), sess.accountId);
+    io.to(sid).emit('profile:state', p);
+  };
+  /** The host (or the host's progress) may have changed: re-derive the room's unlock floor, drop a stale "continue", and tell everyone. Lobby only changes anything. */
+  const refreshRoom = (code: string): void => {
+    const room = rooms.get(code);
+    if (!room) return;
+    void (async () => {
+      const h = await hostInfo(room);
+      if (room.phase === 'lobby') {
+        room.setHostFloor(h.floor);
+        if (choices.get(room) === 'continue' && !h.save) { choices.set(room, 'new'); room.newRun(); }
+        broadcast(code);
+      }
+      for (const [sid, sess] of sessions) if (sess.roomCode === code) void sendProfile(sid);
+    })();
+  };
+  /** A stage was cleared: every signed-in player in the room earns the result (and the highest stage it reaches); only the HOST's save slot is written. */
+  const handleProgress = (room: Room): void => {
+    for (const ev of room.drainClears()) {
+      const byPlayer = new Map<string, string>();
+      for (const sess of sessions.values()) if (sess.roomCode === room.code && sess.accountId) byPlayer.set(sess.playerId, sess.accountId);
+      const done = new Set<string>();
+      for (const pid of ev.playerIds) {
+        const acct = byPlayer.get(pid);
+        if (!acct || done.has(acct)) continue; // one account counts once
+        done.add(acct);
+        progress.recordClear(acct, ev.result, pid === ev.hostId ? ev.save : null);
+      }
+    }
+    const host = hostAccount(room);
+    for (const save of room.drainSaveUpdates()) if (host) progress.saveRun(host, save);
+    if (done0(room)) void progress.idle().then(() => { for (const [sid, sess] of sessions) if (sess.roomCode === room.code) void sendProfile(sid); });
+  };
+  const done0 = (room: Room): boolean => progress.configured && [...sessions.values()].some((x) => x.roomCode === room.code && x.accountId);
+
   const reply = <T extends object = Record<never, never>>(ack: unknown, r: Ack<T>) => {
     if (typeof ack === 'function') (ack as (r: Ack<T>) => void)(r);
   };
@@ -49,23 +144,69 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
     socket.on('room:join', (payload, ack) => {
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
-      if (sessions.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
+      if (sessions.has(socket.id) || joining.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
       const { roomCode, name, lab, rooms: wantRooms, ghost: wantGhost } = parsed.data;
       // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
       // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
       if (wantRooms && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
+      // P6 C: the ghost-at-stage-N flag is a DEV flag: refused unless DEV_FLAGS=1, and never honoured in production.
+      if (wantGhost !== undefined && !devFlags) return reply(ack, { ok: false, error: 'Dev flags are disabled on this server (DEV_FLAGS=1 enables them outside production).' });
       // P3E dev flag: the ghost, starting at a given stage, only on creation and only when escape stages are enabled (like the multi-room demo).
       if (wantGhost !== undefined && !roomCode && !opts.escapeStages) return reply(ack, { ok: false, error: 'Escape stages are not enabled on this server (ESCAPE_STAGES is 0).' });
-      const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true, ghost: opts.escapeStages === true && (ghostOn || wantGhost !== undefined), ...(wantGhost !== undefined ? { startStage: Math.max(2, wantGhost) } : {}) });
-      if (!room) return reply(ack, { ok: false, error: 'Room not found' });
-      const playerId = randomUUID();
-      const r = room.join(playerId, name);
-      if (!r.ok) { if (room.size === 0) rooms.remove(room.code); return reply(ack, r); }
-      sessions.set(socket.id, { playerId, roomCode: room.code });
-      void socket.join(room.code);
-      reply(ack, { ok: true, roomCode: room.code, playerId });
-      broadcast(room.code);
+      joining.add(socket.id);
+      void (async () => {
+        try {
+          // a signed-in socket uses the account's name (the server's record, not the browser's); an unknown or unreachable account plays as a guest
+          const tokenAccount: string | undefined = socket.data.accountId;
+          const account = tokenAccount ? await progress.account(tokenAccount) : null;
+          const accountId = account ? account.id : undefined;
+          const duplicate = !!accountId && !!roomCode && [...sessions.values()].some((x) => x.accountId === accountId && x.roomCode === roomCode);
+          if (duplicate) return reply(ack, { ok: false, error: 'This account is already in that room' });
+          const room = roomCode ? rooms.get(roomCode) : rooms.create({ lab: lab === true, ...(wantRooms ? { rooms: wantRooms } : {}), escape: opts.escapeStages === true, ghost: opts.escapeStages === true && (ghostOn || wantGhost !== undefined), ...(wantGhost !== undefined ? { startStage: Math.max(2, wantGhost) } : {}) });
+          if (!room) return reply(ack, { ok: false, error: 'Room not found' });
+          const playerId = randomUUID();
+          const r = room.join(playerId, account ? account.name.slice(0, 16) : name);
+          if (!r.ok) { if (room.size === 0) rooms.remove(room.code); return reply(ack, r); }
+          sessions.set(socket.id, { playerId, roomCode: room.code, ...(accountId ? { accountId } : {}) });
+          void socket.join(room.code);
+          reply(ack, { ok: true, roomCode: room.code, playerId });
+          broadcast(room.code);
+          refreshRoom(room.code);
+        } catch {
+          reply(ack, { ok: false, error: 'Could not join right now' });
+        } finally { joining.delete(socket.id); }
+      })();
+    });
+
+    // P6 C: the host chooses "Continue stage N" or "New run". The server reads the HOST's save from its own store; the client names nothing but the choice.
+    socket.on('run:choose', (payload, ack) => {
+      const s = sessions.get(socket.id);
+      if (!s) return reply(ack, { ok: false, error: 'Join a room first' });
+      const p = RunChoiceSchema.safeParse(payload);
+      if (!p.success) return reply(ack, { ok: false, error: 'Invalid request' });
+      const room = rooms.get(s.roomCode);
+      if (!room) return reply(ack, { ok: false, error: 'Join a room first' });
+      if (s.playerId !== room.hostId) return reply(ack, { ok: false, error: 'Only the host can choose how the run starts' });
+      if (room.phase !== 'lobby') return reply(ack, { ok: false, error: 'Not in lobby' });
+      void (async () => {
+        try {
+          if (p.data.choice === 'new') {
+            const r = room.newRun();
+            if (r.ok) choices.set(room, 'new');
+            reply(ack, r.ok ? { ok: true, message: 'Starting a new run at stage 1.' } : r);
+          } else {
+            const h = await hostInfo(room);
+            if (!h.signedIn) return reply(ack, { ok: false, error: 'Sign in to keep and continue a run.' });
+            if (!h.save) return reply(ack, { ok: false, error: 'There is no saved run to continue.' });
+            const r = room.restoreRun(h.save, h.floor);
+            if (r.ok) choices.set(room, 'continue');
+            reply(ack, r.ok ? { ok: true, message: `Continuing at stage ${h.save.stage}.` } : { ok: false, error: 'The saved run could not be loaded.' });
+          }
+        } catch { reply(ack, { ok: false, error: 'Could not do that right now' }); }
+        broadcast(room.code);
+        for (const [sid, sess] of sessions) if (sess.roomCode === room.code) void sendProfile(sid);
+      })();
     });
 
     socket.on('room:ready', (payload, ack) => {
@@ -225,7 +366,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (!room) return;
       room.disconnect(s.playerId);
       if (room.connectedCount === 0) rooms.remove(room.code);
-      else broadcast(room.code);
+      else { broadcast(room.code); refreshRoom(room.code); } // the host may have changed: the room follows the NEW host's save and unlocks
     });
   });
 
@@ -258,6 +399,7 @@ export function createGameServer(opts: { corsOrigin?: string; briefingTicks?: nu
       if (room.phase !== 'briefing' && room.phase !== 'playing') return;
       const { phaseChanged } = room.tick();
       if (phaseChanged) broadcast(room.code);
+      handleProgress(room); // P6 C: results and the host's save, queued (never blocks the tick)
       const restricted = room.restrictsViews; // P3D: an escape stage sends every player their own view
       const snap = restricted ? null : room.gameSnapshot();
       // Steady-state snapshots are volatile (a stale one is worthless). A snapshot that carries a phase change is

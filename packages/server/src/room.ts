@@ -4,6 +4,7 @@ import {
   deriveSeed, isDifficultyUnlocked, nextRoomPhase,
   ARENA, EYE_HEIGHT, IDENTIFY_FROM_STAGE, IDENTIFY_TEACH_LINE, TEACH_TICKS, JOURNAL, LOOT, UPGRADES, draftOffer, effectsOf, canTake, gunCooldownWith, ghostPickWith, tally, NOISE_KIND_LOUDNESS, PLAYER_HEIGHT, getArena, HOWLER_LIMITS, WIPE, ghostLineupForStage, ghostPresentOnStage, ghostSeedFor, inLitRegion, layoutOf, pointVisible, roomById, visionRadius, type AbilityAction, type DeathReviewMsg, type DeathState, type EscapeAction, type GhostAction, type GhostPing, type PlayerLife, type SpectateFollow, type SpectateMove, type SpectateRoom, type Arena, type RoomLayout, type ItemAction, type Difficulty, type GameSnapshot, type GhostCue, type GhostFx, type GhostType, type InputIntent, type RoomPhase, type RoomSnapshot, type StageAction, type StageState, type DraftPublic, type UpgradeId, type VarietyHistory, type VarietyRecord, VarietyHistorySchema, normaliseHistory,
   type ChatMessage, type PingMarker, type PingRequest, type TeamPanel,
+  RunSaveSchema, type RunSave, type StageResult,
 } from '@wb/shared';
 import { GameSim } from './game';
 import { StageEngine, type ActionResult } from './systems/engine';
@@ -33,6 +34,9 @@ const fail = (error: string): Result => ({ ok: false, error });
 interface Member { id: string; name: string; ready: boolean; connected: boolean }
 
 /** Server-side record of the stage being played. Never sent to clients (the seed derives hidden layouts). */
+/** P6 C: a stage the team cleared: the result every signed-in player earns, and the save the HOST's slot gets. */
+export interface ClearEvent { result: Omit<StageResult, 'players'> & { players: number }; playerIds: string[]; hostId: string; save: RunSave }
+
 export interface StageRecord { stage: number; seed: number; defId: string; fallback: boolean; /** P4 step 4: 0 for the first try of this stage number, 1 for the first retry, and so on. */ attempt: number }
 
 /** Pure, socket-free room state. All mutations are validated here. */
@@ -84,7 +88,7 @@ export class Room {
   constructor(
     readonly code: string,
     private readonly briefingTicks: number = BRIEFING_TICKS,
-    private readonly runSeed: number = deriveSeed('run', code),
+    private runSeed: number = deriveSeed('run', code),
     /**
      * P3B dev option `lab`: stage 1 of this room is the hand-authored Ability Lab (never part of the rotation).
      * P3C option `hunt`: stage 1 is the salvage hunt instead of the tutorial. `lab` wins when both are set.
@@ -94,7 +98,71 @@ export class Room {
     // P3E dev/test option: begin the run at this stage (so the ghost can be met without playing the stages before it)
     const s0 = opts.startStage;
     if (s0 !== undefined && Number.isSafeInteger(s0) && s0 >= 1) { this.stage = s0; this.highestStage = s0; }
+    this.initialSeed = this.runSeed; // assigned here, not in a field initialiser: a parameter property is not yet set when initialisers run
   }
+
+  // ---------------------------------------------------------------- P6 C: accounts, saving and progression (docs/PROGRESSION.md)
+
+  /** The run seed this room started with (what "New run" goes back to). */
+  private readonly initialSeed: number;
+  /** The HOST's highest stage reached (0 for a guest host). The difficulty a lobby may choose is limited by this and by the run itself. Set by the gateway from the server's own store. */
+  private hostFloor = 0;
+  private clears: ClearEvent[] = [];
+  private saveUpdates: RunSave[] = [];
+  /** What the unlock rule (`isDifficultyUnlocked`) is asked about: the host's progress, or how far this run has come, whichever is higher. */
+  get unlockBasis(): number { return Math.max(this.highestStage, this.hostFloor); }
+  /** The gateway tells the room how far the host has got (guest = 0). A difficulty the new host has not unlocked falls back to the highest one they have. Lobby only. */
+  setHostFloor(highest: number): void {
+    this.hostFloor = Number.isSafeInteger(highest) && highest > 0 ? highest : 0;
+    if (this.phase === 'lobby' && !isDifficultyUnlocked(this.difficulty, this.unlockBasis)) {
+      this.difficulty = (['hardcore', 'intermediate', 'easy'] as const).find((d) => isDifficultyUnlocked(d, this.unlockBasis)) ?? 'easy';
+    }
+  }
+  /** The save the run would write if the stage just cleared were saved now: it points at the NEXT stage. */
+  private buildSave(nextStage: number): RunSave {
+    const upgrades: Record<string, number> = {};
+    for (const k of Object.keys(this.owned) as UpgradeId[]) if ((this.owned[k] ?? 0) > 0) upgrades[k] = this.owned[k]!;
+    return { stage: nextStage, mode: this.difficulty, seedBase: this.runSeed, variety: this.varietyRecords.slice(-6).map((r) => ({ ...r, locks: [...r.locks], templates: [...r.templates], ghosts: [...r.ghosts] })), upgrades: upgrades as RunSave['upgrades'], pickOrder: [...this.pickOrder] };
+  }
+  /**
+   * Starts this lobby from a save (the host's, read by the server from its own store). Lobby only. The save is checked against the host's progress,
+   * so a save claiming a stage or a mode the host has not reached is refused (a tampered or foreign save).
+   */
+  restoreRun(save: unknown, hostHighest: number): Result {
+    if (this.phase !== 'lobby') return fail('A saved run can only be loaded before the run starts');
+    const p = RunSaveSchema.safeParse(save);
+    if (!p.success) return fail('That save is not valid');
+    const s = p.data;
+    if (s.stage > hostHighest) return fail('That save is ahead of the progress it belongs to');
+    if (!isDifficultyUnlocked(s.mode, hostHighest)) return fail('That save uses a mode that is not unlocked');
+    const v = this.restoreVariety(s.variety);
+    if (!v.ok) return v;
+    this.setHostFloor(hostHighest);
+    this.runSeed = s.seedBase;
+    this.stage = s.stage;
+    this.highestStage = Math.max(this.highestStage, s.stage);
+    this.attempt = 0;
+    this.owned = { ...s.upgrades };
+    this.pickOrder = [...s.pickOrder];
+    this.difficulty = s.mode;
+    return { ok: true };
+  }
+  /** Back to a fresh run (stage 1, no upgrades, no history). Lobby only. The difficulty stays if the host has unlocked it. */
+  newRun(): Result {
+    if (this.phase !== 'lobby') return fail('A new run can only be chosen before the run starts');
+    const s0 = this.opts.startStage;
+    const start = s0 !== undefined && Number.isSafeInteger(s0) && s0 >= 1 ? s0 : 1;
+    this.runSeed = this.initialSeed; this.stage = start; this.highestStage = start; this.attempt = 0;
+    this.owned = {}; this.pickOrder = []; this.variety.clear();
+    if (!isDifficultyUnlocked(this.difficulty, this.unlockBasis)) this.difficulty = 'easy';
+    return { ok: true };
+  }
+  /** Stages cleared since the last call, each with the save that points at the next stage (taken once). Failed attempts never appear here. */
+  drainClears(): ClearEvent[] { const o = this.clears; this.clears = []; return o; }
+  /** Saves to rewrite because the draft after a clear was settled (taken once). */
+  drainSaveUpdates(): RunSave[] { const o = this.saveUpdates; this.saveUpdates = []; return o; }
+  /** The ids of everyone in the room now (for the gateway to map to accounts). */
+  get memberIds(): string[] { return [...this.members.keys()]; }
 
   /** What the team's upgrades do right now (bounded, see `draft/effectsOf`). */
   get effects() { return effectsOf(this.owned); }
@@ -535,7 +603,7 @@ export class Room {
   setDifficulty(id: string, difficulty: Difficulty): Result {
     if (id !== this.hostId) return fail('Only the host can change difficulty');
     if (this.phase !== 'lobby') return fail('Not in lobby');
-    if (!isDifficultyUnlocked(difficulty, this.highestStage)) return fail(`${difficulty} is locked`);
+    if (!isDifficultyUnlocked(difficulty, this.unlockBasis)) return fail(`${difficulty} is locked`);
     this.difficulty = difficulty;
     return { ok: true };
   }
@@ -557,6 +625,16 @@ export class Room {
     return { ok: true };
   }
 
+  /** P6 C: remember that this stage was cleared (bounded), with the save that points at the next one. Called once, at the moment of the clear. */
+  private noteClear(): void {
+    const sc = this.engine?.state().score?.total ?? 0;
+    this.clears.push({
+      result: { stage: this.stage, mode: this.difficulty, ticks: Math.max(0, Math.floor(this.sim?.tick ?? 0)), score: Math.max(0, Math.floor(sc)), players: Math.min(4, Math.max(1, this.members.size)), deaths: this.death?.deaths ?? 0 },
+      playerIds: this.memberIds, hostId: this.hostId, save: this.buildSave(this.stage + 1),
+    });
+    if (this.clears.length > 8) this.clears.splice(0, this.clears.length - 8);
+  }
+
   /**
    * Host-only. Uses the existing NEXT_STAGE transition (stage_complete -> briefing) and loads stage N+1.
    * Endless: there is no stage after which this is refused. Disconnected players are dropped, like on reset.
@@ -568,6 +646,8 @@ export class Room {
       if (!m.connected) { this.members.delete(m.id); this.sim.removePlayer(m.id); }
     }
     this.resolveDraft(); // the host goes on: the draft is settled with the votes so far
+    this.saveUpdates.push(this.buildSave(this.stage + 1)); // P6 C: the draft changed what the team owns: the save is rewritten (same stage, new upgrades)
+    if (this.saveUpdates.length > 8) this.saveUpdates.splice(0, this.saveUpdates.length - 8);
     this.draft = null;
     const next = this.stage + 1;
     const revBase = (this.engine?.state().rev ?? 0) + 1; // revisions keep increasing across stages
@@ -637,6 +717,7 @@ export class Room {
         if (this.death && this.death.deaths === 0) this.engine?.grantBonus('no_deaths', DEATH_TABLE.noDeathBonus);
         this.phase = nextRoomPhase(this.phase, 'STAGE_CLEAR');
         this.openDraft();
+        this.noteClear();
         return { phaseChanged: true };
       }
       // P4: nobody who is alive can act any more (and the dead have put their things down): the team is wiped. REVIEW and RETRY follow in step 4.
@@ -1006,7 +1087,7 @@ export class Room {
       phase: this.phase,
       difficulty: this.difficulty,
       stage: this.stage,
-      highestStage: this.highestStage,
+      highestStage: this.unlockBasis,
       hostId: this.hostId,
       maxPlayers: MAX_PLAYERS,
       players: [...this.members.values()].map((m) => ({

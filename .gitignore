@@ -4,3 +4,11 @@ dist
 *.log
 test-results
 playwright-report
+# P6 C: the progress database (and its WAL files) and local secrets never go to Git
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+.env.*
+!.env.example

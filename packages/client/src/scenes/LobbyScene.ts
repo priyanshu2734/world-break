@@ -4,6 +4,8 @@ import { roomsFlag } from '../ui/roomMath';
 import { MAX_PLAYERS, DIFFICULTIES, isDifficultyUnlocked } from '@wb/shared';
 import { Session } from '../net/session';
 import { COLOR, FONT } from '../palette';
+import { AccountPanel } from '../ui/account/AccountPanel';
+import { fetchAuthConfig } from '../ui/account/accountLogic';
 
 const W = 1280, H = 720;
 
@@ -16,6 +18,8 @@ export class LobbyScene extends Phaser.Scene {
   private diff!: Phaser.GameObjects.Text;
   private slots: Phaser.GameObjects.Text[] = [];
   private joining = false;
+  /** P6 C: sign-in, profile and Continue / New run (created once the server says what sign-in it offers). */
+  private account: AccountPanel | null = null;
 
   constructor() { super('Lobby'); }
 
@@ -48,7 +52,7 @@ export class LobbyScene extends Phaser.Scene {
     }
     this.diff = this.add.text(W / 2, 600, '', { ...FONT, fontSize: '22px', color: '#ffb02e' }).setOrigin(0.5);
     this.status = this.add.text(W / 2, 660, '', { ...FONT, fontSize: '18px', color: COLOR.text }).setOrigin(0.5);
-    this.add.text(W / 2, 698, '[R] ready   [D] difficulty (host)   [ENTER] start (host)', { ...FONT, fontSize: '14px', color: '#5f8da0' }).setOrigin(0.5);
+    this.add.text(W / 2, 698, '[R] ready   [D] difficulty (host)   [C] continue (host)   [N] new run (host)   [ENTER] start (host)', { ...FONT, fontSize: '14px', color: '#5f8da0' }).setOrigin(0.5);
 
     const kb = this.input.keyboard!;
     kb.on('keydown-R', () => {
@@ -62,6 +66,12 @@ export class LobbyScene extends Phaser.Scene {
       void this.session.setDifficulty(next);
     });
     kb.on('keydown-ENTER', () => { void this.session.start(); });
+
+    // P6 C: ask the server what sign-in it offers (guests-only if it does not answer), then show the profile panel
+    void fetchAuthConfig().then((cfg) => {
+      if (!this.sys.isActive()) return;
+      this.account = new AccountPanel(this, this.session, cfg, () => { this.session.disconnect(); this.scene.restart(); });
+    });
 
     const hash = window.location.hash.replace('#', '').toUpperCase();
     this.joining = true;
@@ -84,6 +94,7 @@ export class LobbyScene extends Phaser.Scene {
       return;
     }
     window.location.hash = snap.code;
+    this.account?.update(snap.hostId === this.session.playerId);
     this.code.setText(`ROOM  ${snap.code}   (share the URL to invite up to ${MAX_PLAYERS - 1} more)`);
     this.slots.forEach((t, i) => {
       const p = snap.players[i];

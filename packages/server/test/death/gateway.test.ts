@@ -24,7 +24,7 @@ const until = async (pred: () => boolean, ms = 4000) => {
 };
 
 async function boot() {
-  server = createGameServer({ briefingTicks: 3, escapeStages: true, ghostStages: true });
+  server = createGameServer({ briefingTicks: 3, escapeStages: true, ghostStages: true, devFlags: true });
   const port = await server.listen(0);
   const a = client(port), b = client(port);
   const ja = await emit<{ roomCode: string; playerId: string }>(a.s, 'room:join', { name: 'A', ghost: 2 });
