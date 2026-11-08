@@ -1,18 +1,25 @@
 import { io, type Socket } from 'socket.io-client';
 import {
+  ChatMessageSchema, PingMarkerSchema, ProfileSchema, TeamPanelSchema,
   DeathReviewMsgSchema, DeathStateSchema, GameSnapshotSchema, GhostCueSchema, GhostPingSchema, GhostFxSchema, GhostShotSchema, RoomLayoutSchema, RoomSnapshotSchema, StageStateSchema,
-  type AbilityAction, type Ack, type DeathReviewMsg, type DeathState, type GhostPing, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
+  type AbilityAction, type Ack, type PingRequest, type Profile, type RunChoice, type TeamPanel, type DeathReviewMsg, type DeathState, type GhostPing, type ItemAction, type ClientToServerEvents, type Difficulty, type GameSnapshot, type InputIntent, type StageAction, type StageState,
   type EscapeAction, type EscapeAck, type GhostAction, type GhostCue, type GhostFx, type GhostShot, type GhostStatus, type RoomLayout, type RoomSnapshot, type ServerToClientEvents,
 } from '@wb/shared';
 import { addNote } from '../ui/escapeUse';
 import { SnapshotBuffer } from './interpolation';
 import { ghostRequested } from '../ui/ghost/ghostParam';
+import { ChatLog, addMarker, type LiveMarker } from '../ui/team/teamLogic';
+import { refreshSession, sessionTokens } from '../ui/account/accountLogic';
 
 type S = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 /** Thin typed wrapper over the server connection. The client never mutates game state itself. */
 export class Session {
-  private socket: S = io({ transports: ['websocket'] });
+  // P6 C: the server's own session token (if signed in) is presented at every connect and reconnect; a guest sends none.
+  private socket: S = io({ transports: ['websocket'], auth: (cb) => cb({ token: sessionTokens.get() ?? undefined }) });
+  /** P6 C: my profile as the server sees it (guest or account), and in a room what this lobby offers. */
+  profile: Profile | null = null;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
   snapshot: RoomSnapshot | null = null;
   /** P1: latest authoritative simulation snapshot, its history, and a counter bumped per snapshot. */
   game: GameSnapshot | null = null;
@@ -49,13 +56,17 @@ export class Session {
   review: DeathReviewMsg | null = null;
   /** P4 step 2: "ghost here" pings the server sent me, with their arrival time (performance.now). Old ones are dropped. */
   ghostPings: { ping: GhostPing; at: number }[] = [];
+  /** P6 A: ping markers the server sent me (a position only for my own room), the team panel, and the team chat (memory only; mutes live here so they survive a scene restart). */
+  pingMarkers: LiveMarker[] = [];
+  teamPanel: TeamPanel | null = null;
+  readonly chat = new ChatLog();
   playerId = '';
   connected = false;
   error = '';
 
   constructor() {
     this.socket.on('connect', () => { this.connected = true; });
-    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.death = null; this.ghostPings = []; this.ghostShots = []; this.ghostFx = []; this.layouts.clear(); this.buffer.clear(); });
+    this.socket.on('disconnect', () => { this.connected = false; this.snapshot = null; this.game = null; this.stage = null; this.ghostCue = null; this.death = null; this.ghostPings = []; this.ghostShots = []; this.ghostFx = []; this.pingMarkers = []; this.teamPanel = null; this.chat.clear(); this.layouts.clear(); this.buffer.clear(); });
     this.socket.on('connect_error', () => { this.connected = false; this.error = 'Cannot reach server'; });
     this.socket.on('room:state', (raw) => {
       const parsed = RoomSnapshotSchema.safeParse(raw);
@@ -97,6 +108,26 @@ export class Session {
       const now = performance.now();
       this.ghostPings = [...this.ghostPings.filter((p) => now - p.at < 6000), { ping: parsed.data, at: now }].slice(-6);
     });
+    this.socket.on('profile:state', (raw) => {
+      const parsed = ProfileSchema.safeParse(raw);
+      if (parsed.success) this.profile = parsed.data;
+    });
+    // a forged, altered or expired token is refused by the server: drop it and carry on as a guest
+    this.socket.on('connect_error', (e) => {
+      if (e.message === 'invalid_session') { sessionTokens.set(null); this.error = 'Your sign-in expired. You are playing as a guest.'; this.socket.connect(); }
+    });
+    this.socket.on('ping:marker', (raw) => {
+      const parsed = PingMarkerSchema.safeParse(raw);
+      if (parsed.success) this.pingMarkers = addMarker(this.pingMarkers, parsed.data, performance.now());
+    });
+    this.socket.on('chat:message', (raw) => {
+      const parsed = ChatMessageSchema.safeParse(raw);
+      if (parsed.success) this.chat.push(parsed.data, performance.now(), this.playerId);
+    });
+    this.socket.on('team:panel', (raw) => {
+      const parsed = TeamPanelSchema.safeParse(raw);
+      if (parsed.success) this.teamPanel = parsed.data;
+    });
     this.socket.on('ghost:cue', (raw) => {
       const parsed = GhostCueSchema.safeParse(raw);
       if (parsed.success) { this.ghostCue = parsed.data; this.ghostCueAt = performance.now(); }
@@ -120,7 +151,24 @@ export class Session {
   async join(name: string, roomCode?: string, lab = false, rooms: boolean | 2 = false): Promise<void> {
     const ghost = ghostRequested(typeof window !== 'undefined' ? window.location.search : '');
     const r = await this.call<Ack<{ roomCode: string; playerId: string }>>('room:join', { name, roomCode, ...(lab && !roomCode ? { lab: true } : {}), ...(rooms && !roomCode ? { rooms } : {}), ...(ghost !== null && !roomCode ? { ghost } : {}) });
-    if (r.ok) { this.playerId = r.playerId; this.error = ''; } else this.error = r.error;
+    if (r.ok) { this.playerId = r.playerId; this.error = ''; this.keepTokenFresh(); } else this.error = r.error;
+  }
+  /** P6 C: the host picks "continue" (the server loads the host's save) or "new" (stage 1). The server reads the save itself; the client only names the choice. */
+  async chooseRun(choice: RunChoice['choice']): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('run:choose', { choice });
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+    if (!r.ok) this.error = r.error;
+  }
+  /** P6 C: leave (used before the lobby is rebuilt after signing in or out). */
+  disconnect(): void { if (this.refreshTimer) clearInterval(this.refreshTimer); this.refreshTimer = null; this.socket.disconnect(); }
+  /** The session token is short-lived: renew it while the tab is open. */
+  private keepTokenFresh(): void {
+    if (this.refreshTimer || !sessionTokens.get()) return;
+    this.refreshTimer = setInterval(() => {
+      const t = sessionTokens.get();
+      if (!t) return;
+      void refreshSession(t).then((r) => { if (r.ok) sessionTokens.set(r.session.token); });
+    }, 15 * 60 * 1000);
   }
   async setReady(ready: boolean) { this.report(await this.call('room:ready', { ready })); }
   async setDifficulty(difficulty: Difficulty) { this.report(await this.call('room:setDifficulty', { difficulty })); }
@@ -178,6 +226,17 @@ export class Session {
   async spectatePing(): Promise<void> {
     const r = await this.call<Ack<{ message: string }>>('spectate:ping', {});
     this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
+  /** P6 A: place a ping. The server checks the point against my own view and decides the position; its verdict shows in the HUD. */
+  async placePing(req: PingRequest): Promise<void> {
+    const r = await this.call<Ack<{ message: string }>>('ping:place', req);
+    this.notice = { text: r.ok ? r.message : r.error, ok: r.ok, at: performance.now() };
+  }
+  /** P6 A: say something to the team. The server cleans and limits it; a refusal shows in the HUD. */
+  async sendChat(text: string): Promise<boolean> {
+    const r = await this.call<Ack<{ message: string }>>('chat:send', { text });
+    if (!r.ok) this.notice = { text: r.error, ok: false, at: performance.now() };
+    return r.ok;
   }
   async resetArena() { this.report(await this.call('game:reset', {})); }
   /** P3A: host-only. Asks the server to advance from a completed stage to the next one (stages are endless). */

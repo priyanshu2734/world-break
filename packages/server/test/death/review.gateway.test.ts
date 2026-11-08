@@ -24,7 +24,7 @@ const until = async (pred: () => boolean, ms = 6000) => {
 
 describe('P4 step 4: wipe, review and retry through the gateway', () => {
   it('after the wipe beat each player is sent their OWN review; only the host can retry; the same stage restarts on a new seed', async () => {
-    server = createGameServer({ briefingTicks: 3, escapeStages: true, ghostStages: true });
+    server = createGameServer({ briefingTicks: 3, escapeStages: true, ghostStages: true, devFlags: true });
     const port = await server.listen(0);
     const a = client(port), b = client(port);
     const ja = await emit<{ roomCode: string; playerId: string }>(a.s, 'room:join', { name: 'A', ghost: 2 });
