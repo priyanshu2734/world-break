@@ -12,3 +12,6 @@ data/
 *.db
 .env.*
 !.env.example
+# P7: local database backups
+backups/
+*.sqlite-journal

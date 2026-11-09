@@ -385,3 +385,11 @@ announces the teaching line. `view.ts` restricts `evidence` to what is in view a
   - `ProgressStore` (`node:sqlite`, versioned forward migrations, compare-and-set writes) behind `ProgressService` (health flag, bounded retried write queue); a down store means guest-like play.
   - `Room` records `ClearEvent`s at the stage-clear transition; the gateway writes them (every signed-in player's result; only the HOST's save slot). The room's difficulty limit is `unlockBasis`, from the host's progress.
   - Continue/New run is a server path: `Room.restoreRun(save, hostHighest)` (lobby only; a save ahead of the account's progress or in a locked mode is refused) or `Room.newRun()`.
+
+
+## P7 release hardening, package 1 (see docs/DEPLOYMENT.md and docs/SECURITY.md)
+- **One process, one URL.** `npm run build` = typecheck `shared`, bundle the server with esbuild to `packages/server/dist/main.js` (plain JS; `socket.io` and `zod` stay external; `@wb/shared` is bundled), Vite build of the client. `npm start` = `scripts/start.mjs` (sets `NODE_ENV=production`, runs the bundle). `Dockerfile` is multi-stage and non-root.
+- **`server/src/gateway.ts`** (additive options): `publicOrigins`, `enforceOrigins`, `trustProxy`, `staticDir`, `csp`, `hsts`, `limits`, `log`. New `GameServer.drain()` and `.stats()`. HTTP order: security headers, `/healthz`, HTTP rate limit, `/auth/*`, static files + SPA fallback, 404. Socket order: origin check (engine `allowRequest`), connection caps (`io.use`), session auth, per-socket event limiter (`socket.use`).
+- **New modules:** `security.ts` (origins, client address, limiters, headers, CSP), `static.ts` (static handler), `shutdown.ts` (graceful shutdown). `config.ts` gains the P7 variables and `assertDeployable`. `auth/http.ts` gains `allowedOrigins`, `enforceOrigin`, `trustProxy` (all optional).
+- **Defaults keep old behaviour:** a `createGameServer` call without `limits`, `enforceOrigins` or `staticDir` behaves as before (tests rely on it); `main.ts` always passes the configured values.
+- **Protocol:** unchanged. No shared, game or client file changed.

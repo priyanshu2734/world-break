@@ -3,17 +3,27 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev:server": "npm run dev -w @wb/server",
     "dev:client": "npm run dev -w @wb/client",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "build": "npm run build -w @wb/client"
+    "build:shared": "npm run typecheck -w @wb/shared",
+    "build:server": "node scripts/build-server.mjs",
+    "build:client": "npm run build -w @wb/client",
+    "build": "npm run build:shared && npm run build:server && npm run build:client",
+    "start": "node scripts/start.mjs"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.21.5",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8",
-    "@types/node": "^22.10.0"
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22.5.0"
   }
 }

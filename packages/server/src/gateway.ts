@@ -11,6 +11,8 @@ import { createAuthHandler, parseCookies } from './auth/http';
 import { ProgressService } from './store/service';
 import { RoomManager, type Result, type Room } from './room';
 import { startFixedLoop } from './loop';
+import { EventLimiter, KeyedLimiter, clientIp, originAllowed, parseOrigins, securityHeaders, type CspMode } from './security';
+import { createStaticHandler } from './static';
 
 export interface GameServer {
   io: Server<ClientToServerEvents, ServerToClientEvents>;
@@ -18,6 +20,21 @@ export interface GameServer {
   rooms: RoomManager;
   listen(port: number): Promise<number>;
   close(): Promise<void>;
+  /** P7: stop taking new players and report 503 on /healthz (a host stops routing to this process); the loop and open sockets keep running until `close()`. */
+  drain(): void;
+  /** P7: live counters (no player data). */
+  stats(): { connections: number; rooms: number; draining: boolean };
+}
+
+/** P7: abuse caps. Absent (the default for tests) = no cap; `main.ts` always passes the configured values. */
+export interface GatewayLimits {
+  maxConnections?: number; maxConnectionsPerIp?: number; maxRooms?: number;
+  /** room:join calls per minute per address (creating or joining a room). */
+  joinsPerMinutePerIp?: number;
+  /** non-socket HTTP requests per minute per address (page, assets, /auth). */
+  httpPerMinutePerIp?: number;
+  /** per-socket event rate limits (EVENT_LIMITS) and the flood kick. */
+  eventLimits?: boolean;
 }
 
 export function createGameServer(opts: {
@@ -28,8 +45,33 @@ export function createGameServer(opts: {
   auth?: AuthService;
   /** P6 C: storage. Absent = nothing is saved (every player is guest-like). */
   progress?: ProgressService;
+  /** P7: the origins the browser may use (wins over `corsOrigin`). */
+  publicOrigins?: string[];
+  /** P7: refuse WebSocket handshakes and state-changing HTTP calls whose Origin header is not one of the origins. Default off (dev proxies); main.ts turns it on in production. */
+  enforceOrigins?: boolean;
+  /** P7: reverse proxies in front (0 = none). */
+  trustProxy?: number;
+  /** P7: the built client directory to serve (absent = the server serves no pages). */
+  staticDir?: string;
+  csp?: CspMode;
+  hsts?: boolean;
+  limits?: GatewayLimits;
+  /** P7: operational log lines (no secrets, no player data). */
+  log?: (message: string) => void;
 } = {}): GameServer {
-  const corsOrigin = opts.corsOrigin ?? 'http://localhost:5173';
+  const origins = opts.publicOrigins && opts.publicOrigins.length > 0 ? opts.publicOrigins : parseOrigins(opts.corsOrigin ?? 'http://localhost:5173');
+  const corsOrigin = origins.join(',');
+  const enforceOrigins = opts.enforceOrigins === true;
+  const trustProxy = opts.trustProxy ?? 0;
+  const limits = opts.limits ?? {};
+  const log = opts.log ?? (() => undefined);
+  let draining = false;
+  const baseHeaders = securityHeaders({ csp: opts.csp ?? 'off', origins, hsts: opts.hsts === true });
+  const staticHandler = opts.staticDir ? createStaticHandler({ root: opts.staticDir }) : null;
+  const httpLimiter = limits.httpPerMinutePerIp ? new KeyedLimiter({ perSecond: limits.httpPerMinutePerIp / 60, burst: Math.max(20, Math.ceil(limits.httpPerMinutePerIp / 4)) }) : null;
+  const joinLimiter = limits.joinsPerMinutePerIp ? new KeyedLimiter({ perSecond: limits.joinsPerMinutePerIp / 60, burst: Math.max(3, Math.ceil(limits.joinsPerMinutePerIp / 3)) }) : null;
+  const connectionsByIp = new Map<string, number>();
+  let connections = 0;
   const devFlags = (opts.devFlags ?? process.env.DEV_FLAGS === '1') && process.env.NODE_ENV !== 'production';
   const auth = opts.auth ?? new AuthService({ mode: 'off' });
   const progress = opts.progress ?? new ProgressService(null);
@@ -37,18 +79,48 @@ export function createGameServer(opts: {
   const sessions = new Map<string, { playerId: string; roomCode: string; accountId?: string }>();
   const joining = new Set<string>();
   const authHttp = createAuthHandler({
-    auth, progress, corsOrigin,
+    auth, progress, corsOrigin, allowedOrigins: origins, enforceOrigin: enforceOrigins, trustProxy,
     onAccountDeleted: (id) => {
       for (const [sid, sess] of sessions) if (sess.accountId === id) { delete sess.accountId; refreshRoom(sess.roomCode); const sock = io.sockets.sockets.get(sid); if (sock) sock.data.accountId = undefined; }
     },
   });
+  const startedAt = Date.now();
   const http = createServer((req, res) => {
-    if (req.url === '/healthz') { res.writeHead(200).end('ok'); return; }
+    for (const [k, v] of Object.entries(baseHeaders)) res.setHeader(k, v);
+    const path = (req.url ?? '').split('?')[0] ?? '';
+    // P7: the host's health check. No secrets and no player data: only whether the process is up, draining, and whether saving works.
+    if (path === '/healthz' && (req.method === 'GET' || req.method === 'HEAD')) {
+      const body = JSON.stringify({ status: draining ? 'draining' : 'ok', uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000), storage: !progress.configured ? 'off' : progress.available ? 'ok' : 'down' });
+      res.writeHead(draining ? 503 : 200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(body) });
+      res.end(req.method === 'HEAD' ? undefined : body);
+      return;
+    }
+    if (httpLimiter && !httpLimiter.take(clientIp(req.headers, req.socket.remoteAddress, trustProxy))) {
+      res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'Cache-Control': 'no-store' }).end('Too many requests');
+      return;
+    }
     if (authHttp(req, res)) return;
-    res.writeHead(404).end();
+    if (staticHandler && staticHandler(req, res)) return;
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Not found');
   });
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(http, {
-    cors: { origin: corsOrigin, credentials: true },
+    cors: { origin: origins, credentials: true },
+    // P7: a message is at most a few hundred bytes; 16 KB is generous. The default (1 MB) would let one client send huge frames.
+    maxHttpBufferSize: 16 * 1024,
+    connectTimeout: 10_000,
+    // P7: a browser always sends Origin on a WebSocket handshake; refuse any that is not the configured site (cross-site WebSocket hijacking).
+    allowRequest: (req, cb) => {
+      const ok = !enforceOrigins || originAllowed(typeof req.headers.origin === 'string' ? req.headers.origin : undefined, origins);
+      cb(ok ? null : 'Origin not allowed', ok);
+    },
+  });
+  // P7: global and per-address connection caps (counted when a socket connects, below). The auth middleware that follows is synchronous.
+  io.use((socket, next) => {
+    if (draining) return next(new Error('server_restarting'));
+    const ip = clientIp(socket.handshake.headers, socket.handshake.address, trustProxy);
+    if (limits.maxConnections !== undefined && connections >= limits.maxConnections) return next(new Error('server_busy'));
+    if (limits.maxConnectionsPerIp !== undefined && (connectionsByIp.get(ip) ?? 0) >= limits.maxConnectionsPerIp) return next(new Error('too_many_connections'));
+    next();
   });
   // P6 C: the session token is checked ONCE, when the socket connects (and again on every automatic reconnect, which presents it again). A forged,
   // altered or expired token is refused outright (the client then signs in again or plays as a guest); no token at all is a guest.
@@ -141,11 +213,37 @@ export function createGameServer(opts: {
   };
 
   io.on('connection', (socket) => {
+    // P7: count the connection, rate limit every incoming event of this socket, and disconnect a flooder.
+    const ip = clientIp(socket.handshake.headers, socket.handshake.address, trustProxy);
+    connections++;
+    connectionsByIp.set(ip, (connectionsByIp.get(ip) ?? 0) + 1);
+    socket.on('disconnect', () => {
+      connections = Math.max(0, connections - 1);
+      const n = (connectionsByIp.get(ip) ?? 1) - 1;
+      if (n <= 0) connectionsByIp.delete(ip); else connectionsByIp.set(ip, n);
+    });
+    if (limits.eventLimits) {
+      const limiter = new EventLimiter();
+      socket.use((packet, next) => {
+        const event = typeof packet[0] === 'string' ? packet[0] : '?';
+        const verdict = limiter.check(event);
+        if (verdict === 'ok') return next();
+        const last: unknown = packet[packet.length - 1];
+        if (typeof last === 'function') (last as (r: Ack) => void)({ ok: false, error: 'Slow down.' });
+        if (verdict === 'kick') { log('a socket was disconnected for flooding'); socket.disconnect(true); }
+        // the packet is dropped: `next` is not called, so no handler runs
+      });
+    }
     socket.on('room:join', (payload, ack) => {
       const parsed = JoinPayloadSchema.safeParse(payload);
       if (!parsed.success) return reply(ack, { ok: false, error: 'Invalid join request' });
       if (sessions.has(socket.id) || joining.has(socket.id)) return reply(ack, { ok: false, error: 'Already joined' });
       const { roomCode, name, lab, rooms: wantRooms, ghost: wantGhost } = parsed.data;
+      if (draining) return reply(ack, { ok: false, error: 'The server is restarting. Try again in a moment.' });
+      if (joinLimiter && !joinLimiter.take(ip)) return reply(ack, { ok: false, error: 'Too many join attempts. Wait a moment.' });
+      if (!roomCode && limits.maxRooms !== undefined && rooms.count >= limits.maxRooms) return reply(ack, { ok: false, error: 'The server is full right now. Try again in a few minutes.' });
+      // P7: the multi-room demo stage is a dev switch; a production server does not honour it
+      if (wantRooms && process.env.NODE_ENV === 'production') return reply(ack, { ok: false, error: 'Not available on this server.' });
       // P3B dev flag: only a NEW room can become an Ability Lab room, and only if the server allows it (ABILITY_LAB=1).
       if (lab && !roomCode && !opts.abilityLab) return reply(ack, { ok: false, error: 'The Ability Lab is not enabled on this server (start it with ABILITY_LAB=1).' });
       // P3D dev flag: the multi-room demo, only on creation and only when escape stages are enabled (ESCAPE_STAGES, default on for the dev server).
@@ -508,6 +606,15 @@ export function createGameServer(opts: {
         resolve(typeof addr === 'object' && addr ? addr.port : port);
       });
     }),
-    close: () => new Promise((resolve) => { stopLoop?.(); void io.close(() => resolve()); }),
+    drain: () => { draining = true; },
+    stats: () => ({ connections, rooms: rooms.count, draining }),
+    close: () => new Promise((resolve) => {
+      draining = true;
+      stopLoop?.(); stopLoop = null;
+      // `io.close` closes the http server too; a keep-alive connection could hold it open, so close any idle ones as well
+      void io.close(() => resolve());
+      http.closeIdleConnections?.();
+      setTimeout(() => { http.closeAllConnections?.(); }, 2000).unref();
+    }),
   };
 }
