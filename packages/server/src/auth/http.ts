@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AuthLoginSchema } from '@wb/shared';
 import type { AuthService } from './index';
 import type { ProgressService } from '../store/service';
+import { KeyedLimiter, clientIp, originAllowed, parseOrigins } from '../security';
 
 const COOKIE = 'wb_session';
 const MAX_BODY = 8 * 1024;
@@ -10,6 +11,12 @@ export interface AuthHttpDeps {
   auth: AuthService;
   progress: ProgressService;
   corsOrigin: string;
+  /** P7: the origins the browser may call from (default: parsed from `corsOrigin`, which may be a comma separated list). */
+  allowedOrigins?: string[];
+  /** P7: refuse a state-changing call (POST, DELETE) whose Origin header is not an allowed origin. Default off. */
+  enforceOrigin?: boolean;
+  /** P7: reverse proxies in front (for the client address that limits count). */
+  trustProxy?: number;
   /** Called after an account is deleted so live sockets of that account fall back to guests. */
   onAccountDeleted?: (accountId: string) => void;
   nowMs?: () => number;
@@ -47,6 +54,10 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
  * State-changing calls (refresh, delete) need the Bearer header (a cookie alone is not enough), so another site cannot trigger them.
  */
 export function createAuthHandler(d: AuthHttpDeps): (req: IncomingMessage, res: ServerResponse) => boolean {
+  const origins = d.allowedOrigins ?? parseOrigins(d.corsOrigin);
+  const ipOf = (req: IncomingMessage): string => clientIp(req.headers, req.socket.remoteAddress, d.trustProxy ?? 0);
+  // every /auth call (not only login) counts: 120 per minute per address
+  const general = new KeyedLimiter({ perSecond: 2, burst: 60 }, 5000, d.nowMs);
   const hits = new Map<string, number[]>();
   const now = d.nowMs ?? Date.now;
   const limited = (ip: string): boolean => {
@@ -55,8 +66,12 @@ export function createAuthHandler(d: AuthHttpDeps): (req: IncomingMessage, res: 
     if (hits.size > 2000) hits.delete(hits.keys().next().value as string);
     return list.length > 30;
   };
+  const originOf = new WeakMap<ServerResponse, string | undefined>(); // per response: requests overlap, so this is not shared state
   const cors = (res: ServerResponse) => {
-    res.setHeader('Access-Control-Allow-Origin', d.corsOrigin);
+    const reqOrigin = originOf.get(res);
+    // echo the caller's origin only when it is configured; anyone else is shown the first configured origin, which the browser will not match
+    const o = reqOrigin !== undefined ? origins.find((x) => x === reqOrigin) : undefined;
+    res.setHeader('Access-Control-Allow-Origin', o ?? origins[0] ?? d.corsOrigin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -71,13 +86,17 @@ export function createAuthHandler(d: AuthHttpDeps): (req: IncomingMessage, res: 
   return (req, res) => {
     const url = (req.url ?? '').split('?')[0] ?? '';
     if (!url.startsWith('/auth/')) return false;
+    const reqOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    originOf.set(res, reqOrigin);
     void (async () => {
       try {
         if (req.method === 'OPTIONS') { cors(res); res.writeHead(204).end(); return; }
+        if (!general.take(ipOf(req))) return json(res, 429, { error: 'Too many requests. Try again in a minute.' });
+        if (d.enforceOrigin === true && req.method !== 'GET' && !originAllowed(reqOrigin, origins)) return json(res, 403, { error: 'Not allowed from this site.' });
         if (url === '/auth/config' && req.method === 'GET') return json(res, 200, d.auth.config);
         if (url === '/auth/login' && req.method === 'POST') {
           if (!d.auth.provider) return json(res, 404, { error: 'Sign-in is not enabled on this server.' });
-          if (limited(req.socket.remoteAddress ?? '?')) return json(res, 429, { error: 'Too many attempts. Try again in a minute.' });
+          if (limited(ipOf(req))) return json(res, 429, { error: 'Too many attempts. Try again in a minute.' });
           if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) return json(res, 415, { error: 'Send JSON.' });
           let body: unknown;
           try { body = await readJson(req); } catch { return json(res, 400, { error: 'Invalid request.' }); }
