@@ -2,7 +2,7 @@
 
 A cooperative multiplayer horror escape-room game that runs in the browser. One to four players are trapped in a failing facility. You search dark rooms, solve puzzles, talk to your team, and escape before a ghost finds you.
 
-**Play it:** https://YOUR-SERVICE-NAME.onrender.com
+**Play it:** [https://YOUR-SERVICE-NAME.onrender.com](https://world-break.onrender.com/)
 *(Hosted on a free plan: if nobody has played for a while the server sleeps, and the first load can take about a minute. Saved progress is not kept on the free plan, but guests can always play.)*
 
 **Source code:** https://github.com/priyanshu2734/world-break
